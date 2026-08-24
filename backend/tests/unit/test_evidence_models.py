@@ -90,7 +90,7 @@ def test_risk_factor_requires_evidence() -> None:
         RiskFactor(
             id="rf-1",
             name="breaking_change_exposure",
-            category=RiskCategory.BREAKING_CHANGE,
+            category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
             level=RiskLevel.HIGH,
             weight=0.4,
             detail="three high-confidence sites collide with documented changes",
@@ -103,7 +103,7 @@ def test_risk_factor_accepts_mixed_evidence_kinds() -> None:
     factor = RiskFactor(
         id="rf-1",
         name="breaking_change_exposure",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level=RiskLevel.HIGH,
         weight=0.4,
         detail="collides with a documented change",
@@ -151,7 +151,7 @@ def test_risk_factor_evidence_cannot_be_emptied_after_construction() -> None:
     factor = RiskFactor(
         id="rf-1",
         name="breaking_change_exposure",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level=RiskLevel.HIGH,
         weight=0.5,
         detail="@validator is removed in v2",
@@ -241,7 +241,7 @@ def test_risk_factor_weight_is_bounded(weight: float) -> None:
         RiskFactor(
             id="rf-1",
             name="breaking_change_exposure",
-            category=RiskCategory.BREAKING_CHANGE,
+            category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
             level=RiskLevel.HIGH,
             weight=weight,
             detail="collides with a documented change",
@@ -256,7 +256,7 @@ def test_risk_factor_weight_accepts_both_endpoints(weight: float) -> None:
     factor = RiskFactor(
         id="rf-1",
         name="breaking_change_exposure",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level=RiskLevel.HIGH,
         weight=weight,
         detail="collides with a documented change",
@@ -281,19 +281,19 @@ def test_doc_evidence_relevance_may_be_absent() -> None:
 
 
 _REJECTED = (
-    "/etc/passwd",              # absolute
-    "../outside/secrets.py",    # parent escape
-    "src/../../outside.py",     # parent escape, interior
-    "./src/app.py",             # curdir prefix
-    ".",                        # curdir itself
-    "src\\app\\models.py",      # windows separator
-    "   ",                      # blank (already covered by NonBlankStr, kept as a guard)
+    "/etc/passwd",  # absolute
+    "../outside/secrets.py",  # parent escape
+    "src/../../outside.py",  # parent escape, interior
+    "./src/app.py",  # curdir prefix
+    ".",  # curdir itself
+    "src\\app\\models.py",  # windows separator
+    "   ",  # blank (already covered by NonBlankStr, kept as a guard)
 )
 _ACCEPTED = (
     "src/app/models.py",
     "models.py",
     "a/b/c/d/e.py",
-    "src/app/.hidden.py",       # a leading dot on a *segment* is a real filename
+    "src/app/.hidden.py",  # a leading dot on a *segment* is a real filename
 )
 
 
@@ -315,3 +315,29 @@ def test_repo_evidence_accepts_ordinary_repo_relative_paths(path: str) -> None:
     """The negative test above is worthless unless the positive direction is
     shown to still pass: a validator that rejected everything would satisfy it."""
     assert RepoEvidence(file=path, line=1).file == path
+
+
+# Copied verbatim from spec 8.1's factor table. If the spec changes, this
+# tuple changes with it in the same commit -- it is a transcription of the
+# authority, not an independent opinion.
+_SPEC_8_1_FACTORS = (
+    "breaking_change_exposure",
+    "blast_radius",
+    "test_coverage_of_affected",
+    "churn_on_affected",
+    "analysis_coverage",
+    "evidence_coverage",
+    "constraint_pressure",
+)
+
+
+def test_risk_categories_match_the_spec_factor_table_exactly() -> None:
+    """Both directions, deliberately.
+
+    Phase 6 builds one RiskFactor per member of this enum and the report
+    prints the value as the factor's name. A member the spec does not define
+    is a factor with no documented threshold table; a spec factor with no
+    member is a factor that silently never gets computed. `==` on sorted
+    tuples catches both; `all(x in y)` catches only one.
+    """
+    assert tuple(sorted(c.value for c in RiskCategory)) == tuple(sorted(_SPEC_8_1_FACTORS))

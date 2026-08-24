@@ -25,6 +25,7 @@ from upgradepilot.models.repo import (
     AffectedFile,
     CommitRecord,
     DetectedVersion,
+    LanguageShare,
     Manifest,
     RepoAnalysis,
     SkippedFile,
@@ -70,6 +71,36 @@ def test_dependency_spec_rejects_an_unchanged_version() -> None:
     with pytest.raises(ValidationError) as excinfo:
         DependencySpec(name="pydantic", current_version="1.10.13", target_version="1.10.13")
     assert "differ" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("raw", "canonical", "root"),
+    [
+        ("pydantic", "pydantic", "pydantic"),
+        ("Pydantic", "pydantic", "pydantic"),
+        ("python-dateutil", "python-dateutil", "python_dateutil"),
+        ("zope.interface", "zope-interface", "zope_interface"),
+        ("ruamel_yaml", "ruamel-yaml", "ruamel_yaml"),
+    ],
+)
+def test_dependency_spec_canonical_forms(raw: str, canonical: str, root: str) -> None:
+    spec = DependencySpec(name=raw, current_version="1", target_version="2")
+    assert spec.canonical_name == canonical
+    assert spec.import_root == root
+
+
+def test_import_root_is_documented_as_a_guess_and_this_case_proves_it() -> None:
+    """`python-dateutil` imports as `dateutil`, not `python_dateutil`.
+
+    This test asserts the WRONG-looking value on purpose. It is the honest
+    record that `import_root` is a heuristic, so that a later reader who
+    "fixes" it has to delete a test that explains why it is not a bug -- and
+    so that the confidence reducer in analyzer.py cannot be dropped as
+    unnecessary.
+    """
+    spec = DependencySpec(name="python-dateutil", current_version="1", target_version="2")
+    assert spec.import_root == "python_dateutil"
+    assert spec.import_root != "dateutil"
 
 
 def test_user_constraints_defaults_are_permissive() -> None:
@@ -413,6 +444,18 @@ def test_affected_file_from_sites_rejects_an_empty_sites_list() -> None:
     assert any(e["loc"] == ("usage_sites",) and e["type"] == "too_short" for e in errors)
 
 
+def test_commit_count_distinguishes_unknown_from_no_churn() -> None:
+    site_ = site("X", Confidence.LOW, "a.py", 1)
+    unknown = AffectedFile(path="a.py", usage_sites=(site_,))
+    calm = AffectedFile(path="a.py", usage_sites=(site_,), commit_count=0)
+
+    assert unknown.commit_count is None
+    assert calm.commit_count == 0
+    # The point of the change: these must not compare equal, because a factor
+    # that treats them alike reports "stable" for a repository it never read.
+    assert unknown.commit_count != calm.commit_count
+
+
 def test_detected_version_records_provenance() -> None:
     detected = DetectedVersion(
         value="1.10.13",
@@ -430,7 +473,10 @@ def test_detected_version_records_provenance() -> None:
 def test_repo_analysis_reports_discrepancy_against_the_stated_version() -> None:
     analysis = RepoAnalysis(
         commit_sha="a" * 40,
-        languages={"Python": 0.92, "TypeScript": 0.08},
+        languages=(
+            LanguageShare(language="Python", share=0.92, file_count=37),
+            LanguageShare(language="TypeScript", share=0.08, file_count=3),
+        ),
         manifests=(
             Manifest(
                 path="pyproject.toml", kind=ManifestKind.PYPROJECT, declared_specifier="^1.10"
@@ -468,7 +514,7 @@ def test_repo_analysis_reports_discrepancy_against_the_stated_version() -> None:
 def test_repo_analysis_skipped_ratio_is_zero_for_an_empty_repo() -> None:
     analysis = RepoAnalysis(
         commit_sha=None,
-        languages={},
+        languages=(),
         manifests=(),
         detected_version=None,
         total_python_files=0,
@@ -487,7 +533,7 @@ def test_repo_analysis_skipped_files_cannot_be_emptied_after_construction() -> N
     that ceiling be moved after it was computed."""
     analysis = RepoAnalysis(
         commit_sha=None,
-        languages={},
+        languages=(),
         manifests=(),
         detected_version=None,
         total_python_files=10,
@@ -539,12 +585,12 @@ def _repo_analysis(
     analyzed_files: int,
     skipped_count: int,
     commit_sha: str | None = None,
-    languages: dict[str, float] | None = None,
+    languages: tuple[LanguageShare, ...] | None = None,
     detected_version: DetectedVersion | None = None,
 ) -> RepoAnalysis:
     return RepoAnalysis(
         commit_sha=commit_sha,
-        languages=languages if languages is not None else {},
+        languages=languages if languages is not None else (),
         manifests=(),
         detected_version=detected_version,
         total_python_files=total_python_files,
@@ -631,36 +677,77 @@ def test_repo_analysis_accepts_a_short_sha_prefix_and_a_missing_one() -> None:
 
 
 @pytest.mark.parametrize(
-    ("languages", "expected_type"),
+    ("language", "share", "file_count", "expected_type"),
     [
-        pytest.param({"": 0.5}, "string_too_short", id="blank-name"),
-        pytest.param({"   ": 0.5}, "string_too_short", id="whitespace-only-name"),
-        pytest.param({"Python": -3.0}, "greater_than_equal", id="negative-share"),
-        pytest.param({"Python": 1e9}, "less_than_equal", id="share-above-one"),
+        pytest.param("", 0.5, 1, "string_too_short", id="blank-name"),
+        pytest.param("   ", 0.5, 1, "string_too_short", id="whitespace-only-name"),
+        pytest.param("Python", 0.0, 1, "greater_than", id="zero-share"),
+        pytest.param("Python", -3.0, 1, "greater_than", id="negative-share"),
+        pytest.param("Python", 1e9, 1, "less_than_equal", id="share-above-one"),
+        pytest.param("Python", 0.5, 0, "greater_than_equal", id="zero-file-count"),
     ],
 )
-def test_repo_analysis_bounds_the_languages_map(
-    languages: dict[str, float], expected_type: str
+def test_language_share_bounds(
+    language: str, share: float, file_count: int, expected_type: str
 ) -> None:
-    """The reviewer constructed {"": -3.0, "Python": 1e9}: a blank language
-    name and a nonsensical proportion, both stored."""
+    """A language with a zero share is a language with no files, and listing
+    it claims a presence the count contradicts -- so `share` is `gt=0.0`, not
+    `ge=0.0`."""
     with pytest.raises(ValidationError) as excinfo:
-        _repo_analysis(total_python_files=0, analyzed_files=0, skipped_count=0, languages=languages)
+        LanguageShare(language=language, share=share, file_count=file_count)
     errors = excinfo.value.errors()
-    assert any(e["loc"][0] == "languages" and e["type"] == expected_type for e in errors), errors
+    assert any(e["type"] == expected_type for e in errors), errors
 
 
-def test_repo_analysis_does_not_require_languages_to_sum_to_one() -> None:
-    """The weaker defensible rule, chosen on purpose: whether the shares sum
-    to 1.0 depends on what the Phase 2 analyzer counts, which does not exist
-    yet. Bounds and non-blank keys is what can be defended today."""
+def test_repo_analysis_rejects_duplicate_languages() -> None:
+    """A duplicate language made the old dict silently drop one entry; as a
+    tuple it would instead be double-counted by any consumer that sums."""
+    with pytest.raises(ValidationError) as excinfo:
+        _repo_analysis(
+            total_python_files=0,
+            analyzed_files=0,
+            skipped_count=0,
+            languages=(
+                LanguageShare(language="Python", share=0.5, file_count=5),
+                LanguageShare(language="Python", share=0.5, file_count=5),
+            ),
+        )
+    assert "duplicate languages" in str(excinfo.value)
+
+
+def test_repo_analysis_rejects_language_shares_that_do_not_sum_to_one() -> None:
+    """The shares are computed over files with a recognised extension, so they
+    partition that set and must total 1.0."""
+    with pytest.raises(ValidationError) as excinfo:
+        _repo_analysis(
+            total_python_files=0,
+            analyzed_files=0,
+            skipped_count=0,
+            languages=(LanguageShare(language="Python", share=0.4, file_count=4),),
+        )
+    assert "must total 1.0" in str(excinfo.value)
+
+
+def test_repo_analysis_accepts_language_shares_that_sum_to_one() -> None:
+    """The negative tests above are worthless unless this positive case is
+    shown to still pass."""
     analysis = _repo_analysis(
         total_python_files=0,
         analyzed_files=0,
         skipped_count=0,
-        languages={"Python": 0.4, "TypeScript": 0.1},
+        languages=(
+            LanguageShare(language="Python", share=0.9, file_count=9),
+            LanguageShare(language="TypeScript", share=0.1, file_count=1),
+        ),
     )
-    assert analysis.languages == {"Python": 0.4, "TypeScript": 0.1}
+    assert [share.language for share in analysis.languages] == ["Python", "TypeScript"]
+
+
+def test_repo_analysis_accepts_no_languages() -> None:
+    """An empty repository (or one whose walk found nothing recognised)
+    reports no shares rather than being forced to invent a total."""
+    analysis = _repo_analysis(total_python_files=0, analyzed_files=0, skipped_count=0)
+    assert analysis.languages == ()
 
 
 def test_usage_site_rejects_a_nonpositive_line() -> None:

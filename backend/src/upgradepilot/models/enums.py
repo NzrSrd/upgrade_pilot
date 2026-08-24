@@ -32,10 +32,10 @@ class SourceType(StrEnum):
 
 
 class RiskCategory(StrEnum):
-    BREAKING_CHANGE = "breaking_change"
+    BREAKING_CHANGE_EXPOSURE = "breaking_change_exposure"
     BLAST_RADIUS = "blast_radius"
-    TEST_COVERAGE = "test_coverage"
-    CHURN = "churn"
+    TEST_COVERAGE_OF_AFFECTED = "test_coverage_of_affected"
+    CHURN_ON_AFFECTED = "churn_on_affected"
     ANALYSIS_COVERAGE = "analysis_coverage"
     EVIDENCE_COVERAGE = "evidence_coverage"
     CONSTRAINT_PRESSURE = "constraint_pressure"

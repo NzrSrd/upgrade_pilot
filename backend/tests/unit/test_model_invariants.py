@@ -20,17 +20,16 @@ from upgradepilot.models.enums import RiskCategory, RiskLevel, Severity, SourceT
 from upgradepilot.models.evidence import DocEvidence, RepoEvidence, RiskFactor, SourceRef
 
 
-def _domain_models() -> list[type[BaseModel]]:
-    """Every pydantic model *defined* in `upgradepilot.models`.
+def _walk_models(package_name: str) -> list[type[BaseModel]]:
+    """Every pydantic model *defined* anywhere under `package_name`.
 
     Discovered by walking the package rather than listed by hand: a
     hand-written list is precisely the thing a new model can be forgotten
     from, which is the failure this guard exists to prevent.
     """
+    package = importlib.import_module(package_name)
     found: dict[str, type[BaseModel]] = {}
-    for info in pkgutil.walk_packages(
-        upgradepilot.models.__path__, prefix=f"{upgradepilot.models.__name__}."
-    ):
+    for info in pkgutil.walk_packages(package.__path__, prefix=f"{package_name}."):
         module = importlib.import_module(info.name)
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if obj is HonestModel:
@@ -40,11 +39,16 @@ def _domain_models() -> list[type[BaseModel]]:
     return [found[key] for key in sorted(found)]
 
 
+def _domain_models() -> list[type[BaseModel]]:
+    """Every pydantic model *defined* in `upgradepilot.models`."""
+    return _walk_models("upgradepilot.models")
+
+
 def a_risk_factor() -> RiskFactor:
     return RiskFactor(
         id="rf-1",
         name="breaking_change_exposure",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level=RiskLevel.HIGH,
         weight=0.4,
         detail="three high-confidence sites collide with documented changes",
@@ -175,7 +179,7 @@ def test_model_construct_is_a_documented_bypass() -> None:
     smuggled = RiskFactor.model_construct(
         id="rf-1",
         name="x",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level="catastrophic",  # type: ignore[arg-type]
         weight=99.0,
         detail="",
@@ -224,3 +228,25 @@ def test_every_source_file_compiles_without_a_syntax_warning() -> None:
                 offenders.append(f"{source.relative_to(package_root)}: {exc}")
 
     assert offenders == [], "\n".join(offenders)
+
+
+@pytest.mark.xfail(reason="no service models until Task 2", strict=True)
+def test_every_service_model_is_an_honest_model() -> None:
+    """This phase defines typed records inside `services/analysis/`
+    (`Declaration`, `AliasMap`, `ModelIndex`, `ChurnIndex`, ...), which the
+    walk above -- scoped to `upgradepilot.models` -- does not reach. Without
+    this test they could be plain `BaseModel`s with none of the honesty
+    invariants and nothing would notice.
+
+    `xfail(strict=True)`: until Task 2 lands there are no models under
+    `services` at all, so the non-vacuity guard below fails -- correctly.
+    `strict=True` turns the marker itself into a failure the moment a service
+    model exists, so Task 2 removing it cannot be forgotten.
+    """
+    found = _walk_models("upgradepilot.services")
+    assert found, "the walk found no models under services -- it is not walking anything"
+    for model in found:
+        assert issubclass(model, HonestModel), (
+            f"{model.__module__}.{model.__qualname__} is a BaseModel but not a "
+            f"HonestModel: it is missing frozen=True and the re-validating model_copy"
+        )

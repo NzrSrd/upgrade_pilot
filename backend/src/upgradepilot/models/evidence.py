@@ -63,9 +63,7 @@ def _require_repo_relative(value: str) -> str:
         raise ValueError(f"path must use '/' separators: {value!r}")
     segments = value.split("/")
     if any(segment in {"", ".", ".."} for segment in segments):
-        raise ValueError(
-            f"path must not contain empty, '.' or '..' segments: {value!r}"
-        )
+        raise ValueError(f"path must not contain empty, '.' or '..' segments: {value!r}")
     if posixpath.normpath(value) != value:
         raise ValueError(f"path must already be normalised: {value!r}")
     return value

@@ -1,13 +1,16 @@
 """User-supplied inputs. Validated at the boundary so no node re-checks them."""
 
+import re
 from datetime import date
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import RiskLevel
 from upgradepilot.models.evidence import NonBlankStr
+
+_PEP503_SEPARATORS = re.compile(r"[-_.]+")
 
 
 class RemoteRepoRef(HonestModel):
@@ -33,6 +36,39 @@ class DependencySpec(HonestModel):
         if self.current_version.strip() == self.target_version.strip():
             raise ValueError("current_version and target_version must differ")
         return self
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def canonical_name(self) -> str:
+        """PEP 503 normalised name. The corpus's exact-match key.
+
+        `PLANNING.md` carried this in with the reason that matters: the
+        corpus is filtered with Chroma's `$contains`, which is exact-element,
+        so a document ingested under `pydantic` is invisible to a query for
+        `Pydantic` or `py_dantic`. Normalising at the boundary means every
+        producer and every consumer agrees without either remembering to.
+
+        Derived, never stored (CLAUDE.md rule 21): a stored copy could
+        disagree with `name`.
+        """
+        return _PEP503_SEPARATORS.sub("-", self.name).lower()
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def import_root(self) -> str:
+        """The top-level module name this distribution is expected to provide.
+
+        A GUESS, and the honest name for it is a guess: the mapping from
+        distribution name to import name lives in installed package metadata,
+        which a static analysis of a cloned repository does not have.
+        `pydantic` -> `pydantic` is right; `python-dateutil` -> `dateutil` and
+        `PyYAML` -> `yaml` are the well-known cases where it is wrong.
+
+        `services/analysis/analyzer.py` records an explicit confidence reducer
+        whenever this guess yields no candidate files, so a wrong guess reads
+        as "we could not find it" rather than as "this dependency is unused".
+        """
+        return self.canonical_name.replace("-", "_")
 
 
 class UserConstraints(HonestModel):
