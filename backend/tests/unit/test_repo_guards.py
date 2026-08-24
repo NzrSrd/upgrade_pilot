@@ -9,7 +9,7 @@ from upgradepilot.models.errors import (
     LocalPathForbiddenError,
     UpgradePilotError,
 )
-from upgradepilot.services.repo.guards import resolve_local_path, validate_clone_url
+from upgradepilot.services.repo.guards import _redact, resolve_local_path, validate_clone_url
 
 DEFAULT_SCHEMES = frozenset({"https", "git"})
 
@@ -114,6 +114,76 @@ def test_accepted_url_is_byte_identical_to_the_input() -> None:
     be the same string that gets handed to `git clone`, not a look-alike."""
     raw = "https://github.com/acme/payment-service.git"
     assert validate_clone_url(raw, DEFAULT_SCHEMES) == raw
+
+
+# --- URL validation: no rejection path may leak a credential (fix round 1) --
+
+_TOKEN = "ghp_TOKEN_SECRET_VALUE"  # noqa: S105 - not a real credential, a test fixture
+
+
+@pytest.mark.parametrize(
+    ("url", "patch_urlsplit"),
+    [
+        pytest.param(f"ftp://user:{_TOKEN}@github.com/a/b", False, id="scheme_rejection"),
+        pytest.param(
+            f"https://user:{_TOKEN}@github.com/a/b\n--x", False, id="control_character_rejection"
+        ),
+        pytest.param(f"https:///acme/{_TOKEN}", False, id="missing_host_rejection"),
+        pytest.param(f"https://github.com/acme/{_TOKEN}", True, id="round_trip_rejection"),
+    ],
+)
+def test_no_rejection_path_leaks_a_credential(
+    url: str, patch_urlsplit: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AppError.detail is logged, and raw credentials must never be stored
+    in plaintext. Every rejection path must be screened for this, not only
+    the dedicated credentials-rejection path — parametrized over the four
+    paths that fire *before* that dedicated check, so a future rejection
+    path added without redaction fails this suite."""
+    if patch_urlsplit:
+        import upgradepilot.services.repo.guards as guards_module
+
+        class _FakeSplitResult:
+            scheme = "https"
+            hostname = "github.com"
+            username = None
+            password = None
+            path = "/acme/" + _TOKEN
+
+            def geturl(self) -> str:
+                return "https://github.com/acme/DIFFERENT"
+
+        monkeypatch.setattr(guards_module, "urlsplit", lambda _candidate: _FakeSplitResult())
+
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url(url, DEFAULT_SCHEMES)
+
+    assert _TOKEN not in str(excinfo.value)
+    assert _TOKEN not in excinfo.value.message
+    assert _TOKEN not in (excinfo.value.detail or "")
+
+
+def test_control_character_detail_does_not_contain_the_raw_input() -> None:
+    """Not just the token: the full raw input (including a command-injection
+    payload) must not appear in the logged detail."""
+    raw = "https://github.com/acme/repo\n--upload-pack=/bin/sh"
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url(raw, DEFAULT_SCHEMES)
+    assert raw not in (excinfo.value.detail or "")
+    assert "--upload-pack" not in (excinfo.value.detail or "")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://user:tok@github.com/a/b", "https://***@github.com/a/b"),
+        ("https://tok@github.com/a/b", "https://***@github.com/a/b"),
+        ("https://github.com/a/b", "https://github.com/a/b"),
+        ("https://github.com/a/b?x=1@2", "https://github.com/a/b?x=1@2"),
+    ],
+)
+def test_redact_strips_userinfo_but_leaves_the_rest_untouched(raw: str, expected: str) -> None:
+    assert _redact(raw) == expected
 
 
 # --- Local path resolution ------------------------------------------------

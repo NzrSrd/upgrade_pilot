@@ -6,6 +6,7 @@ parameters rather than globals so tests can permit file:// without
 weakening production defaults.
 """
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -23,6 +24,28 @@ Reject these characters outright rather than normalise: the caller supplied
 something we will not honour, and they should be told so plainly.
 """
 
+_USERINFO = re.compile(r"(?<=//)[^/@]*@")
+"""Matches a `user:pass@` or bare `token@` authority prefix after `//`."""
+
+
+def _redact(raw: str) -> str:
+    """Strip any userinfo before a URL reaches a log or an error detail.
+
+    `AppError.detail` is logged, and a caller may paste a tokenised URL. The
+    project never stores raw credentials in plaintext, so no code path may
+    place an un-redacted URL into a detail string — this is defence in
+    depth for the rare case a URL must appear in a detail at all; the
+    primary defence in this module is to not echo the input in the first
+    place (see the comments at each raise site below).
+
+    Known limitation: an authority with no `//` (e.g. a bare `user@host`
+    with no scheme) is not redacted by this pattern. That is acceptable
+    here because every call site below has already rejected inputs without
+    a recognised `scheme://` shape before reaching a point where a URL is
+    echoed at all.
+    """
+    return _USERINFO.sub("***@", raw)
+
 
 def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
     """Return the URL unchanged if safe to hand to `git clone`.
@@ -32,9 +55,13 @@ def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
     first.
     """
     if any(ch in _FORBIDDEN_URL_CHARS for ch in raw):
+        # Do not echo `raw`: a caller who pasted a tokenised URL containing
+        # a stray control character would otherwise have that token written
+        # to the log via `detail`. Name the defect class and the length —
+        # enough to diagnose, nothing that can leak a credential.
         raise InvalidRepoUrlError(
             "Repository URL contains control characters, which are not allowed.",
-            detail=f"url={raw!r}",
+            detail=f"control characters present; length={len(raw)}",
         )
 
     candidate = raw.strip()
@@ -49,15 +76,21 @@ def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
     # exactly the string we are about to return — that catches whatever
     # normalisation quirk a future Python release introduces.
     if parts.geturl() != candidate:
+        # Do not echo `candidate` or the reparsed URL: at this point neither
+        # string has been screened for credentials yet, and either could
+        # contain one. Length is enough to diagnose a round-trip mismatch.
         raise InvalidRepoUrlError(
             "Repository URL could not be parsed unambiguously.",
-            detail=f"candidate={candidate!r} reparsed={parts.geturl()!r}",
+            detail=f"parsed URL did not round-trip; length={len(candidate)}",
         )
 
     if parts.scheme not in allowed_schemes:
+        # `parts.hostname` is a parsed field, never the raw credential-
+        # bearing string — safe to log even when userinfo is present,
+        # because urlsplit() separates username/password from hostname.
         raise InvalidRepoUrlError(
             f"Repository URL scheme must be one of: {', '.join(sorted(allowed_schemes))}.",
-            detail=f"scheme={parts.scheme!r} url={candidate!r}",
+            detail=f"scheme={parts.scheme!r} host={parts.hostname!r}",
         )
 
     if parts.username or parts.password:
@@ -71,11 +104,16 @@ def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
     if parts.scheme != "file" and not parts.hostname:
         raise InvalidRepoUrlError(
             "Repository URL is missing a host.",
-            detail=f"url={candidate!r}",
+            detail=f"scheme={parts.scheme!r}",
         )
 
     if parts.scheme == "file" and not parts.path:
-        raise InvalidRepoUrlError("file:// URL is missing a path.", detail=candidate)
+        # Credentials have already been rejected above, so `candidate`
+        # cannot contain userinfo here — but redact defensively rather than
+        # rely on that ordering never changing.
+        raise InvalidRepoUrlError(
+            "file:// URL is missing a path.", detail=f"url={_redact(candidate)!r}"
+        )
 
     return candidate
 
