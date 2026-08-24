@@ -83,7 +83,31 @@ def _resolve_file_url(safe_url: str, allowed_local_roots: Sequence[Path]) -> str
             "(use file:///path or file://localhost/path).",
             detail=f"scheme=file host={parts.hostname!r}",
         )
-    resolved = resolve_local_path(unquote(parts.path), allowed_local_roots)
+    try:
+        decoded_path = unquote(parts.path, errors="strict")
+    except UnicodeDecodeError as exc:
+        # `unquote`'s default is errors="replace", which turns an invalid
+        # percent-encoded byte into U+FFFD instead of raising: `unquote("%ff")`
+        # is `"\ufffd"`. That fails closed in practice — the mangled name
+        # matches no real directory, so `resolve_local_path` says "does not
+        # exist" — but failing closed by accident is not the invariant this
+        # module enforces everywhere else. Silently substituting a character
+        # into caller input is the exact anti-pattern `guards.py` spends its
+        # category rule and its ambiguity refusal preventing, and the claim
+        # this docstring makes just above — that a directory whose name really
+        # does contain a `%` round-trips faithfully — is false for a name
+        # containing a byte that is not valid UTF-8 unless the decode is
+        # strict. Reject what will not decode instead of guessing at it.
+        #
+        # `detail` carries parsed, known-shape fields only: never `exc` (whose
+        # message quotes the offending byte sequence) and never the path (which
+        # has been credential-screened by `validate_clone_url` but is still
+        # caller input this function has not otherwise echoed anywhere).
+        raise InvalidRepoUrlError(
+            "The file:// URL contains a percent-encoded sequence that is not valid UTF-8.",
+            detail=f"scheme=file percent-decode failed; encoded path length={len(parts.path)}",
+        ) from exc
+    resolved = resolve_local_path(decoded_path, allowed_local_roots)
     return f"file://{quote(str(resolved))}"
 
 

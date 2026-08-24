@@ -2,7 +2,7 @@ import json
 import subprocess
 import types
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import pytest
 
@@ -644,3 +644,71 @@ def test_a_surrogate_in_a_file_url_is_refused_before_it_reaches_the_local_door(
             allowed_schemes=FILE_SCHEME,
             allowed_local_roots=[tmp_path],
         )
+
+
+# --- file:// percent-decoding fails loudly, not silently (wave B item 3) --
+
+
+def test_an_undecodable_percent_escape_in_a_file_url_is_refused_not_substituted(
+    tmp_path: Path,
+) -> None:
+    """`unquote` defaults to `errors="replace"`, so `%ff` became U+FFFD.
+
+    That failed closed only by luck: the mangled name matched no real
+    directory, so the refusal was `LocalPathForbiddenError` ("does not
+    exist") about a path the caller never asked for. Silently substituting a
+    character into caller input is the invariant this module spends its
+    category rule and its ambiguity refusal enforcing, and the docstring's
+    claim that a `%` in a directory name round-trips faithfully is false for
+    a name whose bytes are not valid UTF-8 unless the decode is strict.
+
+    The two assertions are the whole point and they are separable: the error
+    must be the URL one, because the URL is what is wrong, and the caller
+    must be told which part of it. Under the old `errors="replace"` this
+    raises `LocalPathForbiddenError` instead and goes red on the type alone.
+    """
+    assert unquote("%ff") == "�", (
+        "the premise is wrong if this fails: unquote no longer substitutes"
+    )
+
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        clone_repository(
+            f"file://{tmp_path}/repo%ff",
+            tmp_path / "workspaces",
+            depth=1,
+            allowed_schemes=FILE_SCHEME,
+            allowed_local_roots=[tmp_path],
+        )
+
+    detail = excinfo.value.detail or ""
+    assert "percent-decode failed" in detail
+    assert "�" not in detail, "the substituted character must not be reported as input"
+
+
+def test_a_valid_percent_escape_in_a_file_url_still_decodes_after_the_strict_switch(
+    tmp_path: Path,
+) -> None:
+    """The strict decode must not become collateral damage for real paths.
+
+    `%C3%A9` is a legitimate UTF-8 escape and the neighbouring round-trip
+    test covers `%20` and `%25`; this one exists because a multi-byte
+    sequence is the case a strict decoder is most likely to break.
+    """
+    source = tmp_path / "café"
+    (source / "src").mkdir(parents=True)
+    _git(source, "init", "-q", "-b", "main")
+    (source / "src" / "mod.py").write_text("value = 1\n")
+    _git(source, "add", ".")
+    _git(source, "commit", "-q", "-m", "one")
+
+    workspace = clone_repository(
+        f"file://{quote(str(source))}",
+        tmp_path / "workspaces",
+        depth=1,
+        allowed_schemes=FILE_SCHEME,
+        allowed_local_roots=[tmp_path],
+    )
+    try:
+        assert sorted(str(f) for f in workspace.iter_files(".py")) == ["src/mod.py"]
+    finally:
+        workspace.cleanup()
