@@ -518,6 +518,68 @@ def test_a_tilde_prefixed_root_is_still_accepted_not_flagged_as_misconfigured() 
         project.rmdir()
 
 
+# --- Local path resolution: the root guard's denial *reason* is asserted (fix round 4) --
+
+_SERVER_LOOKING_ROOT = "some/relative/server/looking/path"
+
+
+def test_a_misconfigured_root_is_never_echoed_into_the_user_facing_message(tmp_path: Path) -> None:
+    """`message` is user-facing; `detail` is logged. A server-configured
+    filesystem path must never appear in `message`, and the sibling
+    `expanduser()` failure branch already gets this right.
+
+    Every earlier test for this branch asserted on the exception type only,
+    which is exactly how a server path in the `message` shipped. So assert
+    both halves of the split: absent from `message`, present in `detail` —
+    `detail` carrying the root is what makes the misconfiguration
+    diagnosable and must not be "fixed" away along with the leak."""
+    with pytest.raises(LocalPathForbiddenError) as excinfo:
+        resolve_local_path(str(tmp_path), [Path(_SERVER_LOOKING_ROOT)])
+
+    assert _SERVER_LOOKING_ROOT not in excinfo.value.message
+    assert _SERVER_LOOKING_ROOT not in str(excinfo.value)
+    assert _SERVER_LOOKING_ROOT in (excinfo.value.detail or "")
+
+
+@pytest.mark.parametrize("root", [Path(""), Path(".")], ids=["empty", "dot"])
+def test_a_relative_root_is_denied_as_misconfigured_even_when_the_cwd_contains_the_path(
+    root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-root absoluteness check was dead code under its own suite:
+    deleting the whole loop turned 0 of 89 tests red, because every root
+    test used `tmp_path` while pytest's CWD (`backend/`) is never an
+    ancestor of `tmp_path`. `_is_within` therefore still denied a `Path(".")`
+    root — for the coincidental reason "the CWD tree does not contain this
+    path" rather than the intended reason "a relative root is
+    misconfiguration". The two denials are indistinguishable from the
+    exception type alone.
+
+    This test removes the coincidence: with the CWD chdir'd to an ancestor
+    of the candidate, a deleted loop silently ACCEPTS the path. And it
+    asserts the denial *reason*, not merely the type, so a containment
+    denial can never stand in for the misconfiguration denial.
+
+    `Path("")` normalises to `Path(".")` so both reach the same branch; the
+    empty case is the one that matters operationally, because that is what
+    a naive `os.environ.get(...).split(",")` env-var loader produces for an
+    unset or blank setting: `['']`, not `[]`.
+
+    `monkeypatch.chdir` rather than bare `os.chdir` so the CWD is restored
+    even when the assertion below fails."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(LocalPathForbiddenError) as excinfo:
+        resolve_local_path(str(project), [root])
+
+    detail = excinfo.value.detail or ""
+    assert "non-absolute root" in detail, (
+        "denied for the wrong reason: expected the misconfigured-root branch, "
+        f"got detail={detail!r}"
+    )
+
+
 # --- Error contract -------------------------------------------------------
 
 

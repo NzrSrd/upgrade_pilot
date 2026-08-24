@@ -5,9 +5,17 @@ are validated here and nowhere else. The scheme allowlist and root list are
 parameters rather than globals so tests can permit file:// without
 weakening production defaults.
 
-Contract: no input to either public function may raise anything other than
-an `UpgradePilotError` subclass. Every filesystem/parsing operation that can
-raise outside that hierarchy is caught and converted at its call site.
+Contract: no `str` input to either public function may raise anything other
+than an `UpgradePilotError` subclass. Every filesystem/parsing operation that
+can raise outside that hierarchy is caught and converted at its call site.
+The contract is deliberately limited to the declared parameter type. Passing
+a non-`str` — a `Path` or `None` raises `AttributeError` from the first
+string operation, `bytes` a `TypeError` slightly later — is out of scope:
+these leaf functions do not spend `isinstance` checks re-litigating what the
+type checker already enforces (mypy runs in strict mode over `services/`,
+which includes this file). The cost if that judgement is wrong is an
+unhelpful `AttributeError` for a future non-`str` caller, not a hole in the
+security boundary.
 """
 
 import re
@@ -54,6 +62,19 @@ broader `str.isspace()` definition and would silently remove these
 codepoints from the edges of the URL — the same "validate one string,
 return a different one" anti-pattern `_FORBIDDEN_URL_CHARS` exists to kill,
 just reached through `.strip()` instead of through `urlsplit()`.
+
+Known cost of keeping `Cf`, accepted deliberately: a raw ZERO WIDTH JOINER
+(U+200D, category Cf) is rejected, so a ZWJ-joined emoji sequence in a path
+is refused in its raw form. Percent-encoding is the mitigation and it works
+— `https://github.com/acme/a%E2%80%8Db-repo` is accepted where the raw form
+is not — and the rejection `detail` names the category, so the fix is
+discoverable from the error. Everything else non-ASCII that was checked
+passes unaffected: plain emoji, combining accents, Han, Thai combining
+marks, and variation selectors (U+FE0F is Mn, not Cf). The alternative,
+dropping `Cf` from this set, would readmit BOM, SOFT HYPHEN and the bidi
+override characters — the entire attack class this rule exists to close —
+and GitHub and GitLab sanitise repository paths to ASCII regardless. Do not
+widen this set to "fix" the ZWJ over-rejection.
 """
 
 _USERINFO = re.compile(r"(?<=//)[^/@]*@")
@@ -264,8 +285,7 @@ def resolve_local_path(raw: str, allowed_roots: Sequence[Path]) -> Path:
             # the operator's intent is unknown, and a silently narrowed
             # allowlist is the kind of misconfiguration nobody notices.
             raise LocalPathForbiddenError(
-                f"The server's local-repository allowlist is misconfigured: "
-                f"{root!r} is not an absolute path.",
+                "The server's local-repository allowlist is misconfigured.",
                 detail=f"non-absolute root={root!r}",
             )
 
