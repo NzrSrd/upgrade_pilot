@@ -1,7 +1,8 @@
 """Phase 0 probe: which usage surface the pinned langchain-core populates.
 
 Run from the backend/ directory: .venv/bin/python probes/probe_llm.py
-Requires a real OPENAI_API_KEY in backend/.env. Costs a fraction of a cent.
+Requires a real OPENROUTER_API_KEY (or OPENAI_API_KEY) in backend/.env.
+Costs a fraction of a cent.
 
 Rule 18 exception: this constructs ChatOpenAI directly. That rule binds
 application code, where TrackedLLM is the only permitted construction site so
@@ -23,15 +24,28 @@ class Verdict(BaseModel):
 
 def main() -> None:
     settings = get_settings()
-    if not settings.openai_configured:
-        raise SystemExit("OPENAI_API_KEY missing — set it in backend/.env first")
+    if not settings.llm_configured:
+        raise SystemExit("no API key — set OPENROUTER_API_KEY in backend/.env first")
 
-    model = ChatOpenAI(model=settings.chat_model, api_key=settings.openai_api_key, temperature=0)
+    # `.get_secret_value()`, not the SecretStr itself. Passing the wrapper
+    # sent the literal string "**********" as the bearer token, so the probe
+    # failed with a 401 that read like a bad key rather than like a bug here.
+    assert settings.llm_api_key is not None
+    model = ChatOpenAI(
+        model=settings.chat_model,
+        api_key=settings.llm_api_key.get_secret_value(),
+        base_url=settings.llm_base_url,
+        temperature=0,
+    )
 
     message = model.invoke("Reply with the single word: ok")
+    print(f"base_url                  : {settings.llm_base_url or '<provider default>'}")
     print(f"model                     : {settings.chat_model}")
     print(f"usage_metadata            : {message.usage_metadata}")
-    print(f"response_metadata usage   : {message.response_metadata.get('token_usage')}")
+    usage = message.response_metadata.get("token_usage") or {}
+    print(f"response_metadata usage   : {usage}")
+    # OpenRouter reports the real charge per call; OpenAI direct does not.
+    print(f"cost reported by provider : {usage.get('cost')}")
 
     structured = model.with_structured_output(Verdict, include_raw=True)
     result = structured.invoke("Is one sentence enough evidence? Answer briefly.")

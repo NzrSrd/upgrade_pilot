@@ -22,7 +22,7 @@ Demo target throughout: **Pydantic v1 → v2** against a real public Python repo
 
 # Sub-project 1 — Agent core
 
-## Phase 0 — Environment and architecture validation
+## Phase 0 — Environment and architecture validation — COMPLETE
 
 Nothing here is assumed. Every item is a probe whose result gets written into ADR-001's verification table.
 
@@ -32,16 +32,20 @@ Nothing here is assumed. Every item is a probe whose result gets written into AD
 - [x] `pydantic-settings` configuration module
 - [x] FastAPI app with `GET /api/health`
 - [x] Backend starts; frontend starts; health responds
-- [ ] Probe: OpenAI reachable, one minimal call (unticked — no `OPENAI_API_KEY`/`.env` in this environment; `probe_llm.py` has never been run)
-- [ ] Probe: which usage-metadata surface is populated on the resolved `langchain-core` (unticked — same live-key blocker; UNVERIFIED in ADR-001)
-- [ ] Probe: `with_structured_output(Schema, include_raw=True)` preserves usage metadata (unticked — same live-key blocker; UNVERIFIED in ADR-001)
+- [x] Probe: provider reachable, one minimal call — `probes/probe_llm.py` run 2026-08-25 against OpenRouter (`openai/gpt-4.1-mini`), returns `ok`
+- [x] Probe: which usage-metadata surface is populated on the resolved `langchain-core` — **both**: `usage_metadata` and `response_metadata['token_usage']`. Recorded in ADR-001, scoped to OpenRouter
+- [x] Probe: `with_structured_output(Schema, include_raw=True)` preserves usage metadata — it does; `result['raw'].usage_metadata` populated, `parsing_error` None
 - [x] Probe: ChromaDB persists and retrieves after the seeding client is closed; scalar filters, and list-valued `affected_symbols` filtered with exact-element `$contains`
 - [x] Probe: minimal LangGraph executes
 - [x] Probe: `AsyncSqliteSaver` interrupt then resume, state intact
 - [x] Probe: two concurrent threads, no state bleed
 - [x] ADR-001 verification table filled from actual results
 
-**Exit:** all probes pass or the ADR is amended to record what actually happened. No application code before this.
+**Exit:** all probes pass or the ADR is amended to record what actually happened. No application code before this. **Met 2026-08-25** — the three probes above were blocked on a live key throughout Phase 1 and were closed by pointing the stack at OpenRouter (`llm_base_url`), which serves the same OpenAI API. `pytest --live` now runs the full suite with **nothing skipped** (494 passed, 0 skipped; without `--live`, 489 passed / 5 skipped).
+
+Two things this exit does **not** claim. The probes were closed against OpenRouter, not OpenAI direct, and ADR-001 says so in those words — a pass against one endpoint is not a claim about the other. And embedding *reachability* is verified while embedding token accounting is not; that stays with Phase 3.
+
+One near-miss worth keeping, because it would have changed Phase 3's plan: OpenRouter's model catalog lists 417 models and **zero** embedding models, which reads as "embeddings need OpenAI direct". The `/api/v1/embeddings` endpoint proxies them anyway — HTTP 200, 1536 dimensions, usage reported. The catalog is not evidence about the endpoint.
 
 ## Phase 1 — Domain models and repository access — COMPLETE
 

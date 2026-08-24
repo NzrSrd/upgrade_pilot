@@ -49,13 +49,20 @@ Port 8000 matters: the frontend dev server proxies `/api` there. Check it:
 ```bash
 curl http://127.0.0.1:8000/api/health
 # {"status":"degraded","version":"0.1.0",
-#  "checks":{"chroma_dir":true,"checkpoint_dir":true,"openai_configured":false}}
+#  "checks":{"chroma_dir":true,"checkpoint_dir":true,"llm_configured":false}}
 ```
 
-`degraded` with `openai_configured: false` is the correct answer when no
-`OPENAI_API_KEY` is set — `status` is derived from the checks, so the endpoint
-cannot report `ok` over a failing one. Copy `backend/.env.example` to
-`backend/.env` and fill in the key to get `ok`.
+`degraded` with `llm_configured: false` is the correct answer when no model
+API key is set — `status` is derived from the checks, so the endpoint cannot
+report `ok` over a failing one. Copy `backend/.env.example` to `backend/.env`
+and fill in a key to get `ok`.
+
+The key is read from `OPENROUTER_API_KEY`, then `OPENAI_API_KEY`, then
+`UP_LLM_API_KEY`, in that order. This project is developed against OpenRouter,
+which serves the same OpenAI API behind `OPENROUTER_BASE_URL`; leaving the
+base URL unset selects OpenAI direct. Model identifiers differ between the two
+(`openai/gpt-4.1-mini` against `gpt-4.1-mini`), so they have to match whichever
+block of `.env.example` you uncomment.
 
 ### Frontend
 
@@ -81,14 +88,18 @@ From `backend/`:
 
 The default suite is hermetic: no network, no LLM, no API key. The five
 skipped tests are marked `@pytest.mark.live` and only run under `--live` —
-three clone a small public repository over `https` (these pass here), and two
-need a real `OPENAI_API_KEY` (these still skip here, with the reason printed
-under `-rs`). They exist because a suite of fakes can pass while the real
-path is broken.
+three clone a small public repository over `https`, and two make one real
+model call each to check that token usage is actually reported. They exist
+because a suite of fakes can pass while the real path is broken: with a fake
+model supplying synthetic usage metadata, every token-tracking test passes
+while the extractor reads zero.
 
-Note that the shared skip reason reads "needs `--live` and a real
-`OPENAI_API_KEY`", which is only half right for the three clone tests: they
-need the network but no key.
+With a key in `backend/.env`, `--live` runs all five and nothing skips. The
+two model calls cost well under a cent.
+
+Note that the shared skip reason reads "needs `--live` and a real LLM API
+key", which is only half right for the three clone tests: they need the
+network but no key.
 
 From `frontend/`:
 

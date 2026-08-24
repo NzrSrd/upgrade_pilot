@@ -374,7 +374,7 @@ START → analyze_repo → inspect_dependency → agentic_rag ⟨subgraph⟩ →
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/health` | `{status, version, checks: {chroma_dir, checkpoint_dir, openai_configured}}`, where `status` is `"ok"` when every check is true and `"degraded"` otherwise — **derived** from `checks`, never asserted alongside them. Checks configuration and local stores; does **not** call OpenAI — a health probe should not cost money or inherit its latency. The field names were `chroma`/`checkpointer` in an earlier version of this table; they are `chroma_dir`/`checkpoint_dir` to match the implementation, and the spec was the side that changed. `chroma`/`checkpointer` implied the *stores* had been probed, whereas what is actually checked — deliberately, so the probe stays free and local — is whether each store's **directory** exists and is writable, or could be created. The narrower name is the one that does not overclaim. |
+| `GET /api/health` | `{status, version, checks: {chroma_dir, checkpoint_dir, llm_configured}}`, where `status` is `"ok"` when every check is true and `"degraded"` otherwise — **derived** from `checks`, never asserted alongside them. Checks configuration and local stores; does **not** call the model provider — a health probe should not cost money or inherit its latency. The field names were `chroma`/`checkpointer` in an earlier version of this table; they are `chroma_dir`/`checkpoint_dir` to match the implementation, and the spec was the side that changed. `chroma`/`checkpointer` implied the *stores* had been probed, whereas what is actually checked — deliberately, so the probe stays free and local — is whether each store's **directory** exists and is writable, or could be created. The narrower name is the one that does not overclaim. The key check was `openai_configured` until 2026-08-25; it is `llm_configured` now that the provider is configuration rather than an assumption (§12 assumption 4). |
 | `POST /api/agent/start` | **202** `{thread_id, status: "running", poll_url}` |
 | `GET /api/agent/status/{thread_id}` | `RunSnapshot` — status, current step, completed steps, trace, usage, evidence so far, `pending_decision` when interrupted, `final_report` when done, errors |
 | `POST /api/agent/resume` | **202**, same shape as start. **409** if not awaiting input, **404** unknown thread, **422** invalid decision |
@@ -432,6 +432,17 @@ Three hazards, handled explicitly:
 1. **Which usage surface is populated is version-dependent.** The extractor reads `AIMessage.usage_metadata` first, falls back to `response_metadata["token_usage"]`, and if neither is present records the call with `tokens_estimated=True` from a tiktoken count — **surfaced in the UI as estimated, never passed off as exact**. Phase 0 probes the pinned versions and records the finding in ADR-001.
 2. **`with_structured_output()` can swallow the raw message**, and with it the usage metadata — an easy path to reporting zero tokens. Mitigation: `with_structured_output(Schema, include_raw=True)`, returning both the parsed object and the raw `AIMessage`. Verified in Phase 0.
 3. **Pricing lives in settings**, not as code constants: `MODEL_PRICING: {model: {input_per_1m, output_per_1m}}`. An unknown model yields `cost = None` plus a `pricing_unknown` flag — never a fabricated `$0.00`.
+
+   **Measured refinement (2026-08-25).** OpenRouter returns the real charge
+   for every call in `response_metadata["token_usage"]["cost"]` — observed
+   `8.8e-06` on a 16-token completion, and `2e-08` on an embedding. OpenAI
+   direct returns no such field. So `TrackedLLM` should prefer a
+   provider-reported cost where one is present and fall back to
+   `MODEL_PRICING` where it is not, marking the difference: a measured charge
+   and a table lookup are not the same fact and the report should not print
+   them as though they were. The table is still required — it is the only
+   path when the provider stays silent — but it stops being the *primary*
+   one. Phase 4 owns this.
 
 Embedding calls are recorded as `LLMCall` with `kind=EMBEDDING` and zero output tokens, so estimated cost includes retrieval spend rather than quietly omitting it.
 
@@ -496,7 +507,21 @@ CI: `pytest`, `ruff`, `mypy`, `vitest`, `tsc --noEmit`.
 1. Python repositories only. The analyzer is AST-based and Python-specific; other ecosystems are out of scope for Spec 1.
 2. The knowledge corpus is authored and ingested by the project, not crawled at runtime.
 3. A single backend process serves all runs (§9.2).
-4. OpenAI is the only model provider; the `TrackedLLM` seam means swapping providers touches one module.
+4. The model provider speaks the **OpenAI API**; which vendor serves it is
+   configuration. `llm_base_url` selects the endpoint and `llm_api_key` is
+   read from `OPENROUTER_API_KEY`, `OPENAI_API_KEY` or `UP_LLM_API_KEY`, in
+   that order. The `TrackedLLM` seam still means swapping to a provider that
+   does *not* speak this API touches one module.
+
+   **Amends the original assumption 4**, which named OpenAI as the only
+   provider. The project is developed against OpenRouter, and Phase 0's
+   usage-metadata and structured-output probes were closed there rather than
+   against OpenAI direct — recorded that way in ADR-001, because a pass
+   against one endpoint is not a claim about the other. Two consequences
+   worth carrying: model identifiers are provider-scoped and disagree
+   (`openai/gpt-4.1-mini` against `gpt-4.1-mini`), and a gateway is one more
+   hop that can fail, which §9.3's taxonomy already covers as
+   `LLM_UNAVAILABLE` (2026-08-25).
 5. Analyzer unit tests run against a hand-authored miniature project
    (`backend/tests/fixtures/sample_repo/`) built into a temp directory with
    real git history by `build_sample_repo()`. This keeps assertions small,
