@@ -1,5 +1,6 @@
 """Application configuration. The only place environment variables are read."""
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -111,7 +112,58 @@ AllowedRoot = Annotated[
 ]
 """An entry in the local-repository allowlist. Absolute, or rejected."""
 
+_URL_SCHEME = re.compile(r"[a-z][a-z0-9+.\-]*\Z")
+"""RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, already
+lowercased. `\Z` and not `$`, so a trailing newline is not quietly allowed."""
+
+
+def _require_matchable_scheme(value: str) -> str:
+    """Reject an allowlist entry that could never match a parsed scheme.
+
+    `validate_clone_url` compares `urlsplit(...).scheme` against this
+    allowlist, and `urlsplit` always lowercases the scheme it returns. An
+    entry that is not a lowercase RFC 3986 scheme therefore matches nothing,
+    ever -- so `UP_ALLOWED_URL_SCHEMES=HTTPS` refused every clone, and the
+    refusal read "Repository URL scheme must be one of: HTTPS." against a
+    URL whose `detail` said `scheme='https'`. The message named the operator's
+    own value as the thing they were missing.
+
+    Rejected here rather than lowercased. Of the three available behaviours,
+    silently matching nothing is the worst; rewriting the entry is second
+    worst, because then the effective policy is not the configured policy and
+    a security allowlist is the last place that should be true; refusing to
+    start and naming the fix is the only one where the operator learns what
+    is wrong.
+
+    The lowercase case is checked first so it gets the message that names its
+    own fix, rather than falling into the general "not a valid scheme" arm.
+    The shape check behind it closes the rest of the same class -- `https://`,
+    `ht tps`, `\u0127ttps` were each accepted here and then silently matched
+    nothing, exactly as `HTTPS` did. No legitimate scheme is affected:
+    `git+ssh`, `svn+ssh`, `view-source` and `h2c` are all valid under RFC
+    3986 and all pass.
+    """
+    if value != value.lower():
+        raise ValueError(
+            f"must be lowercase (got {value!r}): schemes are compared against the scheme "
+            f"urlsplit() parses out, which is always lowercased, so {value!r} would match "
+            f"nothing and every clone would be refused -- use {value.lower()!r}"
+        )
+    if not _URL_SCHEME.match(value):
+        raise ValueError(
+            f"is not a URL scheme (got {value!r}): RFC 3986 allows a letter followed by "
+            "letters, digits, '+', '-' and '.' -- name the scheme alone, e.g. 'https', "
+            "not a prefix or a whole URL"
+        )
+    return value
+
+
 NonBlankSetting = Annotated[str, AfterValidator(_reject_blank_element)]
+
+UrlScheme = Annotated[NonBlankSetting, AfterValidator(_require_matchable_scheme)]
+"""An entry in the clone-URL scheme allowlist. Lowercase and scheme-shaped,
+or rejected at startup -- an entry that cannot match is a policy that
+silently denies everything."""
 
 
 class Settings(BaseSettings):
@@ -162,9 +214,7 @@ class Settings(BaseSettings):
     # raise SettingsError. NoDecode disables that decode and lets _split_csv
     # handle the value. Verified against pydantic-settings 2.15.0.
     allowed_local_roots: Annotated[tuple[AllowedRoot, ...], NoDecode] = ()
-    allowed_url_schemes: Annotated[frozenset[NonBlankSetting], NoDecode] = frozenset(
-        {"https", "git"}
-    )
+    allowed_url_schemes: Annotated[frozenset[UrlScheme], NoDecode] = frozenset({"https", "git"})
     max_repo_files: int = 5000
     max_repo_bytes: int = 50 * 1024 * 1024
     # ge=1: `clone.py` clamps with `max(1, depth)`, so a configured 0 became

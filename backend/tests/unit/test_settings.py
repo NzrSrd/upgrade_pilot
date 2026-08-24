@@ -270,3 +270,99 @@ def test_forbid_would_reject_an_unrelated_key_in_the_dotenv_file(tmp_path: Path)
     assert Settings(_env_file=env_file).max_repo_files == 11
     with pytest.raises(ValidationError):
         Forbidding(_env_file=env_file)
+
+
+# --- allowed_url_schemes: an entry that cannot match is a silent deny-all ---
+
+
+@pytest.mark.parametrize("scheme", ["HTTPS", "Https", "hTTps"], ids=repr)
+def test_an_uppercase_scheme_is_refused_at_startup(
+    monkeypatch: pytest.MonkeyPatch, scheme: str
+) -> None:
+    """`urlsplit` always lowercases the scheme it parses, so an uppercase
+    allowlist entry matches nothing and refuses every clone. The refusal an
+    operator actually saw was "Repository URL scheme must be one of: HTTPS."
+    against a URL whose detail said `scheme='https'` -- it named their own
+    value as the thing they were missing.
+
+    Refused at startup rather than lowercased: rewriting the entry would mean
+    the effective policy is not the configured policy, and a security
+    allowlist is the last place that should be true."""
+    monkeypatch.setenv("UP_ALLOWED_URL_SCHEMES", f"{scheme},git")
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None)
+
+    message = str(excinfo.value)
+    assert "must be lowercase" in message
+    assert repr(scheme) in message
+    # The message must name the fix, not just the fault.
+    assert repr(scheme.lower()) in message
+
+
+@pytest.mark.parametrize(
+    "scheme",
+    ["https://", "http s", "ht tps", "9https", "+https", "ħttps"],
+    ids=repr,
+)
+def test_a_scheme_shaped_nothing_like_a_scheme_is_refused(scheme: str) -> None:
+    """The same defect class as the uppercase case: each of these was accepted
+    by Settings and then silently matched no URL at all. RFC 3986 allows a
+    letter followed by letters, digits, '+', '-' and '.', and nothing here
+    fits that, so none of them could ever equal a parsed scheme."""
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None, allowed_url_schemes=frozenset({scheme}))
+
+    assert "is not a URL scheme" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "scheme", ["https", "git", "file", "git+ssh", "svn+ssh", "view-source", "h2c"], ids=repr
+)
+def test_every_legitimate_scheme_still_loads(scheme: str) -> None:
+    """The shape rule must not cost a real scheme. '+', '-', '.' and digits
+    are all legal under RFC 3986 and appear in schemes this product plausibly
+    allows."""
+    settings = Settings(_env_file=None, allowed_url_schemes=frozenset({scheme}))
+
+    assert settings.allowed_url_schemes == frozenset({scheme})
+
+
+def test_the_shipped_scheme_defaults_are_matchable() -> None:
+    """The default and the committed .env.example must both survive the rule
+    they are validated by -- a guard that rejects its own defaults is a
+    startup failure for everyone."""
+    assert Settings(_env_file=None).allowed_url_schemes == frozenset({"https", "git"})
+    assert Settings(_env_file=".env.example").allowed_url_schemes == frozenset({"https", "git"})
+
+
+def test_a_blank_scheme_keeps_its_own_message() -> None:
+    """The scheme rules compose on top of the blank check rather than
+    replacing it, so a blank entry is still reported as blank instead of being
+    described as a malformed scheme."""
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None, allowed_url_schemes=frozenset({"  "}))
+
+    message = str(excinfo.value)
+    assert "must not be blank" in message
+    assert "is not a URL scheme" not in message
+
+
+def test_an_unmatchable_scheme_would_otherwise_deny_every_clone(tmp_path: Path) -> None:
+    """Why this is a config-time error and not a cosmetic one: the whole point
+    of the allowlist is reached through `validate_clone_url`, which compares
+    against the lowercased scheme `urlsplit` returns. Asserted against the
+    real guard rather than restated, so this stays true if the guard changes.
+    """
+    from upgradepilot.models.errors import UpgradePilotError
+    from upgradepilot.services.repo.guards import validate_clone_url
+
+    # The allowlist Settings now refuses, applied directly to the guard.
+    with pytest.raises(UpgradePilotError):
+        validate_clone_url("https://github.com/acme/payment-service", frozenset({"HTTPS"}))
+
+    # The same allowlist, spelled the way Settings now insists on.
+    assert (
+        validate_clone_url("https://github.com/acme/payment-service", frozenset({"https"}))
+        == "https://github.com/acme/payment-service"
+    )
