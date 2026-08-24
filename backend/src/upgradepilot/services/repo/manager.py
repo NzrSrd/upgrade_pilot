@@ -38,7 +38,31 @@ class WorkspaceManager:
         self._settings = settings
 
     def open(self, ref: RepoRef) -> Workspace:
-        """Resolve a RepoRef to a capped, ready-to-analyze Workspace."""
+        """Resolve a RepoRef to a capped, ready-to-analyze Workspace.
+
+        OWNERSHIP: the caller owns the returned Workspace and must close
+        it -- preferably as `with manager.open(ref) as workspace:`, or
+        failing that an explicit `workspace.cleanup()` in a `finally`.
+        For a RemoteRepoRef that close is what removes the clone
+        directory from disk; for a LocalRepoRef it is a documented no-op
+        (`open_local_repository` builds the Workspace with
+        `cleanup_dir=None`), so the `with` form is always the right
+        default and never destroys a user's own checkout. A caller that
+        forgets leaks a clone directory: nothing in this call path
+        reclaims it later.
+
+        `sweep_stale` below is the backstop for the one case documented
+        ownership cannot cover -- a process that crashed or was killed
+        before it could close a Workspace it had open. That is why
+        `sweep_stale` exists at all; the two halves of this module are
+        meant to be read together and neither is sufficient alone.
+
+        There is deliberately NO `__del__` finalizer. Finalizer-driven
+        `rmtree` would run at unpredictable times, possibly during
+        interpreter shutdown, and would make a destructive operation
+        happen implicitly. Documented ownership plus a startup sweep is
+        the design.
+        """
         if isinstance(ref, LocalRepoRef):
             workspace = open_local_repository(
                 ref.path, allowed_roots=list(self._settings.allowed_local_roots)
@@ -58,7 +82,7 @@ class WorkspaceManager:
                 max_files=self._settings.max_repo_files,
                 max_bytes=self._settings.max_repo_bytes,
             )
-        except Exception:
+        except Exception as failure:
             # Deliberately broad: enforce_caps can fail with either the
             # expected RepoTooLargeError or an OSError from stat() on a file
             # that vanished mid-walk, and the cleanup obligation below is
@@ -75,12 +99,49 @@ class WorkspaceManager:
             # test_open_cap_rejection_never_deletes_a_local_checkout in
             # test_workspace_manager.py, which fails if a future change to
             # local.py ever makes local workspaces self-cleaning.
-            workspace.cleanup()
+            try:
+                workspace.cleanup()
+            except Exception as cleanup_failure:
+                # The original exception is the diagnostic one -- it says
+                # *why* the workspace was rejected (typically
+                # RepoTooLargeError) -- so it must reach the caller
+                # unchanged rather than being displaced by a secondary
+                # failure in the cleanup that followed it. The cleanup
+                # failure is not swallowed either (rule 20): it is
+                # attached to the original as a note, so it travels with
+                # the traceback that gets logged. Only the exception's
+                # type and message are recorded, and both come from this
+                # process's own filesystem operations -- no untrusted or
+                # unbounded external output reaches this string.
+                failure.add_note(
+                    "workspace cleanup after this failure also failed: "
+                    f"{type(cleanup_failure).__name__}: {cleanup_failure}"
+                )
             raise
         return workspace
 
     def sweep_stale(self, max_age_seconds: int) -> list[Path]:
         """Remove workspaces this service created and then abandoned.
+
+        This is the backstop half of `open`'s ownership contract above:
+        it reclaims workspaces a process crashed before closing. Every
+        other leak is the caller's `with` block to prevent, not this
+        method's to find.
+
+        `max_age_seconds` must not be negative. A negative value puts the
+        cutoff in the *future*, which makes every owned workspace count
+        as stale -- including one created a second ago -- so the sweep
+        would delete all of them. That is a programming error in the
+        caller rather than user input, so it raises `ValueError`: an
+        `AppError` would misrepresent a bug as an operating condition,
+        and silently clamping to 0 would hide the caller's bug behind a
+        destructive default.
+
+        `0` is deliberately legal and means "remove every abandoned
+        workspace regardless of age" -- a legitimate startup request
+        after a crash. It is a real boundary, not an accident of the
+        comparison below: with the cutoff at the current time, every
+        existing owned directory has an earlier mtime and is removed.
 
         STARTUP-ONLY CONTRACT: call this once, at process startup, before
         any run has a workspace open -- never from a timer, a background
@@ -105,6 +166,17 @@ class WorkspaceManager:
         reading that log to explain reclaimed disk, must never be told
         about a removal that did not happen.
         """
+        if max_age_seconds < 0:
+            # Checked before the early return below so the rejection does
+            # not depend on whether the workspace directory happens to
+            # exist yet -- a caller passing a negative age has the same
+            # bug either way.
+            raise ValueError(
+                "sweep_stale max_age_seconds must not be negative -- a negative "
+                "age puts the cutoff in the future and would delete every owned "
+                f"workspace regardless of age; got {max_age_seconds}"
+            )
+
         root = self._settings.workspace_dir
         if not root.exists():
             return []
@@ -115,6 +187,18 @@ class WorkspaceManager:
             if not entry.is_dir() or not entry.name.startswith(OWNED_WORKSPACE_PREFIX):
                 continue
             if entry.stat().st_mtime < cutoff:
+                # A `repo-`-prefixed *symlink* pointing at a directory
+                # reaches this line -- `Path.is_dir()` follows symlinks,
+                # so the two conditions above do not exclude it -- and
+                # survives untouched, target included. That safety comes
+                # from `shutil.rmtree` itself, which refuses to operate
+                # on a top-level symlink (it raises, and
+                # `ignore_errors=True` absorbs the raise, after which the
+                # `exists()` check below correctly declines to report it
+                # as removed). Nothing this module wrote provides it.
+                # Recorded here because a borrowed guarantee is exactly
+                # what a future "optimisation" that swaps `rmtree` for
+                # something else would silently drop.
                 shutil.rmtree(entry, ignore_errors=True)
                 if not entry.exists():
                     removed.append(entry)

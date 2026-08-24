@@ -11,6 +11,7 @@ from upgradepilot.models.errors import LocalPathForbiddenError, RepoTooLargeErro
 from upgradepilot.models.inputs import LocalRepoRef, RemoteRepoRef
 from upgradepilot.services.repo import manager as manager_module
 from upgradepilot.services.repo.manager import WorkspaceManager
+from upgradepilot.services.repo.workspace import Workspace
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -123,6 +124,69 @@ def test_open_cap_rejection_never_deletes_a_local_checkout(origin: Path, tmp_pat
     assert marker.read_text() == original_content
 
 
+def _strict_settings(tmp_path: Path) -> Settings:
+    """Settings whose file cap rejects every repository, however small."""
+    return Settings(
+        allowed_local_roots=(tmp_path,),
+        allowed_url_schemes=frozenset({"file"}),
+        workspace_dir=tmp_path / "workspaces",
+        max_repo_files=0,
+        max_repo_bytes=1_000_000,
+        clone_depth=5,
+    )
+
+
+def test_open_cap_rejection_removes_the_clone_it_created(origin: Path, tmp_path: Path) -> None:
+    """The other half of the cap-rejection contract: a clone IS deleted.
+
+    `test_open_cap_rejection_never_deletes_a_local_checkout` above covers
+    a LocalRepoRef, and for a local ref `Workspace.cleanup()` is a no-op
+    by design (`cleanup_dir=None`) -- so that test passes with `open`'s
+    entire cleanup guard deleted and proves nothing about it. Only a
+    RemoteRepoRef reaches a Workspace with a real `cleanup_dir`, so only
+    this test can go red when the guard goes. The two together are the
+    actual contract: clones are removed, checkouts never are.
+
+    Asserting the workspace directory is empty rather than remembering
+    the clone's name is deliberate: a cap-rejected clone must leave
+    nothing at all behind, whatever it was called.
+    """
+    strict = _strict_settings(tmp_path)
+
+    with pytest.raises(RepoTooLargeError):
+        WorkspaceManager(strict).open(RemoteRepoRef(url=f"file://{origin}"))
+
+    leftover = sorted(strict.workspace_dir.iterdir()) if strict.workspace_dir.exists() else []
+    assert leftover == [], f"a cap-rejected clone was left on disk: {leftover}"
+
+
+def test_a_cleanup_failure_does_not_displace_the_original_error(
+    origin: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller must still learn *why* the workspace was rejected.
+
+    If `cleanup()` raises while handling a cap rejection, the cleanup
+    failure must not replace the RepoTooLargeError that actually explains
+    what happened -- the diagnostic value is in the original. The cleanup
+    failure must not vanish silently either (rule 20), so it is attached
+    to the original as a note and asserted here.
+    """
+
+    def exploding_cleanup(self: Workspace) -> None:
+        raise OSError("cleanup exploded")
+
+    monkeypatch.setattr(Workspace, "cleanup", exploding_cleanup)
+    strict = _strict_settings(tmp_path)
+
+    with pytest.raises(RepoTooLargeError) as caught:
+        WorkspaceManager(strict).open(RemoteRepoRef(url=f"file://{origin}"))
+
+    notes = getattr(caught.value, "__notes__", [])
+    assert any("cleanup exploded" in note for note in notes), (
+        f"the cleanup failure was swallowed instead of recorded: {notes}"
+    )
+
+
 def test_sweep_stale_removes_only_old_directories(tmp_path: Path, settings: Settings) -> None:
     settings.workspace_dir.mkdir(parents=True)
     old = settings.workspace_dir / "repo-old"
@@ -153,6 +217,90 @@ def test_sweep_stale_ignores_unrelated_entries(tmp_path: Path, settings: Setting
 
     assert WorkspaceManager(settings).sweep_stale(max_age_seconds=3600) == []
     assert unrelated.exists()
+
+
+def test_sweep_stale_never_deletes_a_directory_it_does_not_own(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """The prefix half of the sweep's condition, which no other test reaches.
+
+    `test_sweep_stale_ignores_unrelated_entries` above uses a *file*,
+    which `is_dir()` already excludes -- so the name-prefix check is
+    never evaluated there and that test still passes with the prefix
+    check deleted. This uses a stale *directory* whose name is not
+    `repo-*`: an operator's own directory that happens to live inside the
+    workspace directory, which nothing but the prefix check can save. A
+    stale owned directory is swept in the same run as a control, so the
+    test cannot pass merely because the sweep did nothing.
+    """
+    settings.workspace_dir.mkdir(parents=True)
+    operator_dir = settings.workspace_dir / "operator-notes"
+    operator_dir.mkdir()
+    keeper = operator_dir / "keep.txt"
+    keeper.write_text("keep me\n")
+    owned = settings.workspace_dir / "repo-abandoned"
+    owned.mkdir()
+
+    stale_time = time.time() - 7200
+    os.utime(keeper, (stale_time, stale_time))
+    os.utime(operator_dir, (stale_time, stale_time))
+    os.utime(owned, (stale_time, stale_time))
+
+    removed = WorkspaceManager(settings).sweep_stale(max_age_seconds=3600)
+
+    assert removed == [owned]
+    assert operator_dir not in removed
+    assert operator_dir.exists()
+    assert keeper.read_text() == "keep me\n", "an unowned directory's contents were touched"
+    assert not owned.exists(), "the owned control directory should have been swept"
+
+
+def test_sweep_stale_rejects_a_negative_age(settings: Settings) -> None:
+    """A negative age puts the cutoff in the future and would delete everything.
+
+    Rejected with `ValueError` rather than an `AppError`: passing a
+    negative age is a caller bug, not an operating condition. It is not
+    clamped either, which would hide that bug behind a destructive
+    default.
+    """
+    settings.workspace_dir.mkdir(parents=True)
+    fresh = settings.workspace_dir / "repo-fresh"
+    fresh.mkdir()
+
+    with pytest.raises(ValueError):
+        WorkspaceManager(settings).sweep_stale(max_age_seconds=-1)
+
+    assert fresh.exists(), "a rejected sweep must not have deleted anything"
+
+
+def test_sweep_stale_with_a_zero_age_removes_every_owned_workspace(
+    settings: Settings,
+) -> None:
+    """`0` legitimately means "regardless of age", so it is not rejected.
+
+    This is the boundary between the two cases either side of it:
+    `test_sweep_stale_rejects_a_negative_age` above covers a negative age,
+    and `test_sweep_stale_removes_only_old_directories` covers a positive
+    one respecting the cutoff. A just-created directory is included here
+    because "regardless of age" has to include it -- and the unowned
+    directory still survives, since a zero age relaxes the age check
+    only, never the ownership check.
+    """
+    settings.workspace_dir.mkdir(parents=True)
+    just_created = settings.workspace_dir / "repo-just-created"
+    old = settings.workspace_dir / "repo-old"
+    unowned = settings.workspace_dir / "operator-notes"
+    for directory in (just_created, old, unowned):
+        directory.mkdir()
+    stale_time = time.time() - 7200
+    os.utime(old, (stale_time, stale_time))
+
+    removed = WorkspaceManager(settings).sweep_stale(max_age_seconds=0)
+
+    assert removed == [just_created, old]
+    assert not just_created.exists()
+    assert not old.exists()
+    assert unowned.exists()
 
 
 def test_sweep_stale_does_not_report_a_directory_it_failed_to_remove(
