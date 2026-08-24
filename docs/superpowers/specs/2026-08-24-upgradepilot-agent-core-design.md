@@ -492,7 +492,20 @@ CI: `pytest`, `ruff`, `mypy` (strict over `models/` and `services/`), `vitest`, 
 2. The knowledge corpus is authored and ingested by the project, not crawled at runtime.
 3. A single backend process serves all runs (§9.2).
 4. OpenAI is the only model provider; the `TrackedLLM` seam means swapping providers touches one module.
-5. The vendored fixture repository is pinned to a specific commit so analyzer test expectations remain stable.
+5. Analyzer unit tests run against a hand-authored miniature project
+   (`backend/tests/fixtures/sample_repo/`) built into a temp directory with
+   real git history by `build_sample_repo()`. This keeps assertions small,
+   readable, and precisely targeted at each usage pattern. A real public
+   repository is pinned by commit in Phase 12 for the demo and end-to-end
+   path.
+
+   **Amends the original assumption 5**, which specified a real public
+   repository vendored and pinned for analyzer unit tests. That vendoring
+   would make assertions large and brittle without testing anything
+   additional, so unit tests use the hand-authored fixture above instead;
+   the originally-intended real, pinned repository still exists, but is
+   deferred to Phase 12's demo and end-to-end path (recorded when Task 13
+   built the fixture, 2026-08-24).
 
 ## 13. Definition of done for Spec 1
 

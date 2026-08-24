@@ -36,6 +36,25 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `norecursedirs` REPLACES pytest's built-in default wholesale rather than
+# extending it -- setting this key without spelling out the defaults would
+# silently re-enable recursion into `.venv`, `node_modules`, etc. (verified:
+# an explicit `pytest .` from `backend/` then collects out of `.venv`, since
+# `testpaths` is ignored once a path argument is given). The first nine
+# entries are pytest's own defaults, copied verbatim; only the last entry is
+# new.
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+    "tests/fixtures/sample_repo",
+]
 asyncio_mode = "auto"
 markers = [
     "live: makes a real network call; skipped unless --live is passed",
@@ -45,6 +64,7 @@ addopts = "-q"
 [tool.ruff]
 line-length = 100
 src = ["src", "tests"]
+extend-exclude = ["tests/fixtures/sample_repo"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "TID"]

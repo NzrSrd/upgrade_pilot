@@ -1,0 +1,2 @@
+def broken(
+    this file is intentionally not valid Python

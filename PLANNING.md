@@ -43,19 +43,21 @@ Nothing here is assumed. Every item is a probe whose result gets written into AD
 
 **Exit:** all probes pass or the ADR is amended to record what actually happened. No application code before this.
 
-## Phase 1 — Domain models and repository access
+## Phase 1 — Domain models and repository access — COMPLETE
 
-- [ ] Domain models per spec §6.3, with the honesty invariants (`BreakingChange.source` required, `RiskFactor.evidence` min length 1)
-- [ ] `EvidenceRef` discriminated union
-- [ ] `RepoRef` → `Workspace` abstraction
-- [ ] Shallow-clone resolver (depth 100, single branch)
-- [ ] Local-path resolver
-- [ ] Path and URL guards: scheme allowlist, `ALLOWED_LOCAL_ROOTS`, symlink escape, size caps
-- [ ] Workspace cleanup, including startup sweep of stale workspaces
-- [ ] Vendored fixture repository pinned to a commit
-- [ ] Tests: each guard, both resolvers, cleanup
+- [x] Domain models per spec §6.3, with the honesty invariants (`BreakingChange.source` required, `RiskFactor.evidence` min length 1)
+- [x] `EvidenceRef` discriminated union
+- [x] `RepoRef` → `Workspace` abstraction
+- [x] Shallow-clone resolver (depth 100, single branch)
+- [x] Local-path resolver
+- [x] Path and URL guards: scheme allowlist, `ALLOWED_LOCAL_ROOTS`, symlink escape, size caps
+- [x] Workspace cleanup, including startup sweep of stale workspaces
+- [x] Hand-authored fixture repository with real git history (`backend/tests/fixtures/sample_repo/`, built by `build_sample_repo()`) — supersedes the "vendored, pinned to a commit" wording above; see spec §12 assumption 5 for the recorded deviation. A real public repository, pinned by commit, is still planned but deferred to Phase 12 for the demo and E2E path.
+- [x] Tests: each guard, both resolvers, cleanup, and the fixture repository's own shape (`test_fixture_repo.py`)
 
-**Exit:** a public URL and a local path both produce a `Workspace` the analyzer can read, and every guard has a failing-case test.
+**Exit:** a public URL and a local path both produce a `Workspace` the analyzer can read, and every guard has a failing-case test. Met — see `backend/tests/unit/{test_repo_guards,test_clone,test_workspace,test_workspace_manager,test_fixture_repo}.py`.
+
+**Note on scope:** several items originally listed under Phase 1's wording elsewhere in this doc's history ("detect repository languages", "detect dependency manifests", "identify the requested dependency", "read installed version", "identify direct imports", "calculate change indicators") are Phase 2 work in this plan's actual task structure — they consume the `Workspace` and fixture built here but are not domain-model or repository-access work themselves. Phase 1, as implemented, is scoped to domain models and repository access only; Phase 2 covers manifest/version/usage detection.
 
 ## Phase 2 — Repository analysis
 
