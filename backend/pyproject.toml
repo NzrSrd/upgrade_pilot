@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "upgradepilot"
+version = "0.1.0"
+description = "Dependency upgrade risk and migration planning"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    "langgraph==1.2.11",
+    "langgraph-checkpoint-sqlite==3.1.1",
+    "langchain-core==1.6.0",
+    "langchain-openai==1.6.0",
+    "openai==3.3.1",
+    "chromadb==1.5.9",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
+    "tiktoken==0.14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "httpx==0.28.1",
+    "ruff==0.16.4",
+    "mypy==2.3.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: makes a real network call; skipped unless --live is passed",
+]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/upgradepilot/models", "src/upgradepilot/services"]
