@@ -1,3 +1,4 @@
+import contextlib
 import unicodedata
 from pathlib import Path
 
@@ -228,6 +229,57 @@ def test_redact_strips_userinfo_but_leaves_the_rest_untouched(raw: str, expected
     assert _redact(raw) == expected
 
 
+# --- URL validation: unicode whitespace is rejected, not silently stripped (fix round 3) --
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("NEL_U+0085_trailing", "https://github.com/acme/repo\x85"),
+        ("NBSP_U+00A0_both_ends", "\xa0https://github.com/acme/repo\xa0"),
+        ("LINE_SEPARATOR_U+2028", "https://github.com/acme/repo\u2028"),
+        ("PARAGRAPH_SEPARATOR_U+2029", "https://github.com/acme/repo\u2029"),
+        ("OGHAM_SPACE_MARK_U+1680_leading", "\u1680https://github.com/acme/repo"),
+        ("EN_QUAD_U+2000_leading", "\u2000https://github.com/acme/repo"),
+        ("ZERO_WIDTH_SPACE_U+200B_leading", "\u200bhttps://github.com/acme/repo"),
+    ],
+)
+def test_rejects_non_ascii_whitespace_instead_of_silently_stripping_it(name: str, url: str) -> None:
+    """`str.strip()` with no argument uses `str.isspace()`, which silently
+    removes these 7 codepoints even though none of them is in
+    `_FORBIDDEN_URL_CHARS` — the exact "validate one string, return a
+    different one" anti-pattern Finding 1 exists to eliminate, reached via
+    `.strip()` instead of via `urlsplit()`. Reject rather than normalise."""
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url(url, DEFAULT_SCHEMES)
+    assert excinfo.value.code is ErrorCode.INVALID_REPO_URL
+
+
+def test_disallowed_category_detail_does_not_contain_the_raw_input() -> None:
+    url = "\xa0https://github.com/acme/repo\xa0"
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url(url, DEFAULT_SCHEMES)
+    assert url not in (excinfo.value.detail or "")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/acme/repo",
+        "  https://github.com/acme/repo  ",
+        "https://github.com/acme/repo/path%20with%20encoded%20space",
+        "https://github.com/acme/\u0440\u0435\u043f\u043e",  # Cyrillic "repo"
+    ],
+)
+def test_unicode_category_check_accepts_ordinary_and_legitimate_urls(url: str) -> None:
+    """The category check must not reject: an ordinary ASCII-space-padded
+    URL (space is category Zs too, so it must be stripped from the edges
+    *before* the check runs), a percent-encoded space (no raw whitespace
+    character at all), or a legitimate non-ASCII path segment (Cyrillic
+    letters are category Ll/Lu, not in the disallowed set)."""
+    assert validate_clone_url(url, DEFAULT_SCHEMES)
+
+
 # --- Local path resolution ------------------------------------------------
 
 
@@ -341,6 +393,129 @@ def test_rejects_a_path_outside_every_allowed_root_still_denied_by_identity_chec
     outside.mkdir()
     with pytest.raises(LocalPathForbiddenError):
         resolve_local_path(str(outside), [allowed])
+
+
+# --- Local path resolution: only UpgradePilotError may escape (fix round 3, finding 1) --
+
+
+def test_a_nul_byte_in_the_path_raises_local_path_forbidden_not_a_raw_valueerror(
+    tmp_path: Path,
+) -> None:
+    """Path.resolve(strict=True) calls os.path.realpath, which raises a bare
+    ValueError ('lstat: embedded null character in path') for an embedded
+    NUL — not an OSError or RuntimeError, so the previous except clause let
+    it escape as an unhandled exception instead of LocalPathForbiddenError."""
+    with pytest.raises(LocalPathForbiddenError):
+        resolve_local_path("a\x00b", [tmp_path])
+
+
+def test_home_directory_lookup_failure_raises_local_path_forbidden(tmp_path: Path) -> None:
+    """Path.expanduser() raises a bare RuntimeError for '~nosuchuser/...'.
+    That call happened before the try/except in the original code, so it
+    could also escape uncaught; it must now be covered too."""
+    with pytest.raises(LocalPathForbiddenError):
+        resolve_local_path("~nonexistentuser99999xyz/x", [tmp_path])
+
+
+@pytest.mark.parametrize(
+    "hostile_path",
+    [
+        "a\x00b",
+        "\x00",
+        "~nonexistentuser99999xyz/x",
+        "~nonexistentuser99999xyz",
+        "",
+        "   ",
+        "\ud800",  # lone unpaired surrogate
+        "😀" * 50,
+        "/" * 5000,
+        "a" * 100_000,
+        "relative/sub/path",
+        ".",
+        "..",
+    ],
+)
+def test_every_hostile_path_input_raises_only_upgradepilot_error(
+    hostile_path: str, tmp_path: Path
+) -> None:
+    """The contract for this security boundary is that no input produces an
+    exception other than UpgradePilotError. This is the test that makes
+    that contract real rather than assumed: parametrized over inputs no one
+    had tried yet (NUL bytes, unresolvable home-directory lookups, lone
+    surrogates, pathological lengths), asserting each one either resolves
+    or raises UpgradePilotError — nothing else is an acceptable outcome."""
+    with contextlib.suppress(UpgradePilotError):
+        resolve_local_path(hostile_path, [tmp_path])
+
+
+@pytest.mark.parametrize(
+    "hostile_roots",
+    [
+        [],
+        [Path("")],
+        [Path(".")],
+        [Path("relative/sub")],
+        [Path("~nonexistentuser99999xyz")],
+    ],
+)
+def test_every_hostile_root_configuration_raises_only_upgradepilot_error(
+    hostile_roots: list[Path], tmp_path: Path
+) -> None:
+    with contextlib.suppress(UpgradePilotError):
+        resolve_local_path(str(tmp_path), hostile_roots)
+
+
+# --- Local path resolution: a relative/empty allowlist root is rejected (fix round 3) --
+
+
+def test_rejects_an_empty_path_as_an_allowed_root(tmp_path: Path) -> None:
+    """Path("") normalises to Path("."), which would otherwise resolve
+    against the server process's current working directory in _is_within
+    — silently granting the whole CWD tree. This is exactly what a naive
+    `os.environ.get(...).split(",")` produces for an unset/blank setting:
+    [''], not []."""
+    with pytest.raises(LocalPathForbiddenError):
+        resolve_local_path(str(tmp_path), [Path("")])
+
+
+def test_rejects_a_dot_path_as_an_allowed_root(tmp_path: Path) -> None:
+    with pytest.raises(LocalPathForbiddenError):
+        resolve_local_path(str(tmp_path), [Path(".")])
+
+
+def test_rejects_a_relative_path_as_an_allowed_root(tmp_path: Path) -> None:
+    with pytest.raises(LocalPathForbiddenError):
+        resolve_local_path(str(tmp_path), [Path("relative/sub")])
+
+
+def test_accepts_a_valid_absolute_root_alongside_no_other_bad_entries(tmp_path: Path) -> None:
+    """The fix must not reject a well-formed allowlist — only bad entries."""
+    project = tmp_path / "demo"
+    project.mkdir()
+    assert resolve_local_path(str(project), [tmp_path]) == project.resolve()
+
+
+def test_rejects_when_no_roots_are_configured_still_denies_everything(tmp_path: Path) -> None:
+    """Regression guard: the literal empty list is the single most
+    important line in the file, and this fix must not weaken it while
+    fixing the near-empty (Path("")/Path(".")) cases above."""
+    with pytest.raises(LocalPathForbiddenError):
+        resolve_local_path(str(tmp_path), [])
+
+
+def test_a_tilde_prefixed_root_is_still_accepted_not_flagged_as_misconfigured() -> None:
+    """A relative-looking root must be rejected, but ~-prefixed roots are a
+    legitimate, intentionally-supported configuration shape (_is_within
+    already calls root.expanduser()) and must not be caught by the same
+    guard as a bare relative path."""
+    home = Path.home()
+    project = home / "upgradepilot_test_tilde_root_probe"
+    project.mkdir(exist_ok=True)
+    try:
+        result = resolve_local_path(str(project), [Path("~/upgradepilot_test_tilde_root_probe")])
+        assert result.samefile(project)
+    finally:
+        project.rmdir()
 
 
 # --- Error contract -------------------------------------------------------
