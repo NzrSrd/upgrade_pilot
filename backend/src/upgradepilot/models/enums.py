@@ -58,3 +58,11 @@ class DependencyRole(StrEnum):
 class VersionConfidence(StrEnum):
     EXACT = "exact"
     RANGE = "range"
+
+
+class ManifestKind(StrEnum):
+    PYPROJECT = "pyproject"
+    REQUIREMENTS = "requirements"
+    POETRY_LOCK = "poetry_lock"
+    UV_LOCK = "uv_lock"
+    PIPFILE_LOCK = "pipfile_lock"
