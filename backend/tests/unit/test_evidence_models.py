@@ -230,3 +230,51 @@ def test_snippet_keeps_its_indentation() -> None:
     evidence = RepoEvidence(file="src/models.py", line=12, snippet="    @validator('email')")
 
     assert evidence.snippet == "    @validator('email')"
+
+
+@pytest.mark.parametrize("weight", [-0.1, 1.4], ids=["below-zero", "above-one"])
+def test_risk_factor_weight_is_bounded(weight: float) -> None:
+    """`weight` is this factor's share of the composite risk score. Outside
+    [0.0, 1.0] the score it feeds is not a share of anything, and the number
+    reaches the report."""
+    with pytest.raises(ValidationError) as exc:
+        RiskFactor(
+            id="rf-1",
+            name="breaking_change_exposure",
+            category=RiskCategory.BREAKING_CHANGE,
+            level=RiskLevel.HIGH,
+            weight=weight,
+            detail="collides with a documented change",
+            evidence=[a_repo_evidence()],
+        )
+    assert any(e["loc"] == ("weight",) for e in exc.value.errors())
+
+
+@pytest.mark.parametrize("weight", [0.0, 1.0], ids=["zero", "one"])
+def test_risk_factor_weight_accepts_both_endpoints(weight: float) -> None:
+    """ge/le, not gt/lt: a factor can carry no weight or all of it."""
+    factor = RiskFactor(
+        id="rf-1",
+        name="breaking_change_exposure",
+        category=RiskCategory.BREAKING_CHANGE,
+        level=RiskLevel.HIGH,
+        weight=weight,
+        detail="collides with a documented change",
+        evidence=[a_repo_evidence()],
+    )
+    assert factor.weight == weight
+
+
+@pytest.mark.parametrize("relevance", [-0.1, 1.4], ids=["below-zero", "above-one"])
+def test_doc_evidence_relevance_is_bounded(relevance: float) -> None:
+    """The same bound as SourceRef.relevance, on the type the retrieval path
+    actually cites. It was the covered one that had the test."""
+    with pytest.raises(ValidationError) as exc:
+        DocEvidence(source_id="s", chunk_id="c", relevance=relevance)
+    assert any(e["loc"] == ("relevance",) for e in exc.value.errors())
+
+
+def test_doc_evidence_relevance_may_be_absent() -> None:
+    """None is a legitimate "not scored", distinct from a score of 0.0."""
+    assert DocEvidence(source_id="s", chunk_id="c").relevance is None
+    assert DocEvidence(source_id="s", chunk_id="c", relevance=0.0).relevance == 0.0
