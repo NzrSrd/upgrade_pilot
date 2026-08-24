@@ -8,7 +8,9 @@ exception becomes an AppError in state plus a trace event.
 from enum import StrEnum
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from upgradepilot.models.base import HonestModel
 
 
 class ErrorCode(StrEnum):
@@ -27,10 +29,8 @@ class ErrorCode(StrEnum):
     INTERNAL = "internal"
 
 
-class AppError(BaseModel):
+class AppError(HonestModel):
     """An error recorded in graph state and surfaced to the client."""
-
-    model_config = ConfigDict(frozen=True)
 
     code: ErrorCode
     message: str = Field(min_length=1)

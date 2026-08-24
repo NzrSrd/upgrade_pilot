@@ -3,8 +3,9 @@
 from datetime import datetime
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, model_validator
 
+from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import (
     Confidence,
     DependencyRole,
@@ -26,17 +27,13 @@ ShaStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=7)]
 whitespace is considered; stripping first closes that gap."""
 
 
-class Manifest(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class Manifest(HonestModel):
     path: NonBlankStr
     kind: ManifestKind
     declared_specifier: str | None = None
 
 
-class DetectedVersion(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class DetectedVersion(HonestModel):
     value: NonBlankStr
     specifier: str | None
     source_manifest: Manifest
@@ -44,9 +41,7 @@ class DetectedVersion(BaseModel):
     role: DependencyRole
 
 
-class UsageSite(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class UsageSite(HonestModel):
     file: NonBlankStr
     line: int = Field(ge=1)
     column: int = Field(ge=0)
@@ -60,25 +55,19 @@ class UsageSite(BaseModel):
     snippet: str | None = None
 
 
-class SkippedFile(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SkippedFile(HonestModel):
     path: NonBlankStr
     reason: NonBlankStr
 
 
-class SymbolStat(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SymbolStat(HonestModel):
     symbol: NonBlankStr
     count: int = Field(ge=1)
     files: tuple[NonBlankStr, ...] = Field(min_length=1)
     confidence: Confidence
 
 
-class SymbolInventory(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class SymbolInventory(HonestModel):
     entries: tuple[SymbolStat, ...] = ()
 
     @property
@@ -121,9 +110,7 @@ class SymbolInventory(BaseModel):
         )
 
 
-class AffectedFile(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class AffectedFile(HonestModel):
     path: NonBlankStr
     usage_sites: tuple[UsageSite, ...] = Field(min_length=1)
     symbols: tuple[str, ...] = ()
@@ -151,17 +138,13 @@ class AffectedFile(BaseModel):
         )
 
 
-class CommitRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class CommitRecord(HonestModel):
     sha: ShaStr
     timestamp: datetime
     files: tuple[str, ...] = ()
 
 
-class RepoAnalysis(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class RepoAnalysis(HonestModel):
     commit_sha: str | None
     languages: dict[str, float] = Field(default_factory=dict)
     manifests: tuple[Manifest, ...] = ()

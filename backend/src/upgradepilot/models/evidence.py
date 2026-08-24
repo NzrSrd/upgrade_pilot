@@ -5,17 +5,26 @@ a breaking change without a source, or a risk factor without evidence,
 cannot be constructed at all.
 
 `RiskFactor.evidence` and `BreakingChange.affected_symbols` are tuples, not
-lists. `ConfigDict(frozen=True)` blocks field *assignment* but does not stop
-mutation of a contained `list` (e.g. `.clear()`), which would silently empty
-a "required" collection after construction. A tuple has no such mutating
-methods, so once these models are built the invariant holds for their
-lifetime, not just at construction time.
+lists. `frozen=True` (set once on `HonestModel`) blocks field *assignment*
+but does not stop mutation of a contained `list` (e.g. `.clear()`), which
+would silently empty a "required" collection after construction. A tuple has
+no such mutating methods.
+
+Exactly what that buys, stated honestly — an earlier version of this
+docstring claimed the invariant "holds for their lifetime", and it did not:
+`model_copy(update=...)` skipped validation entirely and put an empty tuple
+back. That hole is closed on `HonestModel`, so the guarantee now is that
+neither ordinary construction, nor mutation of a built model, nor
+`model_copy(update=...)` can produce a model that violates its own
+constraints. `model_construct` is a deliberate, documented exception — see
+`models/base.py` for why it is left open.
 """
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import Field, StringConstraints
 
+from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import RiskCategory, RiskLevel, Severity, SourceType
 
 NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -33,10 +42,8 @@ the source file's own indentation and stripping it would corrupt the quote.
 """
 
 
-class SourceRef(BaseModel):
+class SourceRef(HonestModel):
     """A resolvable pointer into the knowledge base."""
-
-    model_config = ConfigDict(frozen=True)
 
     source_id: NonBlankStr
     title: NonBlankStr
@@ -46,10 +53,8 @@ class SourceRef(BaseModel):
     relevance: float = Field(ge=0.0, le=1.0)
 
 
-class RepoEvidence(BaseModel):
+class RepoEvidence(HonestModel):
     """A specific line of the analyzed repository."""
-
-    model_config = ConfigDict(frozen=True)
 
     kind: Literal["repo"] = "repo"
     file: NonBlankStr
@@ -57,10 +62,8 @@ class RepoEvidence(BaseModel):
     snippet: str | None = None
 
 
-class DocEvidence(BaseModel):
+class DocEvidence(HonestModel):
     """A specific chunk of a corpus document."""
-
-    model_config = ConfigDict(frozen=True)
 
     kind: Literal["doc"] = "doc"
     source_id: NonBlankStr
@@ -71,10 +74,8 @@ class DocEvidence(BaseModel):
 EvidenceRef = Annotated[RepoEvidence | DocEvidence, Field(discriminator="kind")]
 
 
-class BreakingChange(BaseModel):
+class BreakingChange(HonestModel):
     """A documented change. `source` is required: no citation, no change."""
-
-    model_config = ConfigDict(frozen=True)
 
     id: NonBlankStr
     title: NonBlankStr
@@ -86,10 +87,8 @@ class BreakingChange(BaseModel):
     source: SourceRef
 
 
-class RiskFactor(BaseModel):
+class RiskFactor(HonestModel):
     """One dimension of risk. `evidence` must be non-empty."""
-
-    model_config = ConfigDict(frozen=True)
 
     id: NonBlankStr
     name: NonBlankStr

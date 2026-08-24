@@ -3,22 +3,19 @@
 from datetime import date
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
 
+from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import RiskLevel
 from upgradepilot.models.evidence import NonBlankStr
 
 
-class RemoteRepoRef(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class RemoteRepoRef(HonestModel):
     kind: Literal["remote"] = "remote"
     url: NonBlankStr
 
 
-class LocalRepoRef(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class LocalRepoRef(HonestModel):
     kind: Literal["local"] = "local"
     path: NonBlankStr
 
@@ -26,9 +23,7 @@ class LocalRepoRef(BaseModel):
 RepoRef = Annotated[RemoteRepoRef | LocalRepoRef, Field(discriminator="kind")]
 
 
-class DependencySpec(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
+class DependencySpec(HonestModel):
     name: NonBlankStr
     current_version: NonBlankStr
     target_version: NonBlankStr
@@ -40,11 +35,9 @@ class DependencySpec(BaseModel):
         return self
 
 
-class UserConstraints(BaseModel):
+class UserConstraints(HonestModel):
     """Migration constraints. Defaults are permissive so an omitted
     constraint never silently tightens the recommendation."""
-
-    model_config = ConfigDict(frozen=True)
 
     zero_downtime: bool = False
     minimize_effort: bool = False
