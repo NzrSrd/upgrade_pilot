@@ -1,9 +1,11 @@
 from collections.abc import Mapping
 from datetime import UTC, date, datetime
+from typing import Annotated, get_args, get_origin
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import (
     Confidence,
     DependencyRole,
@@ -136,24 +138,121 @@ def test_empty_inventory_is_valid() -> None:
     assert inventory.high_confidence_symbols() == ()
 
 
+def _mapping_types_in(annotation: object) -> list[object]:
+    """Every mapping type reachable inside a possibly-parameterized annotation.
+
+    `isinstance(annotation, type)` is NOT enough, and getting that wrong is
+    what made the previous version of the guard below undetectable-by-design:
+    `dict[str, SymbolStat]` is a `types.GenericAlias`, so
+    `isinstance(dict[str, SymbolStat], type)` is `False` and a predicate built
+    on it never fires on the exact shape it exists to forbid.
+
+    `get_origin` sees through the parameterization (`dict[str, X]` -> `dict`)
+    and returns `None` for a bare `dict`, so both are covered. The recursion
+    over `get_args` covers a mapping nested inside a union, an `Annotated`, or
+    a container -- `dict[str, X] | None` and `tuple[dict[str, X], ...]` are
+    both still stored mappings.
+    """
+    found: list[object] = []
+    origin = get_origin(annotation)
+    base = annotation if origin is None else origin
+    if isinstance(base, type) and issubclass(base, Mapping):
+        found.append(annotation)
+    for arg in get_args(annotation):
+        found.extend(_mapping_types_in(arg))
+    return found
+
+
+def _stored_mappings(model: type[BaseModel]) -> dict[str, object]:
+    """Fields of `model` whose annotation can hold a mapping."""
+    return {
+        name: field.annotation
+        for name, field in model.model_fields.items()
+        if _mapping_types_in(field.annotation)
+    }
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(dict[str, SymbolStat], id="parameterized-dict"),
+        pytest.param(dict, id="bare-dict"),
+        pytest.param(Mapping[str, SymbolStat], id="abc-mapping"),
+        pytest.param(dict[str, SymbolStat] | None, id="optional-dict"),
+        pytest.param(tuple[dict[str, SymbolStat], ...], id="dict-in-a-tuple"),
+        pytest.param(Annotated[dict[str, SymbolStat], Field()], id="annotated-dict"),
+    ],
+)
+def test_the_mapping_detector_can_actually_see_a_stored_mapping(annotation: object) -> None:
+    """Positive control for the guard below, and the whole lesson of this fix.
+
+    A test that asserts an absence is worthless unless it can be shown to
+    detect a presence. The previous version could not: it used
+    `isinstance(field.annotation, type)`, which is `False` for every
+    parameterized generic, so re-adding `stats_by_symbol: dict[str,
+    SymbolStat]` -- precisely the drift-prone shape it forbade -- left it
+    green. Each shape here must be seen, or the negative assertion below is
+    vacuous again.
+    """
+    assert _mapping_types_in(annotation), f"detector is blind to {annotation!r}"
+
+
+@pytest.mark.parametrize(
+    "annotation",
+    [
+        pytest.param(tuple[SymbolStat, ...], id="tuple-of-models"),
+        pytest.param(str, id="str"),
+        pytest.param(int | None, id="optional-int"),
+        pytest.param(tuple[str, ...], id="tuple-of-str"),
+    ],
+)
+def test_the_mapping_detector_does_not_cry_wolf(annotation: object) -> None:
+    """The other half of a trustworthy detector: it must not flag the shapes
+    this package actually uses, or the guard below would be unsatisfiable and
+    would be deleted rather than fixed."""
+    assert _mapping_types_in(annotation) == []
+
+
 def test_symbol_inventory_has_no_stored_lookup_to_drift_from() -> None:
     """The old dict shape allowed {"foo": SymbolStat(symbol="bar")}.
 
-    The previous version of this test asserted
-    `all(key == value.symbol for ... in by_symbol.items())`, which is a
-    tautology: `by_symbol` builds those keys *from* `.symbol`, so it cannot
-    fail whatever the model looks like. It read as assurance and provided
-    none. What is actually claimable is structural -- that no stored field
-    exists for the lookup to disagree with -- so that is what is asserted,
-    and it goes red the moment someone re-adds a mapping field.
+    Two earlier versions of this test could not fail. The first asserted
+    `all(key == value.symbol for ... in by_symbol.items())` -- a tautology,
+    since `by_symbol` builds those keys *from* `.symbol`. The second asserted
+    the right thing with a predicate blind to parameterized generics. What is
+    claimable is structural -- no stored field exists for the lookup to
+    disagree with -- and the detector above is now proven able to see one.
     """
     assert "by_symbol" not in SymbolInventory.model_fields
-    mappings = {
-        name: field.annotation
-        for name, field in SymbolInventory.model_fields.items()
-        if isinstance(field.annotation, type) and issubclass(field.annotation, Mapping)
+    assert _stored_mappings(SymbolInventory) == {}
+
+
+def test_reintroducing_the_stored_lookup_is_caught() -> None:
+    """End-to-end positive control, using the exact field the reviewer added
+    to prove the old guard was blind. This is a real pydantic model, not a
+    bare annotation, so it exercises `model_fields` the way the guard does --
+    the layer where `field.annotation` could have been normalised into
+    something the detector misses."""
+
+    class DriftyInventory(HonestModel):
+        entries: tuple[SymbolStat, ...] = ()
+        stats_by_symbol: dict[str, SymbolStat] = {}
+
+    assert _stored_mappings(DriftyInventory) == {
+        "stats_by_symbol": dict[str, SymbolStat],
     }
-    assert mappings == {}, f"a stored mapping can drift from .symbol: {mappings}"
+
+
+def test_the_guard_covers_every_field_not_just_the_first() -> None:
+    """A loop bug that stopped at the first field would leave a mapping added
+    later invisible."""
+
+    class ManyFields(HonestModel):
+        a: str = "x"
+        b: tuple[str, ...] = ()
+        c: dict[str, float] = {}
+
+    assert set(_stored_mappings(ManyFields)) == {"c"}
 
 
 def test_symbol_inventory_rejects_duplicate_symbols() -> None:

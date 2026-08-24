@@ -366,3 +366,44 @@ def test_an_unmatchable_scheme_would_otherwise_deny_every_clone(tmp_path: Path) 
         validate_clone_url("https://github.com/acme/payment-service", frozenset({"https"}))
         == "https://github.com/acme/payment-service"
     )
+
+
+# --- StorePath and AllowedRoot must not drift apart -----------------------
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        pytest.param("/tmp/a/../etc", id="dotdot-in-the-middle"),
+        pytest.param("/tmp/a/..", id="dotdot-at-the-end"),
+        pytest.param("/tmp/a/ /b", id="blank-component"),
+    ],
+)
+def test_both_path_setting_classes_share_their_shape_rules(bad: str) -> None:
+    """`allowed_local_roots` accepted `/tmp/a/../etc` while `workspace_dir`
+    rejected it: one rule applied to the instance that prompted it and not to
+    its sibling, which is the mistake this branch keeps repeating.
+
+    Both are "a filesystem location an operator configured", so both get the
+    same shape rules, and this test is what stops them drifting again. Not
+    exploitable before the fix -- `guards.py` resolves each root before
+    comparing -- but a configured policy that reads as one directory and means
+    another is the same defect as an allowlist entry that silently matches
+    nothing.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, workspace_dir=Path(bad))
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, allowed_local_roots=(Path(bad),))
+
+
+def test_allowed_local_roots_keeps_its_own_absoluteness_rule(tmp_path: Path) -> None:
+    """AllowedRoot enforces a strict superset of StorePath, not the same set:
+    a relative path is fine for a store location and never fine for a security
+    allowlist entry. The shared rules must not have flattened that away."""
+    assert Settings(_env_file=None, chroma_dir=Path("var/chroma")).chroma_dir == Path("var/chroma")
+    with pytest.raises(ValidationError, match="absolute"):
+        Settings(_env_file=None, allowed_local_roots=(Path("var/roots"),))
+    assert Settings(_env_file=None, allowed_local_roots=(tmp_path,)).allowed_local_roots == (
+        tmp_path,
+    )

@@ -72,19 +72,36 @@ def _reject_cwd_relative_path(value: Path) -> Path:
 
 
 def _require_absolute_root(value: Path) -> Path:
-    """Reject a non-absolute entry in the local-repository allowlist.
+    """Reject a local-repository allowlist entry that is not an absolute,
+    plainly-spelled path.
 
-    `services/repo/guards.py` already refuses these at use time, and it must
-    keep doing so: it is the security boundary, and it is reachable by
-    programmatic construction that never passes through this file. This check
-    is not a replacement for it but an earlier failure -- a misconfigured
-    security allowlist should stop the process at startup rather than fail
-    the first request that happens to exercise it. The setting now governs
-    `file://` clones as well as local paths, so both doors depend on it.
+    `services/repo/guards.py` already refuses non-absolute roots at use time,
+    and it must keep doing so: it is the security boundary, and it is
+    reachable by programmatic construction that never passes through this
+    file. This check is not a replacement for it but an earlier failure -- a
+    misconfigured security allowlist should stop the process at startup
+    rather than fail the first request that happens to exercise it. The
+    setting now governs `file://` clones as well as local paths, so both
+    doors depend on it.
+
+    Absoluteness is checked first because it names the actionable fix for the
+    common mistake. Then the *same* shape rules `StorePath` applies, by
+    calling the one function rather than restating them: an allowlist root
+    and a store location are both "a filesystem location an operator
+    configured", so a rule that holds for one holds for the other.
+
+    `..` is the case that was actually wrong. `allowed_local_roots` accepted
+    `/tmp/a/../etc` while `workspace_dir` rejected it -- not exploitable,
+    because `guards.py` resolves each root before comparing, but a configured
+    policy that reads as one directory and means another is the same defect
+    as an allowlist entry that silently matches nothing, and this branch has
+    repeatedly shipped a rule applied to the instance that prompted it and
+    not to its sibling. `test_both_path_setting_classes_share_their_shape_rules`
+    is what stops the two drifting apart again.
     """
     if not value.is_absolute():
         raise ValueError(f"must be an absolute path (got {str(value)!r})")
-    return value
+    return _reject_cwd_relative_path(value)
 
 
 def _reject_blank_element(value: str) -> str:
@@ -113,7 +130,7 @@ AllowedRoot = Annotated[
 """An entry in the local-repository allowlist. Absolute, or rejected."""
 
 _URL_SCHEME = re.compile(r"[a-z][a-z0-9+.\-]*\Z")
-"""RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, already
+r"""RFC 3986 `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, already
 lowercased. `\Z` and not `$`, so a trailing newline is not quietly allowed."""
 
 
@@ -138,7 +155,7 @@ def _require_matchable_scheme(value: str) -> str:
     The lowercase case is checked first so it gets the message that names its
     own fix, rather than falling into the general "not a valid scheme" arm.
     The shape check behind it closes the rest of the same class -- `https://`,
-    `ht tps`, `\u0127ttps` were each accepted here and then silently matched
+    `ht tps`, `ħttps` were each accepted here and then silently matched
     nothing, exactly as `HTTPS` did. No legitimate scheme is affected:
     `git+ssh`, `svn+ssh`, `view-source` and `h2c` are all valid under RFC
     3986 and all pass.

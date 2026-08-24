@@ -8,6 +8,8 @@ after this file was written.
 import importlib
 import inspect
 import pkgutil
+import warnings
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -192,3 +194,33 @@ def test_severity_and_risk_level_are_distinct_enums() -> None:
     """Guards the parametrised sweep above against a future refactor that
     collapses the enums and makes `Severity`-typed fields accept a level."""
     assert Severity.HIGH is not RiskLevel.HIGH
+
+
+def test_every_source_file_compiles_without_a_syntax_warning() -> None:
+    """No invalid escape sequence anywhere in the package.
+
+    `config.py` shipped a non-raw docstring containing `\\Z`, which is an
+    invalid escape sequence. It was silent in normal runs only because cached
+    bytecode skips recompilation -- so nothing in the suite, the linter or the
+    type checker saw it, and it surfaced only when a file was compiled fresh.
+    CPython has announced this becomes a hard `SyntaxError`, which with a 3.14
+    floor makes it a landmine rather than a nit.
+
+    Compiles from source every time, with `SyntaxWarning` escalated, so the
+    bytecode cache cannot hide a regression. Whole package rather than the one
+    file that offended: the point is to stop the class coming back.
+    """
+    package_root = Path(upgradepilot.models.__file__).parent.parent
+    sources = sorted(package_root.rglob("*.py"))
+    assert len(sources) >= 15, f"only found {len(sources)} source files; the walk is wrong"
+
+    offenders: list[str] = []
+    for source in sources:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SyntaxWarning)
+            try:
+                compile(source.read_text(), str(source), "exec")
+            except (SyntaxWarning, SyntaxError) as exc:
+                offenders.append(f"{source.relative_to(package_root)}: {exc}")
+
+    assert offenders == [], "\n".join(offenders)
