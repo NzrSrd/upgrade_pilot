@@ -230,7 +230,6 @@ def test_every_source_file_compiles_without_a_syntax_warning() -> None:
     assert offenders == [], "\n".join(offenders)
 
 
-@pytest.mark.xfail(reason="no service models until Task 2", strict=True)
 def test_every_service_model_is_an_honest_model() -> None:
     """This phase defines typed records inside `services/analysis/`
     (`Declaration`, `AliasMap`, `ModelIndex`, `ChurnIndex`, ...), which the
@@ -238,10 +237,9 @@ def test_every_service_model_is_an_honest_model() -> None:
     this test they could be plain `BaseModel`s with none of the honesty
     invariants and nothing would notice.
 
-    `xfail(strict=True)`: until Task 2 lands there are no models under
-    `services` at all, so the non-vacuity guard below fails -- correctly.
-    `strict=True` turns the marker itself into a failure the moment a service
-    model exists, so Task 2 removing it cannot be forgotten.
+    Task 2 landed the first two such models (`Declaration`, `ManifestScan`
+    in `services/analysis/manifests.py`), which is what makes the
+    non-vacuity guard below pass rather than vacuously succeed.
     """
     found = _walk_models("upgradepilot.services")
     assert found, "the walk found no models under services -- it is not walking anything"

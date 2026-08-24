@@ -1,0 +1,5 @@
+# comment line
+pydantic==1.10.13
+requests==2.31.0
+-r other-requirements.txt
+--index-url https://example.invalid/simple
