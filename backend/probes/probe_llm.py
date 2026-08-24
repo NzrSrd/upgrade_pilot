@@ -1,7 +1,13 @@
 """Phase 0 probe: which usage surface the pinned langchain-core populates.
 
-Run: backend/.venv/bin/python probes/probe_llm.py
+Run from the backend/ directory: .venv/bin/python probes/probe_llm.py
 Requires a real OPENAI_API_KEY in backend/.env. Costs a fraction of a cent.
+
+Rule 18 exception: this constructs ChatOpenAI directly. That rule binds
+application code, where TrackedLLM is the only permitted construction site so
+token usage cannot be missed. This is Phase 0 verification code whose entire
+purpose is to observe the raw usage surface *before* TrackedLLM exists to wrap
+it. Nothing under src/ may copy this pattern.
 """
 
 from langchain_openai import ChatOpenAI

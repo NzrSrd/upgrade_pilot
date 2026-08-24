@@ -24,6 +24,9 @@ def model() -> ChatOpenAI:
     settings = get_settings()
     if not settings.openai_configured:
         pytest.skip("OPENAI_API_KEY not configured")
+    # Rule 18 exception, deliberate and scoped: TrackedLLM is the only place
+    # application code may construct a chat model. This test exists to
+    # establish what TrackedLLM's extractor must read, so it has to bypass it.
     return ChatOpenAI(model=settings.chat_model, api_key=settings.openai_api_key, temperature=0)
 
 
