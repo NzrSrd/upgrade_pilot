@@ -63,6 +63,61 @@ The URL half needs that second file to be cited honestly. Every test in `test_cl
 
 ## Phase 2 — Repository analysis
 
+**Carried in from Phase 1.** These were found during Phase 1's review and
+deliberately deferred, because the analyzer that populates these models does not
+exist yet and the right constraint only becomes visible once it does. Deferred is
+not forgotten — each has a stated reason:
+
+- [ ] `SymbolInventory`/`AffectedFile` constraints that need a real consumer:
+      PEP 503 normalisation of `DependencySpec.name` (it is an exact-match corpus
+      key, so normalisation changes retrieval), and `commit_count=0` currently
+      conflating "unknown" with "no churn".
+- [ ] `RiskCategory` member names have drifted from spec §8.1, and three of them
+      overstate their scope. Rename with the analyzer, so the names describe what
+      is actually computed.
+- [ ] Citation paths accept absolute and `..` forms; `EvidenceRef` should require
+      a repo-relative path once the analyzer is the only producer.
+- [ ] `RepoAnalysis.languages` is bounded but still mutable in place, and is
+      unspecified in the spec. Fixing the mutability is a shape change.
+- [ ] Naive vs aware datetimes across the models.
+- [ ] The fixture's expectation tuples bind **one way**: every listed symbol must
+      exist, but nothing catches someone *shortening* a tuple, which would
+      silently narrow the documented claim while the suite stayed green. The
+      analyzer's own test must assert its findings **equal** those tuples exactly,
+      which closes both directions.
+- [ ] The analyzer must detect `.gitmodules` and surface "submodule content not
+      analysed" as an explicit confidence reducer. `git clone` does not fetch
+      submodules, so a repository whose real code lives in them would otherwise
+      analyse as nearly empty and report low risk having never seen the code.
+- [ ] Bring `tests` under mypy. Measured cost: 130 errors across 13 files, 8 of
+      them inside `tests/fixtures/sample_repo/`, whose contents must never be
+      "fixed" — so the fixture needs excluding first. See spec §11.
+
+**Deferred to the phase that owns the surface:**
+
+- [ ] Wire `sweep_stale` into a FastAPI lifespan (Phase 9). It is implemented and
+      tested but has no caller; the startup-only contract is in its docstring.
+- [ ] `sweep_stale` does not guard the workspace root itself vanishing between
+      `exists()` and `iterdir()`. Individual entries are guarded.
+- [ ] An `LLMRateLimitedError` / `LLMUnavailableError` taxonomy (Phase 4).
+- [ ] `api/app.py` calls `create_app()` at import time.
+- [ ] `_NON_INTERACTIVE_GIT_ENV` hardcodes `PATH` to `/usr/bin:/bin:/usr/local/bin`
+      and `GIT_ASKPASS` to `/usr/bin/true`. https transport works under it here,
+      but git lives at `/opt/homebrew/bin` on Apple Silicon, so the product's
+      primary input path would fail on such a host. Resolve these rather than
+      assume them, or fail with a clear diagnostic.
+
+**Open decision for the maintainer:** `git://` is in the default URL scheme
+allowlist, per spec line 180, and the implementation follows the spec faithfully.
+The git protocol has no encryption and no server authentication, so a network
+attacker can substitute repository content and the clone succeeds. That matters
+more here than in a generic tool: the analysis would be perfectly faithful to
+code that is not the user's, and the evidence chain would stay internally
+consistent while being globally false. Recommendation is to drop `git` from the
+default and keep it reachable via `UP_ALLOWED_URL_SCHEMES`. Not changed
+unilaterally, because the code matches the spec and this is a spec decision.
+
+
 - [ ] Manifest detection across `pyproject.toml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock`
 - [ ] Version detection with precedence and confidence label; `DependencyNotFound` when absent
 - [ ] `DependencyRole` direct vs transitive-only
