@@ -35,7 +35,7 @@ Nothing here is assumed. Every item is a probe whose result gets written into AD
 - [ ] Probe: OpenAI reachable, one minimal call (unticked — no `OPENAI_API_KEY`/`.env` in this environment; `probe_llm.py` has never been run)
 - [ ] Probe: which usage-metadata surface is populated on the resolved `langchain-core` (unticked — same live-key blocker; UNVERIFIED in ADR-001)
 - [ ] Probe: `with_structured_output(Schema, include_raw=True)` preserves usage metadata (unticked — same live-key blocker; UNVERIFIED in ADR-001)
-- [x] Probe: ChromaDB persists and retrieves across a process restart; scalar metadata filtering
+- [x] Probe: ChromaDB persists and retrieves after the seeding client is closed; scalar filters, and list-valued `affected_symbols` filtered with exact-element `$contains`
 - [x] Probe: minimal LangGraph executes
 - [x] Probe: `AsyncSqliteSaver` interrupt then resume, state intact
 - [x] Probe: two concurrent threads, no state bleed

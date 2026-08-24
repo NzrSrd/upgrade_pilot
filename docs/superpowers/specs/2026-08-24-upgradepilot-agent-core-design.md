@@ -272,9 +272,11 @@ Loop bound: `MAX_RAG_ITERATIONS` (default 3). Chroma unreachable → `AppError(K
 
 ## 8. Judgment layer
 
-### 8.1 `assess_risk` — factors computed, narrative generated
+### 8.1 `assess_risk` — factors computed, narrative generated, decision prepared
 
 Risk factors are extracted mechanically, each carrying evidence refs. The LLM does not assign factor levels; it synthesizes prose over a factor set it cannot invent.
+
+`assess_risk` also owns strategy enumeration: it scores the candidate strategies and builds the complete `InterruptPayload` into `pending_decision`, so that `human_review` can be a thin interrupt-only node. That division is required rather than stylistic — see §8.2 and ADR-001 on pre-interrupt side effects being billed twice.
 
 | Factor | Derived from |
 |---|---|
