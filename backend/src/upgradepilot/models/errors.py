@@ -3,14 +3,30 @@
 `message` is user-facing and comprehensible. `detail` is technical and is
 logged, correlated by thread_id. Nothing is ever swallowed: a caught
 exception becomes an AppError in state plus a trace event.
+
+Error handling is the one place that must not be able to fail. `AppError`
+validates `message`, so `UpgradePilotError("")` used to raise a
+`ValidationError` from `to_app_error()` -- a CLAUDE.md rule 20 violation at
+the worst possible moment, replacing whatever went wrong with a second,
+unrelated failure. `UpgradePilotError` therefore normalises its own message
+at construction time and records the substitution in `detail`, so
+`to_app_error()` can never raise on it. The blank message is not swallowed;
+it moves to the technical field where it belongs.
 """
 
 from enum import StrEnum
 from typing import ClassVar
 
-from pydantic import Field
-
 from upgradepilot.models.base import HonestModel
+from upgradepilot.models.evidence import NonBlankStr
+
+BLANK_MESSAGE_FALLBACK = "An unexpected internal error occurred."
+"""Stands in for a blank `UpgradePilotError` message.
+
+Deliberately generic: a blank message means the raising code told us nothing
+about what happened, so anything more specific here would be invented. It is
+still comprehensible to a user, which is what `message` is for.
+"""
 
 
 class ErrorCode(StrEnum):
@@ -33,7 +49,11 @@ class AppError(HonestModel):
     """An error recorded in graph state and surfaced to the client."""
 
     code: ErrorCode
-    message: str = Field(min_length=1)
+    # NonBlankStr, not Field(min_length=1): the latter accepts "   ", and an
+    # error whose user-facing message is three spaces is an error the user
+    # cannot act on. UpgradePilotError.to_app_error never reaches this
+    # rejection -- see the module docstring.
+    message: NonBlankStr
     detail: str | None = None
     node: str | None = None
     retryable: bool = False
@@ -47,8 +67,23 @@ class UpgradePilotError(Exception):
     retryable: ClassVar[bool] = False
 
     def __init__(self, message: str, *, detail: str | None = None) -> None:
-        super().__init__(message)
-        self.message = message
+        """Normalise `message` here so that raising, and later converting,
+        can never itself fail.
+
+        `AppError.message` is a validated `NonBlankStr`, so a blank message
+        would make `to_app_error()` raise a `ValidationError` from inside
+        error handling -- the original failure lost and replaced by a
+        confusing second one. Rather than let that happen, or drop the fact
+        silently (rule 20), the blank is substituted in the user-facing field
+        and reported in the technical one.
+        """
+        normalised = message.strip()
+        if not normalised:
+            normalised = BLANK_MESSAGE_FALLBACK
+            note = f"blank message supplied to {type(self).__name__}"
+            detail = f"{detail}; {note}" if detail else note
+        super().__init__(normalised)
+        self.message = normalised
         self.detail = detail
 
     def to_app_error(self, node: str | None = None) -> AppError:
