@@ -27,7 +27,14 @@ def model() -> ChatOpenAI:
     # Rule 18 exception, deliberate and scoped: TrackedLLM is the only place
     # application code may construct a chat model. This test exists to
     # establish what TrackedLLM's extractor must read, so it has to bypass it.
-    return ChatOpenAI(model=settings.chat_model, api_key=settings.openai_api_key, temperature=0)
+    # `openai_api_key` is a SecretStr, so the value has to be unwrapped
+    # explicitly. `openai_configured` above guarantees it is not None.
+    assert settings.openai_api_key is not None
+    return ChatOpenAI(
+        model=settings.chat_model,
+        api_key=settings.openai_api_key.get_secret_value(),
+        temperature=0,
+    )
 
 
 def test_plain_invoke_populates_usage_metadata(model: ChatOpenAI) -> None:
