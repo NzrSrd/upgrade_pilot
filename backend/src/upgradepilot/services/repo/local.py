@@ -30,6 +30,16 @@ def read_commit_sha(root: Path) -> str | None:
 
 
 def open_local_repository(path: str, *, allowed_roots: Sequence[Path]) -> Workspace:
-    """Open a local checkout as a Workspace. Never deletes the directory."""
+    """Open a local checkout as a Workspace. Never deletes the directory.
+
+    `cleanup_dir=None` is load-bearing, not incidental: it is what makes
+    `Workspace.cleanup()` a no-op here, which is in turn what makes
+    `WorkspaceManager.open` safe to call `cleanup()` on a cap failure
+    without destroying a user's own checkout. See
+    `test_open_cap_rejection_never_deletes_a_local_checkout`.
+
+    NOTE: this does not enforce the repository size caps. Only
+    `WorkspaceManager.open` does. See that method's docstring.
+    """
     root = resolve_local_path(path, allowed_roots)
     return Workspace(root=root, commit_sha=read_commit_sha(root), cleanup_dir=None)

@@ -37,6 +37,81 @@ SKIP_DIRECTORIES = frozenset(
 
 _GIT_TIMEOUT_SECONDS = 30
 
+HARDENED_GIT_ENV = {
+    # No credential prompting: a private repository must fail fast rather
+    # than hang the run waiting on stdin.
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/usr/bin/true",
+    # Neither system nor global config may be consulted. This is a SECURITY
+    # control, not tidiness: `url.<base>.insteadOf` rewrites a clone URL
+    # after our allowlist has approved it, so a rewrite rule in either file
+    # would bypass `validate_clone_url` entirely. Verified against real git
+    # 2.50.1: with a global `insteadOf` rule reachable, `https://github.com/...`
+    # became `https://REWRITTEN.invalid/...`, and the clone SUCCEEDED against
+    # the substituted repository. Do NOT remove these two lines, and do NOT
+    # add HOME to this environment expecting the omission to keep protecting
+    # us -- HOME being unset is not what stops the rewrite,
+    # GIT_CONFIG_GLOBAL=/dev/null is.
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    # PORTABILITY ASSUMPTION: git must be on this PATH. Verified present at
+    # /usr/bin/git (Apple Git-155, git 2.50.1) on the development machine,
+    # and https transport works under this PATH (checked with
+    # `git ls-remote`). Note that Homebrew installs git at
+    # /opt/homebrew/bin on Apple Silicon, which is NOT listed here: a
+    # deployment that relies on a Homebrew or otherwise non-standard git
+    # must extend this entry. The failure mode is loud (FileNotFoundError
+    # from subprocess, or a RepoUnavailableError), never a silent wrong
+    # answer, which is why the narrow list is preferred to inheriting the
+    # ambient PATH.
+    "PATH": "/usr/bin:/bin:/usr/local/bin",
+}
+"""The environment EVERY git subprocess in this package runs under.
+
+One dict, three call sites: `probe_head_sha` and `Workspace.git_log` below,
+and `clone.clone_repository`, which imports this name. It previously existed
+only in `clone.py`, so two of the three invocations inherited the ambient
+environment -- and the two that did are the ones that *parse* git output.
+Global config reaches them too: `log.showSignature = true` in a developer's
+`~/.gitconfig` injects signature lines into `git log` output, which
+`git_log`'s parser would read as filenames. Sharing the hardened dict makes
+the parse deterministic as well as closing the rewrite hole.
+
+`subprocess.run(env=...)` REPLACES the child environment rather than
+extending it, so this dict is the whole environment: nothing else, HOME
+included, is forwarded.
+
+Accepted cost of `GIT_CONFIG_GLOBAL=/dev/null` on the two local-repository
+call sites: a global `safe.directory` allowance is not consulted either, so
+a checkout owned by a different uid is refused by git. That surfaces as a
+`RepoUnavailableError` (git exits 128) -- fail-closed and comprehensible,
+not a silent wrong answer -- and is the correct trade against letting
+arbitrary global config steer this package's git.
+
+Which entries are proven by a test, and which are not:
+
+- `GIT_CONFIG_GLOBAL=/dev/null`: proven. Deleting it turns
+  `test_a_global_insteadof_rule_cannot_redirect_the_clone` red (a real
+  `insteadOf` rewrite fires and the clone fails against the rewritten,
+  nonexistent host).
+- `PATH`: proven by every test in `test_clone.py` and `test_workspace.py`
+  that runs git at all -- deleting the entry leaves the child with no PATH.
+- `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`: defence in depth
+  with no hermetic test possible. Both guard against a *system-wide* git
+  config file, and this sandboxed test environment has no such file to
+  poison in the first place, so deleting either turns zero tests red. Kept
+  anyway because a deployment target is not guaranteed to share that
+  property.
+- `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=/usr/bin/true`: defence in depth
+  with no hermetic test possible. Both only matter for a repository that
+  actually prompts for credentials, and every test here clones from a
+  `file://` origin, which never prompts. Exercising this honestly would
+  need a real private repository, which is out of reach for a hermetic
+  suite. Kept anyway: the alternative is hanging on stdin against a private
+  repo in production. This is a deliberate, reported gap, not an oversight.
+"""
+
 
 def probe_head_sha(root: Path, *, timeout: int) -> str | None:
     """Probe `git rev-parse --quiet --verify HEAD` at `root`.
@@ -76,6 +151,7 @@ def probe_head_sha(root: Path, *, timeout: int) -> str | None:
             text=True,
             timeout=timeout,
             check=False,
+            env=HARDENED_GIT_ENV,
         )
     except subprocess.TimeoutExpired as exc:
         raise RepoUnavailableError(
@@ -234,6 +310,7 @@ class Workspace:
                 text=True,
                 timeout=_GIT_TIMEOUT_SECONDS,
                 check=False,
+                env=HARDENED_GIT_ENV,
             )
         except subprocess.TimeoutExpired as exc:
             raise RepoUnavailableError(

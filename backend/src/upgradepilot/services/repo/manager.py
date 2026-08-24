@@ -73,6 +73,10 @@ class WorkspaceManager:
                 self._settings.workspace_dir,
                 depth=self._settings.clone_depth,
                 allowed_schemes=self._settings.allowed_url_schemes,
+                # A `file://` URL is the same arbitrary-read surface a
+                # LocalRepoRef is, so it is held to the same allowlist. Both
+                # branches of this dispatch now pass the same roots.
+                allowed_local_roots=list(self._settings.allowed_local_roots),
             )
         else:  # pragma: no cover - the union is closed
             raise TypeError(f"unsupported repository reference: {type(ref).__name__}")

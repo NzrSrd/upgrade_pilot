@@ -6,7 +6,7 @@ import pytest
 
 from upgradepilot.models.errors import RepoTooLargeError, RepoUnavailableError
 from upgradepilot.services.repo.local import open_local_repository, read_commit_sha
-from upgradepilot.services.repo.workspace import Workspace
+from upgradepilot.services.repo.workspace import Workspace, probe_head_sha
 
 
 @pytest.fixture
@@ -299,3 +299,127 @@ def test_context_manager_cleans_up_owned_directories(tmp_path: Path) -> None:
     with Workspace(root=owned, cleanup_dir=owned) as workspace:
         assert workspace.root.exists()
     assert not owned.exists()
+
+
+# --- A directory named like a Python file is not a file (item 5.4) --
+
+
+def test_iter_files_skips_a_directory_whose_name_ends_in_py(repo: Path) -> None:
+    """Deleting the `not real.is_file()` check turned zero tests red.
+
+    `rglob("*.py")` matches by name, so `mkdir pkg.py` is yielded like any
+    other match -- and `read_text`, whose docstring says the only error it
+    can raise is a `UnicodeDecodeError`, then raises `IsADirectoryError`
+    instead. That is not hypothetical: `foo.py/` appears in real trees
+    (an accidental `mkdir`, a stale build output, an `__init__.py`
+    directory from a botched refactor).
+
+    Both halves are asserted, because only the pair pins the contract: the
+    directory is not yielded, AND the ordinary sibling file still is, so
+    the test cannot pass by yielding nothing at all.
+    """
+    (repo / "src" / "app" / "pkg.py").mkdir()
+    (repo / "src" / "app" / "pkg.py" / "inner.txt").write_text("not python\n")
+
+    yielded = sorted(str(p) for p in Workspace(repo).iter_files(".py"))
+
+    assert "src/app/pkg.py" not in yielded
+    assert "src/app/service.py" in yielded
+
+
+def test_read_text_never_receives_a_directory_from_iter_files(repo: Path) -> None:
+    """The consequence the guard prevents, stated as the property
+    `read_text`'s docstring claims: every path `iter_files` yields can be
+    read as text, so a `UnicodeDecodeError` is the only failure a caller
+    has to consider."""
+    (repo / "src" / "app" / "pkg.py").mkdir()
+    workspace = Workspace(repo)
+
+    for relative in workspace.iter_files(".py"):
+        workspace.read_text(relative)
+
+
+# --- All three git invocations run under the hardened environment (item 8) --
+
+
+@pytest.fixture
+def fake_git_on_path(tmp_path: Path) -> Path:
+    """A directory containing a stand-in `git`, for putting on a PATH.
+
+    `subprocess.run(env=...)` resolves the executable using the *child's*
+    PATH, so a call site that passes `HARDENED_GIT_ENV` finds this fake and
+    a call site that inherits the ambient environment finds the real git.
+    That difference is what gives the two tests below teeth: they go red
+    the moment a call site stops passing the shared environment.
+    """
+    bindir = tmp_path / "fake-bin"
+    bindir.mkdir()
+    script = bindir / "git"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  rev-parse) echo 1111111111111111111111111111111111111111 ;;\n"
+        "  log) printf '__commit__%s|%s\\n%s\\n' "
+        "2222222222222222222222222222222222222222 1700000000 sentinel-from-fake-git.py ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n"
+    )
+    script.chmod(0o755)
+    return bindir
+
+
+def _hardened_env_with(bindir: Path) -> dict[str, str]:
+    from upgradepilot.services.repo import workspace as workspace_module
+
+    patched = dict(workspace_module.HARDENED_GIT_ENV)
+    patched["PATH"] = str(bindir)
+    return patched
+
+
+def test_probe_head_sha_runs_under_the_shared_hardened_environment(
+    git_repo: Path, fake_git_on_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`probe_head_sha` inherited the ambient environment: the hardening
+    dict lived in `clone.py` and only `clone.py` passed it, so two of the
+    three git invocations in this package ran under whatever environment
+    the server process happened to have -- including a developer's global
+    git config, which reaches the two call sites that *parse* git output.
+
+    Proven by substitution rather than by reading the source: with the
+    shared environment's PATH pointed at a stand-in git, the value returned
+    must be the stand-in's. Remove `env=HARDENED_GIT_ENV` from the call and
+    the real git runs instead, returning the repository's real sha.
+    """
+    from upgradepilot.services.repo import workspace as workspace_module
+
+    monkeypatch.setattr(workspace_module, "HARDENED_GIT_ENV", _hardened_env_with(fake_git_on_path))
+
+    assert probe_head_sha(git_repo, timeout=5) == "1" * 40
+
+
+def test_git_log_runs_under_the_shared_hardened_environment(
+    git_repo: Path, fake_git_on_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other previously-unhardened call site, and the one where global
+    config can corrupt a *parse* rather than merely a lookup."""
+    from upgradepilot.services.repo import workspace as workspace_module
+
+    monkeypatch.setattr(workspace_module, "HARDENED_GIT_ENV", _hardened_env_with(fake_git_on_path))
+
+    records = Workspace(git_repo).git_log(limit=5)
+
+    assert [record.sha for record in records] == ["2" * 40]
+    assert records[0].files == ("sentinel-from-fake-git.py",)
+
+
+def test_the_hardened_environment_is_one_object_shared_by_clone_and_workspace() -> None:
+    """`clone.py` must not keep a copy. A second dict is how the two
+    drifted apart in the first place -- the security-critical
+    `GIT_CONFIG_GLOBAL=/dev/null` entry existed in one of them only -- and
+    a copy would also silently defeat the monkeypatching the two tests
+    above rely on."""
+    from upgradepilot.services.repo import clone as clone_module
+    from upgradepilot.services.repo import workspace as workspace_module
+
+    assert clone_module.HARDENED_GIT_ENV is workspace_module.HARDENED_GIT_ENV
+    assert workspace_module.HARDENED_GIT_ENV["GIT_CONFIG_GLOBAL"] == "/dev/null"

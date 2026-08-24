@@ -18,12 +18,14 @@ this module does not do so.
 import shutil
 import subprocess
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
 from upgradepilot.models.errors import InvalidRepoUrlError, RepoUnavailableError
-from upgradepilot.services.repo.guards import validate_clone_url
+from upgradepilot.services.repo.guards import resolve_local_path, validate_clone_url
 from upgradepilot.services.repo.local import read_commit_sha
-from upgradepilot.services.repo.workspace import Workspace
+from upgradepilot.services.repo.workspace import HARDENED_GIT_ENV, Workspace
 
 _STDERR_DETAIL_BUDGET = 500
 """`stderr` is untrusted, unbounded remote output -- a hostile or merely
@@ -31,45 +33,58 @@ broken remote can emit megabytes of it, and this lands in `AppError.detail`,
 which is logged. Keep only the tail: the most recent lines are the ones
 most likely to name the actual failure."""
 
-_NON_INTERACTIVE_GIT_ENV = {
-    # No credential prompting: a private repository must fail fast rather
-    # than hang the run waiting on stdin.
-    "GIT_TERMINAL_PROMPT": "0",
-    "GIT_ASKPASS": "/usr/bin/true",
-    # Neither system nor global config may be consulted. This is a SECURITY
-    # control, not tidiness: `url.<base>.insteadOf` rewrites a clone URL
-    # after our allowlist has approved it, so a rewrite rule in either file
-    # would bypass `validate_clone_url` entirely. Verified against real git
-    # 2.50.1: with a global `insteadOf` rule reachable, `https://github.com/...`
-    # became `https://REWRITTEN.invalid/...`. Do NOT remove these two lines,
-    # and do NOT add HOME to this environment expecting the omission to keep
-    # protecting us -- HOME being unset is not what stops the rewrite,
-    # GIT_CONFIG_GLOBAL=/dev/null is.
-    "GIT_CONFIG_NOSYSTEM": "1",
-    "GIT_CONFIG_GLOBAL": "/dev/null",
-    "GIT_CONFIG_SYSTEM": "/dev/null",
-    "PATH": "/usr/bin:/bin:/usr/local/bin",
-}
-"""Which of the entries above are proven by a test, and which are not:
+_LOCALHOST_AUTHORITIES = frozenset({"", "localhost"})
+"""The only `file://` authorities this module will clone from.
 
-- `GIT_CONFIG_GLOBAL=/dev/null`: proven. Deleting it turns
-  `test_a_global_insteadof_rule_cannot_redirect_the_clone` red (a real
-  `insteadOf` rewrite fires and the clone fails against the rewritten,
-  nonexistent host).
-- `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`: defence in depth
-  with no hermetic test possible. Both guard against a *system-wide* git
-  config file, and this sandboxed test environment has no such file to
-  poison in the first place, so deleting either turns zero tests red. Kept
-  anyway because a deployment target is not guaranteed to share that
-  property.
-- `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=/usr/bin/true`: defence in depth
-  with no hermetic test possible. Both only matter for a repository that
-  actually prompts for credentials, and every test here clones from a
-  `file://` origin, which never prompts. Exercising this honestly would
-  need a real private repository, which is out of reach for a hermetic
-  suite. Kept anyway: the alternative is hanging on stdin against a private
-  repo in production. This is a deliberate, reported gap, not an oversight.
-"""
+git ignores a `file://` URL's host entirely -- verified against git 2.50.1:
+`git clone file://otherhost/path/to/repo` clones the LOCAL directory
+`/path/to/repo` and exits 0, never contacting `otherhost`. Accepting such a
+URL would therefore let a request that reads as remote quietly read the
+server's own filesystem, so a host that is not empty or `localhost` is
+refused rather than silently dropped."""
+
+
+def _resolve_file_url(safe_url: str, allowed_local_roots: Sequence[Path]) -> str:
+    """Re-derive a `file://` clone URL from an allowlisted local path.
+
+    This is the fix for the second door into the local filesystem. A
+    `LocalRepoRef` went through `resolve_local_path` and obeyed
+    `allowed_local_roots`; a `file://` `RemoteRepoRef` went through
+    `validate_clone_url`, which knows nothing about roots, so with `file`
+    added to `allowed_url_schemes` an operator got UNBOUNDED read access to
+    the filesystem from a setting named `allowed_local_roots`. Reproduced
+    with `allowed_local_roots=()`: door one was denied, door two cloned a
+    directory outside every root and read its contents.
+
+    The mechanism is deliberately not a second containment check. This
+    calls the very function the other door calls, so the two cannot
+    disagree about a target for any reason -- containment, symlink escape,
+    nonexistence, not-a-directory, an empty or misconfigured root list --
+    and the parity is a property of the code rather than of two
+    implementations kept in step by hand.
+
+    The returned URL is rebuilt from `resolve_local_path`'s *resolved*
+    path rather than passed through, which closes a parser differential in
+    the process. git percent-decodes a `file://` path (verified: a clone of
+    `file://<dir>/a%20b` reads the directory `a b`), so validating the raw
+    URL text and handing that same text to git would validate one path and
+    read another whenever an escape is present. Decoding before the check
+    and re-encoding after it makes the string git receives a faithful
+    encoding of the exact directory that was allowlisted -- including a
+    directory whose name really does contain a `%`, which round-trips as
+    `%25` (verified against git 2.50.1).
+    """
+    # Cannot raise: `validate_clone_url` has already parsed this string
+    # successfully, and it is unchanged since.
+    parts = urlsplit(safe_url)
+    if parts.netloc not in _LOCALHOST_AUTHORITIES:
+        raise InvalidRepoUrlError(
+            "A file:// repository URL must not name a host "
+            "(use file:///path or file://localhost/path).",
+            detail=f"scheme=file host={parts.hostname!r}",
+        )
+    resolved = resolve_local_path(unquote(parts.path), allowed_local_roots)
+    return f"file://{quote(str(resolved))}"
 
 
 def clone_repository(
@@ -78,9 +93,21 @@ def clone_repository(
     *,
     depth: int,
     allowed_schemes: frozenset[str],
+    allowed_local_roots: Sequence[Path],
     timeout: int = 180,
 ) -> Workspace:
-    """Shallow-clone `url` into a fresh directory under `dest_parent`."""
+    """Shallow-clone `url` into a fresh directory under `dest_parent`.
+
+    `allowed_local_roots` is required rather than defaulted so that a
+    caller must state the local-filesystem policy it is cloning under. It
+    is consulted only for a `file://` URL (see `_resolve_file_url`), but a
+    default of `()` would let a new call site silently inherit "deny all"
+    or, worse, invite a default of "allow all" later; mypy refusing the
+    call is the enforcement.
+
+    NOTE: this does not enforce the repository size caps. Only
+    `WorkspaceManager.open` does. See that method's docstring.
+    """
     # Must run before any subprocess is spawned: this is the whole point of
     # the allowlist. Use the returned value, never `url` -- validate_clone_url
     # normalises its input (lower-cased scheme, stripped ASCII whitespace),
@@ -105,6 +132,12 @@ def clone_repository(
             detail="scheme=file missing '//' authority separator",
         )
 
+    # The second door into the local filesystem, held to the same lock as
+    # the first. Runs before `dest_parent.mkdir` below so a denied request
+    # leaves nothing on disk, exactly as the scheme rejection does.
+    if safe_url.startswith("file://"):
+        safe_url = _resolve_file_url(safe_url, allowed_local_roots)
+
     dest_parent.mkdir(parents=True, exist_ok=True)
     destination = dest_parent / f"repo-{uuid.uuid4().hex[:12]}"
 
@@ -126,7 +159,7 @@ def clone_repository(
             text=True,
             timeout=timeout,
             check=False,
-            env=_NON_INTERACTIVE_GIT_ENV,
+            env=HARDENED_GIT_ENV,
         )
     except subprocess.TimeoutExpired as exc:
         # ignore_errors=True: a half-cloned directory left behind is worse

@@ -88,8 +88,16 @@ def test_open_propagates_guard_failures(tmp_path: Path, settings: Settings) -> N
 def test_a_failed_clone_does_not_leak_a_workspace(tmp_path: Path, settings: Settings) -> None:
     from upgradepilot.models.errors import RepoUnavailableError
 
+    # An existing, allowlisted directory that is not a git repository, so
+    # the failure comes from git itself. A *missing* path is now refused by
+    # `resolve_local_path` before any subprocess runs (the file:// door and
+    # the LocalRepoRef door share that check), which would make this test
+    # pass without git ever having been invoked.
+    not_a_repository = tmp_path / "not-a-repo"
+    not_a_repository.mkdir()
+
     with pytest.raises(RepoUnavailableError):
-        WorkspaceManager(settings).open(RemoteRepoRef(url=f"file://{tmp_path / 'missing'}"))
+        WorkspaceManager(settings).open(RemoteRepoRef(url=f"file://{not_a_repository}"))
     workspaces = settings.workspace_dir
     assert not workspaces.exists() or list(workspaces.iterdir()) == []
 
