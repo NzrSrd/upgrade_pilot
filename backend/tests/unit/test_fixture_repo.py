@@ -49,13 +49,25 @@ def _built_modules(root: Path) -> list[ast.Module]:
 
 
 def _names_used(tree: ast.Module) -> set[str]:
-    """Every name a module declares, imports, references or accesses.
+    """Every name a module declares, references or accesses -- never imports.
 
     An AST walk rather than a substring search, on purpose: `models.py`
     carries v2-migration comments mentioning `ConfigDict` and
     `model_config`, so a substring search for "Config" would still succeed
     against a `models.py` with every real `class Config` deleted. Only names
     that are genuinely code count as the fixture containing the idiom.
+
+    `ast.alias` is deliberately **not** walked, and that omission is the
+    whole point of this function. Counting it counted the *import name*, so
+    the assertion bound to `from pydantic import BaseModel, validator`
+    rather than to the idiom: deleting the `@validator` decorator and its
+    method while leaving that import line alone left every test in this
+    module green. An unused import is not a usage of an idiom, and Phase 2's
+    analyzer will be looking for the usage.
+
+    The idioms this covers survive without the alias branch because each is
+    real code somewhere: `class Config` is a `ClassDef`, and the
+    `@validator("email")` decorator is a `Call` on an `ast.Name`.
     """
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -65,8 +77,6 @@ def _names_used(tree: ast.Module) -> set[str]:
             names.add(node.id)
         elif isinstance(node, ast.Attribute):
             names.add(node.attr)
-        elif isinstance(node, ast.alias):
-            names.add(node.asname or node.name.rpartition(".")[2])
     return names
 
 
