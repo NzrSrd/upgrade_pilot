@@ -1,3 +1,4 @@
+import json
 import subprocess
 import types
 from pathlib import Path
@@ -591,3 +592,55 @@ def test_a_hostile_remote_cannot_flood_the_logged_detail(
     detail = excinfo.value.detail or ""
     assert len(detail) < 1000, f"detail is not bounded: {len(detail)} characters"
     assert detail.endswith("fatal: THE-ACTUAL-REASON"), "the tail must be the part kept"
+
+
+# --- The surrogate class reaches subprocess (wave B residual, item 1) --
+
+
+def test_a_lone_surrogate_in_a_clone_url_raises_an_app_error_not_a_unicode_crash(
+    tmp_path: Path,
+) -> None:
+    """The blocking crash, end to end, at the door an HTTP request enters.
+
+    `validate_clone_url` accepted this URL -- a lone surrogate is category
+    `Cs`, which was not in the disallowed set -- and `subprocess.run` then
+    died encoding it for `execve`, raising a bare `UnicodeEncodeError`: a
+    non-`UpgradePilotError` escaping the boundary, on input a JSON body
+    produces for free.
+
+    The guards test file asserts the rule; this asserts the consequence, at
+    the function that actually crashed, because the two are separable and
+    only one of them was reachable over HTTP.
+    """
+    assert json.loads('"\\ud800"') == "\ud800"
+    destination = tmp_path / "workspaces"
+
+    with pytest.raises(InvalidRepoUrlError):
+        clone_repository(
+            "https://github.com/acme/\ud800repo",
+            destination,
+            depth=1,
+            allowed_schemes=frozenset({"https"}),
+            allowed_local_roots=[tmp_path],
+        )
+
+    assert not destination.exists(), "a refused URL must leave nothing on disk"
+
+
+def test_a_surrogate_in_a_file_url_is_refused_before_it_reaches_the_local_door(
+    tmp_path: Path,
+) -> None:
+    """The `file://` route to the same crash, held to the same answer.
+
+    This is the door that was fixed one side at a time twice already, so it
+    gets its own assertion rather than an argument that the shared guard
+    must cover it.
+    """
+    with pytest.raises(InvalidRepoUrlError):
+        clone_repository(
+            f"file://{tmp_path}/a\udc80b",
+            tmp_path / "workspaces",
+            depth=1,
+            allowed_schemes=FILE_SCHEME,
+            allowed_local_roots=[tmp_path],
+        )

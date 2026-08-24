@@ -48,11 +48,12 @@ the general rule that subsumes it (Cc covers this whole set plus the C1
 control range that this frozenset does not).
 """
 
-_DISALLOWED_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Zs"})
+_DISALLOWED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})
 """Unicode general categories rejected after ASCII-space stripping: C0/C1
 controls (Cc — includes NEL U+0085), format characters (Cf — includes
-ZERO WIDTH SPACE and bidi override characters), line/paragraph separators
-(Zl/Zp), and every space separator (Zs — includes NBSP, OGHAM SPACE MARK,
+ZERO WIDTH SPACE and bidi override characters), surrogates (Cs — see the
+paragraph on encodability below), line/paragraph separators (Zl/Zp), and
+every space separator (Zs — includes NBSP, OGHAM SPACE MARK,
 and the U+2000 block). An ordinary ASCII space is *also* category Zs, which
 is exactly why it must be stripped from the edges before this check runs
 (see `validate_clone_url`), not caught by it.
@@ -75,6 +76,37 @@ dropping `Cf` from this set, would readmit BOM, SOFT HYPHEN and the bidi
 override characters — the entire attack class this rule exists to close —
 and GitHub and GitLab sanitise repository paths to ASCII regardless. Do not
 widen this set to "fix" the ZWJ over-rejection.
+
+`Cs` (surrogate) answers a question this set had never been asked: which
+categories can hold a codepoint that is legal in a Python `str` but has no
+UTF-8 encoding at all? Exactly one — `Cs`, all 2048 of it, and nothing
+else in the entire 0x110000-codepoint space. That exhaustiveness is
+asserted, not assumed: see
+`test_every_codepoint_that_cannot_encode_as_utf8_is_in_a_disallowed_category`,
+which scans every codepoint and will fail if a future Unicode revision
+widens the class. A lone surrogate reaches this boundary for free —
+Python's `json` decodes the escape `"\\ud800"` in a request body into
+exactly this string — and both of the things it then did were defects:
+
+- Most surrogates cannot be encoded at all, so `subprocess.run` in
+  `clone.py` died with a bare `UnicodeEncodeError` on a URL this function
+  had just called safe: an unhandled exception outside the
+  `UpgradePilotError` hierarchy this module's contract promises, i.e. an
+  HTTP 500 reachable from a JSON request body.
+- U+DC80–U+DCFF are worse than a crash. `os.fsencode`'s `surrogateescape`
+  handler round-trips exactly those 128 back into the raw bytes
+  0x80–0xFF, so `git` received an argument whose bytes differed from the
+  string that was validated — the same validate-one-string-use-another
+  differential as `urlsplit`'s control-character stripping, reached
+  through the *encoder* instead of through a parser.
+
+Rejecting the category closes both, at the boundary, on *both* doors. The
+path side happened to reject U+D800 already, but only incidentally —
+`resolve(strict=True)` failed with `UnicodeEncodeError` deep inside
+`realpath`, an accident of one codepoint's behaviour rather than a rule,
+and one that says nothing about U+DC80. It now rejects for the stated
+reason with the category named in the `detail`, exactly as the URL side
+does.
 """
 
 _MAX_PATH_LENGTH = 4096

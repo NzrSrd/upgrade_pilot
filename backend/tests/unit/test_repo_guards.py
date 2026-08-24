@@ -1,4 +1,5 @@
-import contextlib
+import json
+import os
 import unicodedata
 from pathlib import Path
 
@@ -10,7 +11,12 @@ from upgradepilot.models.errors import (
     LocalPathForbiddenError,
     UpgradePilotError,
 )
-from upgradepilot.services.repo.guards import _redact, resolve_local_path, validate_clone_url
+from upgradepilot.services.repo.guards import (
+    _DISALLOWED_CATEGORIES,
+    _redact,
+    resolve_local_path,
+    validate_clone_url,
+)
 
 DEFAULT_SCHEMES = frozenset({"https", "git"})
 
@@ -435,16 +441,25 @@ def test_home_directory_lookup_failure_raises_local_path_forbidden(tmp_path: Pat
         "..",
     ],
 )
-def test_every_hostile_path_input_raises_only_upgradepilot_error(
+def test_every_hostile_path_input_is_refused_with_an_upgradepilot_error(
     hostile_path: str, tmp_path: Path
 ) -> None:
     """The contract for this security boundary is that no input produces an
     exception other than UpgradePilotError. This is the test that makes
     that contract real rather than assumed: parametrized over inputs no one
     had tried yet (NUL bytes, unresolvable home-directory lookups, lone
-    surrogates, pathological lengths), asserting each one either resolves
-    or raises UpgradePilotError — nothing else is an acceptable outcome."""
-    with contextlib.suppress(UpgradePilotError):
+    surrogates, pathological lengths).
+
+    It used to assert that with `contextlib.suppress(UpgradePilotError)`,
+    which made it a test that could not fail: suppression passes
+    identically whether the input is refused or resolves and is returned as
+    an allowlisted path. Every input below is unresolvable, malformed, or
+    outside `tmp_path`, so every one of them must be refused —
+    `pytest.raises` says so, and now goes red if one starts being granted.
+    The URL half of this file had the identical hole and it was hiding a
+    live blocking defect; see `_REJECTED` below.
+    """
+    with pytest.raises(UpgradePilotError):
         resolve_local_path(hostile_path, [tmp_path])
 
 
@@ -458,10 +473,14 @@ def test_every_hostile_path_input_raises_only_upgradepilot_error(
         [Path("~nonexistentuser99999xyz")],
     ],
 )
-def test_every_hostile_root_configuration_raises_only_upgradepilot_error(
+def test_every_hostile_root_configuration_is_refused_with_an_upgradepilot_error(
     hostile_roots: list[Path], tmp_path: Path
 ) -> None:
-    with contextlib.suppress(UpgradePilotError):
+    """The same repair as the sweep above, for the same reason: every entry
+    here is an empty or non-absolute allowlist, all of which must deny, so
+    suppressing the exception hid the only outcome worth testing for — a
+    misconfigured allowlist that grants."""
+    with pytest.raises(UpgradePilotError):
         resolve_local_path(str(tmp_path), hostile_roots)
 
 
@@ -607,41 +626,117 @@ def test_base_error_is_catchable_as_one_type() -> None:
 
 # --- URL validation: the hostile-input contract sweep (fix wave B, item 3) --
 
+_REJECTED = True
+"""This input must raise `UpgradePilotError`.
+
+The table below carries an expected outcome per input for one reason:
+without it the sweep was a test that could not fail. It asserted only
+"nothing outside `UpgradePilotError` escapes", spelled
+`contextlib.suppress(UpgradePilotError)`, which passes identically whether
+the input is rejected or sails through and is returned as a validated,
+clone-ready URL. Two of its own entries — the lone-surrogate pair, added
+deliberately by the fix wave that had already identified the class — were
+in fact being ACCEPTED, and the URL handed back then killed
+`clone_repository` at `subprocess.run` with a bare `UnicodeEncodeError`.
+The sweep watched that happen for a whole review cycle and stayed green.
+"""
+
+_ACCEPTED = False
+"""This input looks hostile but is validly formed, and returning it is
+correct: nothing in this module's contract promises `git` will like it.
+
+Recording those as expectations rather than dropping them from the table
+keeps the sweep honest in both directions — it goes red if one of them
+starts being refused, so a fix for a hostile input cannot quietly widen
+into over-rejection. They are still held to the encodability half of the
+contract (`_assert_the_os_can_be_handed_this`), which is the half the
+surrogates broke.
+"""
+
 _HOSTILE_URLS = [
-    pytest.param("http://[::1", id="unclosed_ipv6_bracket"),
-    pytest.param("https://[::1", id="unclosed_ipv6_bracket_https"),
-    pytest.param("https://[::1]junk/x", id="trailing_junk_after_ipv6_literal"),
-    pytest.param("https://[]/x", id="empty_ipv6_literal"),
-    pytest.param("https://[/x", id="lone_open_bracket"),
-    pytest.param("https://]/x", id="lone_close_bracket"),
-    pytest.param("https://℀.com/x", id="nfkc_decomposing_So_in_netloc"),
-    pytest.param("https://＃/x", id="nfkc_decomposing_Po_in_netloc"),
-    pytest.param("https://a℀b/x", id="nfkc_decomposing_interior"),
-    pytest.param("file://℀/x", id="nfkc_decomposing_netloc_file_scheme"),
-    pytest.param("https://github.com:notaport/x", id="non_numeric_port"),
-    pytest.param("https://[v1.fe80::a]/x", id="ipvfuture_literal"),
-    pytest.param("https://\ud800/x", id="lone_surrogate_in_netloc"),
-    pytest.param("\ud800", id="lone_surrogate_alone"),
-    pytest.param("https://user@@github.com/x", id="double_at_in_authority"),
-    pytest.param("https://%00/x", id="percent_encoded_nul_in_netloc"),
-    pytest.param("https://xn--/x", id="malformed_punycode"),
-    pytest.param("https://github.com/x#℀", id="nfkc_decomposing_in_fragment"),
-    pytest.param("", id="empty"),
-    pytest.param("   ", id="only_ascii_space"),
-    pytest.param(":", id="bare_colon"),
-    pytest.param("://x", id="scheme_separator_only"),
-    pytest.param("//github.com/x", id="protocol_relative"),
-    pytest.param("https:", id="scheme_only"),
-    pytest.param("https://", id="scheme_and_separator_only"),
-    pytest.param("\U0001f600" * 50, id="emoji_run"),
-    pytest.param("/" * 5000, id="slash_run_over_the_length_cap"),
-    pytest.param("a" * 100_000, id="hundred_thousand_characters"),
-    pytest.param("https://github.com/" + "a" * 3000, id="valid_shape_over_the_length_cap"),
+    pytest.param("http://[::1", _REJECTED, id="unclosed_ipv6_bracket"),
+    pytest.param("https://[::1", _REJECTED, id="unclosed_ipv6_bracket_https"),
+    pytest.param("https://[::1]junk/x", _REJECTED, id="trailing_junk_after_ipv6_literal"),
+    pytest.param("https://[]/x", _REJECTED, id="empty_ipv6_literal"),
+    pytest.param("https://[/x", _REJECTED, id="lone_open_bracket"),
+    pytest.param("https://]/x", _REJECTED, id="lone_close_bracket"),
+    pytest.param("https://\u2100.com/x", _REJECTED, id="nfkc_decomposing_So_in_netloc"),
+    pytest.param("https://\uff03/x", _REJECTED, id="nfkc_decomposing_Po_in_netloc"),
+    pytest.param("https://a\u2100b/x", _REJECTED, id="nfkc_decomposing_interior"),
+    pytest.param("file://\u2100/x", _REJECTED, id="nfkc_decomposing_netloc_file_scheme"),
+    pytest.param("https://github.com:notaport/x", _ACCEPTED, id="non_numeric_port"),
+    pytest.param("https://[v1.fe80::a]/x", _ACCEPTED, id="ipvfuture_literal"),
+    pytest.param("https://\ud800/x", _REJECTED, id="lone_surrogate_in_netloc"),
+    pytest.param("\ud800", _REJECTED, id="lone_surrogate_alone"),
+    pytest.param("https://github.com/a\ud800b", _REJECTED, id="lone_surrogate_in_path"),
+    pytest.param("https://github.com/a\udc80b", _REJECTED, id="fsencodable_surrogate_in_path"),
+    pytest.param("https://github.com/a\udfffb", _REJECTED, id="top_of_surrogate_range_in_path"),
+    pytest.param("https://user@@github.com/x", _REJECTED, id="double_at_in_authority"),
+    pytest.param("https://%00/x", _ACCEPTED, id="percent_encoded_nul_in_netloc"),
+    pytest.param("https://xn--/x", _ACCEPTED, id="malformed_punycode"),
+    pytest.param("https://github.com/x#\u2100", _ACCEPTED, id="nfkc_decomposing_in_fragment"),
+    pytest.param("", _REJECTED, id="empty"),
+    pytest.param("   ", _REJECTED, id="only_ascii_space"),
+    pytest.param(":", _REJECTED, id="bare_colon"),
+    pytest.param("://x", _REJECTED, id="scheme_separator_only"),
+    pytest.param("//github.com/x", _REJECTED, id="protocol_relative"),
+    pytest.param("https:", _REJECTED, id="scheme_only"),
+    pytest.param("https://", _REJECTED, id="scheme_and_separator_only"),
+    pytest.param("\U0001f600" * 50, _REJECTED, id="emoji_run"),
+    pytest.param("/" * 5000, _REJECTED, id="slash_run_over_the_length_cap"),
+    pytest.param("a" * 100_000, _REJECTED, id="hundred_thousand_characters"),
+    pytest.param(
+        "https://github.com/" + "a" * 3000, _REJECTED, id="valid_shape_over_the_length_cap"
+    ),
 ]
 
 
-@pytest.mark.parametrize("hostile_url", _HOSTILE_URLS)
-def test_every_hostile_url_input_raises_only_upgradepilot_error(hostile_url: str) -> None:
+def _assert_the_os_can_be_handed_this(url: str) -> None:
+    """Fail unless `url` is a string `subprocess` could pass to `execve`
+    unchanged.
+
+    The second half of `validate_clone_url`'s contract, and the half that
+    was never asserted: an accepted URL becomes an argv entry, so being
+    well-formed is not enough — it has to survive encoding, and encode to
+    bytes that read back as the same string.
+
+    Two distinct failures live here, both from the surrogate class, and
+    both invisible to a test that only checks the exception type. They need
+    two separate detectors because they fail at different steps:
+
+    - most surrogates cannot be encoded at all, so `os.fsencode` raises —
+      which is precisely the exception that escaped `clone_repository`
+      uncaught, so it is re-raised as an assertion rather than allowed to
+      look like a broken test;
+    - U+DC80–U+DCFF encode *successfully*. `os.fsencode`'s
+      `surrogateescape` handler turns them back into the raw bytes
+      0x80–0xFF, so `git` is handed bytes that are not the string that was
+      validated — no exception, no crash, nothing in the log. Only the
+      round-trip comparison catches that one.
+
+    The decode below uses `errors="replace"` on purpose: a detector needs a
+    value to compare, not an exception of its own. Both branches are
+    demonstrated to fire — see the two surrogate tests below, either of
+    which reaches this helper if its expectation is flipped to `_ACCEPTED`.
+    """
+    try:
+        argv_bytes = os.fsencode(url)
+    except UnicodeEncodeError as exc:
+        raise AssertionError(
+            f"{url!r} cannot be encoded for execve: subprocess.run raises "
+            f"{type(exc).__name__} on this URL instead of cloning it"
+        ) from exc
+
+    assert argv_bytes.decode("utf-8", errors="replace") == url, (
+        f"the bytes git would receive are not {url!r}: os.fsencode produced "
+        f"{argv_bytes!r}, which is a different string"
+    )
+
+
+@pytest.mark.parametrize(("hostile_url", "expectation"), _HOSTILE_URLS)
+def test_every_hostile_url_input_is_refused_or_returns_a_url_the_os_can_be_handed(
+    hostile_url: str, expectation: bool
+) -> None:
     """The counterpart the path side had and the URL side did not.
 
     `resolve_local_path` has had a hostile-input sweep since fix round 3;
@@ -662,14 +757,34 @@ def test_every_hostile_url_input_raises_only_upgradepilot_error(hostile_url: str
     symptoms, so this is written as the contract, over every shape anyone
     has thought to try, and it must be extended rather than replaced when
     the next one turns up.
+
+    Repaired: the assertion used to be `contextlib.suppress`, which is not
+    an assertion. Each input now declares `_REJECTED` or `_ACCEPTED` and
+    this test holds it to that, so a hostile input that sails through is a
+    failure rather than a pass — see `_REJECTED` for what that hid — and
+    whatever is accepted is additionally held to being encodable, which is
+    what "safe to hand to `git clone`" actually requires.
     """
-    with contextlib.suppress(UpgradePilotError):
-        validate_clone_url(hostile_url, DEFAULT_SCHEMES | frozenset({"file"}))
+    try:
+        returned = validate_clone_url(hostile_url, DEFAULT_SCHEMES | frozenset({"file"}))
+    except UpgradePilotError:
+        assert expectation is _REJECTED, (
+            f"{hostile_url!r} is validly formed and was refused; over-rejection is "
+            "a regression too, see _ACCEPTED"
+        )
+        return
+
+    assert expectation is _ACCEPTED, (
+        f"validate_clone_url ACCEPTED a hostile input and returned {returned!r}; "
+        "it must raise an UpgradePilotError instead"
+    )
+    _assert_the_os_can_be_handed_this(returned)
 
 
-@pytest.mark.parametrize("hostile_url", _HOSTILE_URLS)
+@pytest.mark.parametrize(("hostile_url", "expectation"), _HOSTILE_URLS)
 def test_no_hostile_url_rejection_echoes_the_input_into_a_logged_detail(
     hostile_url: str,
+    expectation: bool,
 ) -> None:
     """Every rejection above must also stay credential-safe.
 
@@ -678,6 +793,10 @@ def test_no_hostile_url_rejection_echoes_the_input_into_a_logged_detail(
     `urlsplit`'s own NFKC error message quotes the entire netloc -- which is
     exactly where userinfo lives -- so the tempting `detail=f"{exc}"` would
     have reopened the leak that fix round 1 closed.
+
+    `expectation` is unused here: this test shares `_HOSTILE_URLS` with the
+    sweep above, which needs the per-input outcome, and one table over one
+    set of inputs is worth an unused parameter.
     """
     try:
         validate_clone_url(hostile_url, DEFAULT_SCHEMES | frozenset({"file"}))
@@ -956,3 +1075,116 @@ def test_a_short_missing_path_is_echoed_in_full_with_the_error_type(tmp_path: Pa
     detail = excinfo.value.detail or ""
     assert str(missing) in detail
     assert "FileNotFoundError" in detail
+
+
+# --- The surrogate class: valid Python, invalid UTF-8 (wave B residual, item 1) --
+
+
+def test_a_lone_surrogate_in_a_url_is_refused_naming_its_category() -> None:
+    """The blocking residual, as a test.
+
+    `unicodedata.category("\\ud800")` is `"Cs"`, which was not in
+    `_DISALLOWED_CATEGORIES`, so this URL passed every check, was returned
+    as a validated clone URL, and then killed `clone_repository` at
+    `subprocess.run` with an uncaught `UnicodeEncodeError` -- a non-
+    `UpgradePilotError` escaping the boundary, i.e. an HTTP 500 on a URL
+    this module had just called safe.
+
+    Reachability is asserted rather than asserted about: `json` decodes the
+    escape `"\\ud800"` in a request body into exactly this string, so the
+    input costs an HTTP client nothing to produce.
+
+    The assertion is on the category, not merely on the exception type,
+    because the rule is what matters: rejected *because* it is a surrogate,
+    at the boundary, with the reason in the `detail` an operator will read.
+    """
+    assert json.loads('"\\ud800"') == "\ud800", (
+        "the reachability premise is wrong if this fails: a JSON body cannot "
+        "produce a lone surrogate"
+    )
+
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url("https://github.com/acme/\ud800repo", DEFAULT_SCHEMES)
+
+    assert "category='Cs'" in (excinfo.value.detail or "")
+
+
+def test_a_surrogate_the_os_would_smuggle_as_a_raw_byte_is_refused() -> None:
+    """U+DC80-U+DCFF are the half that does NOT crash, which is what makes
+    them the dangerous half.
+
+    `os.fsencode`'s `surrogateescape` handler exists to round-trip
+    undecodable filesystem bytes, so it turns these 128 codepoints straight
+    back into the raw bytes 0x80-0xFF. `subprocess` would therefore have
+    handed `git` an argument whose bytes are not the string that was
+    validated -- the fifth validate-one-string-use-another differential in
+    this module, and the first one located in an encoder rather than a
+    parser. No exception, no crash, no log line: `git` simply clones
+    something else.
+
+    The presence is demonstrated before the absence is asserted, so the
+    guard below is known to be guarding something real.
+    """
+    assert os.fsencode("\udc80") == b"\x80", (
+        "the smuggling premise is wrong if this fails: surrogateescape did not "
+        "turn the surrogate back into a raw byte"
+    )
+
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url("https://github.com/acme/\udc80repo", DEFAULT_SCHEMES)
+
+    assert "category='Cs'" in (excinfo.value.detail or "")
+
+
+def test_a_surrogate_in_a_local_path_is_refused_by_the_same_rule_as_in_a_url(
+    tmp_path: Path,
+) -> None:
+    """Both doors, one rule -- the asymmetry that keeps recurring here.
+
+    The path side already refused `"\\ud800"`, but only incidentally:
+    `Path.resolve(strict=True)` failed with a `UnicodeEncodeError` raised
+    deep inside `realpath` and caught by the broad `except` clause, which is
+    an accident of one codepoint's behaviour rather than a rule -- and an
+    accident that says nothing whatever about U+DC80, whose bytes
+    `os.fsencode` produces happily.
+
+    Asserting the category rather than the exception type is what makes this
+    a parity test: it now refuses for the stated reason, at the same check,
+    with the same `detail` shape as the URL door.
+    """
+    for surrogate in ("\ud800", "\udc80", "\udfff"):
+        with pytest.raises(LocalPathForbiddenError) as excinfo:
+            resolve_local_path(f"{tmp_path}/a{surrogate}b", [tmp_path])
+        assert "category='Cs'" in (excinfo.value.detail or ""), (
+            f"{surrogate!r} was not refused by the category rule"
+        )
+
+
+def test_every_codepoint_that_cannot_encode_as_utf8_is_in_a_disallowed_category() -> None:
+    """The class, asserted exhaustively, rather than the codepoint that was
+    reported.
+
+    The question worth answering was not "is `Cs` handled" but "which
+    Unicode categories can hold a codepoint that is legal in a Python `str`
+    and has no UTF-8 encoding". Scanning all 0x110000 codepoints answers it
+    once and for all: exactly one category, `Cs`, and all 2048 of it. This
+    runs in about a tenth of a second, which is a cheap price for never
+    having to reason about the class again -- and it goes red rather than
+    silently stale if a future Unicode or CPython revision widens it.
+    """
+    offending_categories = set()
+    offending_count = 0
+    for codepoint in range(0x110000):
+        character = chr(codepoint)
+        try:
+            character.encode("utf-8")
+        except UnicodeEncodeError:
+            offending_categories.add(unicodedata.category(character))
+            offending_count += 1
+
+    assert offending_categories == {"Cs"}, (
+        "the non-encodable class is no longer exactly the surrogates; "
+        "_DISALLOWED_CATEGORIES needs widening"
+    )
+    assert offending_count == 0xE000 - 0xD800
+    assert offending_categories <= _DISALLOWED_CATEGORIES
