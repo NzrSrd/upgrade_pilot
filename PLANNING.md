@@ -26,20 +26,20 @@ Demo target throughout: **Pydantic v1 → v2** against a real public Python repo
 
 Nothing here is assumed. Every item is a probe whose result gets written into ADR-001's verification table.
 
-- [ ] Repository structure, `.gitignore`, `.env.example`
-- [ ] Python backend with `pyproject.toml`; pinned dependency set
-- [ ] React + Vite + TypeScript frontend; Tailwind; Lucide
-- [ ] `pydantic-settings` configuration module
-- [ ] FastAPI app with `GET /api/health`
-- [ ] Backend starts; frontend starts; health responds
-- [ ] Probe: OpenAI reachable, one minimal call
-- [ ] Probe: which usage-metadata surface is populated on the resolved `langchain-core`
-- [ ] Probe: `with_structured_output(Schema, include_raw=True)` preserves usage metadata
-- [ ] Probe: ChromaDB persists and retrieves across a process restart; scalar metadata filtering
-- [ ] Probe: minimal LangGraph executes
-- [ ] Probe: `AsyncSqliteSaver` interrupt then resume, state intact
-- [ ] Probe: two concurrent threads, no state bleed
-- [ ] ADR-001 verification table filled from actual results
+- [x] Repository structure, `.gitignore`, `.env.example`
+- [x] Python backend with `pyproject.toml`; pinned dependency set
+- [x] React + Vite + TypeScript frontend; Tailwind; Lucide
+- [x] `pydantic-settings` configuration module
+- [x] FastAPI app with `GET /api/health`
+- [x] Backend starts; frontend starts; health responds
+- [ ] Probe: OpenAI reachable, one minimal call (unticked — no `OPENAI_API_KEY`/`.env` in this environment; `probe_llm.py` has never been run)
+- [ ] Probe: which usage-metadata surface is populated on the resolved `langchain-core` (unticked — same live-key blocker; UNVERIFIED in ADR-001)
+- [ ] Probe: `with_structured_output(Schema, include_raw=True)` preserves usage metadata (unticked — same live-key blocker; UNVERIFIED in ADR-001)
+- [x] Probe: ChromaDB persists and retrieves across a process restart; scalar metadata filtering
+- [x] Probe: minimal LangGraph executes
+- [x] Probe: `AsyncSqliteSaver` interrupt then resume, state intact
+- [x] Probe: two concurrent threads, no state bleed
+- [x] ADR-001 verification table filled from actual results
 
 **Exit:** all probes pass or the ADR is amended to record what actually happened. No application code before this.
 

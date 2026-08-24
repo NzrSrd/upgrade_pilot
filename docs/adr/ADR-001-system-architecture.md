@@ -124,16 +124,33 @@ All model access passes through a single `TrackedLLM` service, so there is exact
 
 ## Phase 0 verification record
 
-**Status: pending Phase 0 execution.** This ADR is not complete until the table below is filled from actual probe runs. Nothing in the design may rely on an unverified assumption about these.
+**Status: verified 2026-08-24.** Every row below is filled from either a command run this session or an assertion in a test file that has been read. Two rows remain genuinely unverified because they require a live `OPENAI_API_KEY`, which this environment does not have; they are recorded as unverified rather than guessed, per development rule 9.
 
-| Probe | What must be recorded |
+| Probe | Finding |
 |---|---|
-| Pinned versions | Resolved versions of `langgraph`, `langgraph-checkpoint-sqlite`, `langchain-core`, `langchain-openai`, `chromadb`, `fastapi`, `pydantic` |
-| Usage metadata surface | Whether `AIMessage.usage_metadata` is populated, or the `response_metadata["token_usage"]` fallback is required |
-| Structured output + usage | Whether `with_structured_output(Schema, include_raw=True)` preserves usage metadata |
-| Checkpointer round-trip | `AsyncSqliteSaver` interrupt then resume on the same thread, state intact |
-| Thread isolation | Two concurrent threads, no state bleed |
-| ChromaDB | Persistence across process restart; scalar metadata filtering behaviour |
-| Embeddings | `text-embedding-3-small` reachable; token accounting for embedding calls |
+| Interpreter | Python `3.14.5 (v3.14.5:5607950ef23, May 10 2026)`, Apple Clang 21.0.0, macOS arm64 (Darwin 25.5.0). Only interpreter available on this machine; no `uv` (checked `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.cargo/bin`, and `backend/uv.lock` — none present), no `pyenv`. All backend tooling therefore runs as `backend/.venv/bin/python -m <tool>`. *Source: commands run this session (`.venv/bin/python --version`, `which uv`/`pyenv`, `ls` of the candidate install paths).* |
+| Pinned versions | `chromadb 1.5.9 · fastapi 0.141.1 · langchain-core 1.6.0 · langchain-openai 1.6.0 · langgraph 1.2.11 · langgraph-checkpoint-sqlite 3.1.1 · openai 3.3.1 · pydantic 2.13.4 · pydantic-settings 2.15.0 · tiktoken 0.14.0 · uvicorn 0.52.4 · pytest 9.1.1 · pytest-asyncio 1.4.0` — all confirmed installed at exactly these versions in `backend/.venv`. The venv holds 121 third-party packages plus the local editable `upgradepilot` project (122 lines from `pip list --format=freeze`); all resolved as prebuilt wheels for cp314 on macOS arm64 — none compiled from source during install. *Source: commands run this session (`.venv/bin/python -m pip list --format=freeze`, `wc -l`).* |
+| Usage metadata surface | **UNVERIFIED** — requires a live `OPENAI_API_KEY`. There is no `backend/.env` and no `OPENAI_API_KEY` in the environment; a placeholder key would produce auth failures rather than a clean skip, so none was fabricated. `probes/probe_llm.py` has never been run. The probe is written and the guarding test exists (`backend/tests/llm/test_usage_metadata_live.py`, marked `@pytest.mark.live`, confirmed to skip cleanly with reason "needs --live and a real OPENAI_API_KEY" under `pytest -rs`). Phase 4's `TrackedLLM` extractor must retain its `response_metadata["token_usage"]` fallback until this is closed. *Source: commands run this session (checked for `.env` and the env var; ran `pytest -rs` and observed the skip) plus the test file itself.* |
+| Structured output + usage | **UNVERIFIED** — same blocker as above; `probe_llm.py`'s structured-output branch has never executed against a real API key. As source-reading rather than execution: `langchain_openai/chat_models/base.py` line 2758 shows `with_structured_output(..., include_raw=True)` returns `RunnableMap(raw=llm) | parser_with_fallback`, so `raw` is the unmodified `AIMessage` from the underlying chat model and should carry `usage_metadata` the same way a plain `invoke()` does — but this is an inference from source, not a demonstrated result. *Source: read of `backend/.venv/lib/python3.14/site-packages/langchain_openai/chat_models/base.py:2758`.* |
+| Checkpointer round-trip | Proven by `backend/tests/graph/test_langgraph_contract.py`. `test_interrupt_exposes_payload_and_pauses` shows `ainvoke` returns an `__interrupt__` payload and the graph pauses with `state.next == ("review",)`. `test_resume_continues_same_thread_and_applies_decision` shows `Command(resume=...)` on the same `thread_id` continues execution and applies the resumed decision, leaving `state.next == ()`. `test_state_survives_a_new_saver_instance` shows the checkpoint is durable: a *new* `AsyncSqliteSaver.from_conn_string` opened over the same sqlite file after the first `async with` block has closed still reports `state.next == ("review",)` and can resume correctly — this is genuine process-restart durability, not just in-memory continuity. *Source: read of `backend/tests/graph/test_langgraph_contract.py`; confirmed passing via `pytest -rs` this session (19 passed, 2 skipped).* |
+| Thread isolation | Proven by `test_threads_are_isolated` in the same file: two threads (`t1`, `t2`) on one compiled graph advance independently — `t1` is driven through interrupt and resume to completion while `t2` is only invoked once and is still paused (`state.next == ("review",)`) with its own independent `trace`. No state from one thread appears in the other. *Source: read of `backend/tests/graph/test_langgraph_contract.py`; confirmed passing via `pytest -rs` this session.* |
+| ChromaDB | Proven by `backend/tests/knowledge/test_chroma_contract.py` and directly reproduced this session: (1) a `PersistentClient` opened fresh over an existing directory sees data seeded by an earlier client instance (`test_persistent_client_survives_restart`) — genuine restart durability, not the same client object. (2) List-valued metadata (`affected_symbols`) is **accepted** and round-trips as a real Python `list`, not rejected and not flattened to a string (`test_list_valued_metadata_is_accepted_and_round_trips`). (3) `$contains` against list-valued metadata is **exact-element**, not substring: a filter for `Config` does not match a document tagged `["ConfigDict"]`, and a filter for `valid` does not match `["validator"]` (`test_symbol_filter_matches_whole_elements_not_substrings`). (4) `$in` against list-valued metadata returns `[]` rather than erroring or matching (`test_in_operator_does_not_work_on_list_metadata`) — it must never be used for this purpose. (5) A single-clause `$and`/`$or` raises `ValueError`, reproduced directly this session: `ValueError: Expected where value for $and or $or to be a list with at least two where expressions, got [{'a': 1}] in get.` (6) Collection names must be 3–512 characters from `[a-zA-Z0-9._-]`, reproduced directly this session: a 2-character name raises `InvalidArgumentError`, a 3-character name succeeds, a 513-character name raises the same error, and a 512-character name succeeds. *Source: read of `backend/tests/knowledge/test_chroma_contract.py` (items 1–4) plus ad hoc scripts run against the pinned `chromadb==1.5.9` this session (items 5–6).* |
+| Embeddings | Deferred to Phase 3. `probe_llm.py` probes chat completion and structured output only; it never probed `text-embedding-3-small` or embedding token accounting. No claim is made about embeddings reachability here. *Source: read of `backend/probes/probe_llm.py`, which contains no embedding call.* |
+
+### Finding not anticipated by the design: pre-interrupt side effects are billed twice
+
+A node that calls `interrupt()` re-executes from the top on resume. Work
+placed before the `interrupt()` call therefore runs twice, while state
+writes from the aborted pass are discarded.
+
+The append-only usage design (D9) is unaffected — no double-count reaches
+state. But real spend doubles while only one call record survives, so
+recorded usage would *undercount* actual cost.
+
+**Rule adopted:** a node that interrupts performs no LLM call, no HTTP
+request, and no file write before its `interrupt()` call. Strategy
+enumeration and interrupt-payload construction belong to `assess_risk`;
+`human_review` only calls `interrupt()` and validates the returned
+decision. Locked by `backend/tests/graph/test_langgraph_contract.py`.
 
 Findings that contradict this ADR must be raised and the ADR amended before implementation proceeds, per development rule 14.

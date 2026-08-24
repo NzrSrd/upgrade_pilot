@@ -297,7 +297,19 @@ The LLM may attach `qualitative_notes`, which carry no weight in the level. A co
 
 ### 8.2 `human_review` — the interrupt fires on a predicate
 
-Candidate strategies (compatibility layer / staged rollout / direct migration) are enumerated and scored against risk and constraints first. **The graph interrupts only when ≥2 strategies remain viable *and* they differ on an axis the stated constraints do not already settle.** If constraints decide it, no interrupt occurs: a trace event records "resolved by constraints, no human input required" and flow continues to `generate_plan`. This is the brief's conditional edge, and it is what prevents degeneration into a ceremonial dialog.
+Candidate strategies (compatibility layer / staged rollout / direct
+migration) are enumerated, scored, and turned into a complete
+`InterruptPayload` **by `assess_risk`**, which stores it in
+`pending_decision`. `human_review` is deliberately thin: it reads
+`pending_decision`, calls `interrupt()`, and validates the returned
+decision. It performs no LLM call.
+
+This division is required, not stylistic. A node that interrupts
+re-executes from the top on resume, so any LLM call placed before its
+`interrupt()` would be billed twice while only one usage record
+survives — recorded cost would understate real spend. See ADR-001.
+
+**The graph interrupts only when ≥2 strategies remain viable *and* they differ on an axis the stated constraints do not already settle.** If constraints decide it, no interrupt occurs: a trace event records "resolved by constraints, no human input required" and flow continues to `generate_plan`. This is the brief's conditional edge, and it is what prevents degeneration into a ceremonial dialog.
 
 Four typed decision kinds, no free-form questions:
 
