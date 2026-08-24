@@ -64,6 +64,24 @@ def test_a_blank_or_cwd_shaped_path_setting_is_rejected(
     assert setting.removeprefix("UP_").lower() in str(excinfo.value).lower()
 
 
+def test_a_blank_path_setting_is_reported_as_blank_not_as_dot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The value-shape validators would reject a blank setting anyway, so the
+    blank check exists for the message. An operator who exported
+    `UP_WORKSPACE_DIR=` must not be told the problem is `'.'` -- they never
+    wrote that and cannot find it in their configuration."""
+    monkeypatch.setenv("UP_WORKSPACE_DIR", "")
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None)
+
+    message = str(excinfo.value)
+    assert "must not be blank" in message
+    assert "unset the variable" in message
+    assert "got '.'" not in message
+
+
 def test_the_shipped_relative_defaults_still_load(monkeypatch: pytest.MonkeyPatch) -> None:
     """The rule rejects the CWD itself, not every relative path: a relative
     subdirectory is what the shipped defaults have always meant, and it cannot

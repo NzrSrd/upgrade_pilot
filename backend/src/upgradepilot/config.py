@@ -22,6 +22,12 @@ def _reject_blank_text(value: object) -> object:
     Demonstrated for `workspace_dir`, whose consumer is `sweep_stale`: a
     directory `repo-users-important-work/` in the process CWD was matched as
     a stale workspace and removed with `rmtree`.
+
+    The after-validators below would reject a blank value anyway, so what
+    this adds is a truthful *message*. Without it the operator who exported
+    an empty variable is told the value was `'.'`, which they never wrote and
+    cannot find in their configuration. Saying "must not be blank" names the
+    thing they can actually fix, so that is what the test asserts.
     """
     if isinstance(value, str) and not value.strip():
         raise ValueError("must not be blank; unset the variable instead of setting it empty")
