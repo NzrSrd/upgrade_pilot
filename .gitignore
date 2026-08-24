@@ -33,3 +33,6 @@ backend/.workspaces/
 .DS_Store
 .idea/
 .vscode/
+
+# SDD scratch workspace (ledger, briefs, review packages)
+.superpowers/
