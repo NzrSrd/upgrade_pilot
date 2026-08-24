@@ -69,6 +69,26 @@ extend-exclude = ["tests/fixtures/sample_repo"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 
+# `WorkspaceManager.open` is the only caller that enforces the repository
+# size caps; `clone_repository` and `open_local_repository` do not, so a
+# direct import of either yields an uncapped Workspace. Nothing in the code
+# prevents that import, so the lint run does. This is honest about its
+# reach: it catches the accidental in-repo import, and nothing outside this
+# repository's lint run. The security guards do not depend on it -- the URL
+# allowlist and `allowed_local_roots` are enforced inside those two
+# functions, so a bypass loses the caps, never the allowlists.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"upgradepilot.services.repo.clone.clone_repository".msg = "Import WorkspaceManager instead: clone_repository does not enforce the repository size caps."
+"upgradepilot.services.repo.local.open_local_repository".msg = "Import WorkspaceManager instead: open_local_repository does not enforce the repository size caps."
+
+[tool.ruff.lint.per-file-ignores]
+# The manager is the intended caller, and these test modules exercise the
+# two functions directly on purpose -- including the door-parity test that
+# must call both doors itself.
+"src/upgradepilot/services/repo/manager.py" = ["TID251"]
+"tests/unit/test_clone.py" = ["TID251"]
+"tests/unit/test_workspace.py" = ["TID251"]
+
 [tool.mypy]
 python_version = "3.12"
 strict = true
