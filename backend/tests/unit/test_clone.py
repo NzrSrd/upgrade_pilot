@@ -1,4 +1,5 @@
 import subprocess
+import types
 from pathlib import Path
 
 import pytest
@@ -160,6 +161,117 @@ def test_non_positive_depth_is_clamped_to_one(origin: Path, tmp_path: Path, dept
         assert len(workspace.git_log(limit=10)) == 1
     finally:
         workspace.cleanup()
+
+
+def _make_fake_subprocess_module(run):
+    """A stand-in for the `subprocess` module, scoped to `clone.py` only.
+
+    `clone.py` calls `subprocess.run(...)` and catches
+    `subprocess.TimeoutExpired`, both looked up on the module-level name
+    `subprocess` at call time. Patching `clone_module.subprocess` to this
+    object -- rather than mutating the real `subprocess` module's `.run`
+    attribute in place -- means the fake only ever affects lookups made
+    through `clone.py`'s own `subprocess` binding, so it cannot leak into
+    any other code (e.g. the `_git` helper above, or Workspace's own git
+    subprocess calls) that happens to run during the same test.
+    `TimeoutExpired` is passed through unchanged so `except
+    subprocess.TimeoutExpired` in `clone.py` still matches a real instance
+    of it.
+    """
+    return types.SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired)
+
+
+def test_failed_clone_removes_a_partially_created_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `rmtree` on the non-zero-exit branch is untested by every other
+    case in this file: for a missing `file://` source, git never creates
+    `destination` in the first place, so "no leftovers" holds whether or
+    not that `rmtree` call exists. Make the failure deterministic instead
+    of racing a real clone against a timeout: monkeypatch `subprocess.run`
+    (scoped to this module, see `_make_fake_subprocess_module`) to create a
+    non-empty `destination` -- simulating git getting partway through a
+    clone before failing -- and then report a non-zero exit, with no large
+    origin and no wall-clock dependency.
+    """
+    created: list[Path] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        destination = Path(command[-1])
+        destination.mkdir(parents=True)
+        (destination / "partial-file").write_text("junk")
+        created.append(destination)
+        return subprocess.CompletedProcess(
+            command, returncode=128, stdout="", stderr="fatal: simulated failure"
+        )
+
+    monkeypatch.setattr(clone_module, "subprocess", _make_fake_subprocess_module(fake_run))
+
+    with pytest.raises(RepoUnavailableError):
+        clone_repository(
+            f"file://{tmp_path / 'origin'}",
+            tmp_path / "workspaces",
+            depth=5,
+            allowed_schemes=FILE_SCHEME,
+        )
+
+    assert len(created) == 1, "the fake git clone must have run exactly once"
+    assert not created[0].exists(), "rmtree on the non-zero-exit branch must remove destination"
+
+
+def test_timed_out_clone_removes_a_partially_created_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same reasoning as the sibling test above, for the `TimeoutExpired`
+    branch: monkeypatch `subprocess.run` to create a non-empty
+    `destination` and then raise `TimeoutExpired`, deterministically,
+    rather than racing a real clone of a large repository against a very
+    short timeout.
+    """
+    created: list[Path] = []
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        destination = Path(command[-1])
+        destination.mkdir(parents=True)
+        (destination / "partial-file").write_text("junk")
+        created.append(destination)
+        raise subprocess.TimeoutExpired(cmd=command, timeout=kwargs.get("timeout", 1))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(clone_module, "subprocess", _make_fake_subprocess_module(fake_run))
+
+    with pytest.raises(RepoUnavailableError):
+        clone_repository(
+            f"file://{tmp_path / 'origin'}",
+            tmp_path / "workspaces",
+            depth=5,
+            allowed_schemes=FILE_SCHEME,
+            timeout=1,
+        )
+
+    assert len(created) == 1, "the fake git clone must have run exactly once"
+    assert not created[0].exists(), "rmtree on the TimeoutExpired branch must remove destination"
+
+
+def test_file_url_without_authority_separator_is_rejected(tmp_path: Path) -> None:
+    """`file:./relative` parses as scheme=file under `validate_clone_url`
+    (which exempts `file:` from its host check), but git's own transport
+    selection only recognises `scheme://...` -- anything shaped like
+    `word:path` with no `//` falls through to git's scp-style remote-alias
+    parsing, so git would read this as ssh to a host literally named
+    "file", not as a local-filesystem clone. `clone_repository` must reject
+    this shape itself before it ever reaches git.
+    """
+    workspaces = tmp_path / "workspaces"
+    with pytest.raises(InvalidRepoUrlError):
+        clone_repository(
+            "file:./relative",
+            workspaces,
+            depth=5,
+            allowed_schemes=FILE_SCHEME,
+        )
+    # Same ordering guarantee as the disallowed-scheme test: rejected before
+    # any subprocess could have been spawned.
+    assert not workspaces.exists()
 
 
 def test_a_global_insteadof_rule_cannot_redirect_the_clone(

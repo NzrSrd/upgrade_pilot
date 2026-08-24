@@ -3,6 +3,16 @@
 Depth defaults above 1 because churn signals need history. Credential
 prompting is disabled so a private repository fails fast rather than
 hanging the run waiting on stdin.
+
+Submodules are deliberately NOT fetched: plain `git clone --depth N` never
+recurses into them, and this module adds no `--recurse-submodules` flag.
+That is scope, not an oversight -- fetching them would change the clone's
+cost profile, and this task does not own that decision. The practical
+consequence: a repository whose real code lives in a submodule analyses as
+nearly empty, with nothing in this module's return value signalling that
+anything was skipped. A consumer that needs completeness must detect
+`.gitmodules` in the cloned tree itself and surface that to the caller;
+this module does not do so.
 """
 
 import shutil
@@ -10,7 +20,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from upgradepilot.models.errors import RepoUnavailableError
+from upgradepilot.models.errors import InvalidRepoUrlError, RepoUnavailableError
 from upgradepilot.services.repo.guards import validate_clone_url
 from upgradepilot.services.repo.local import read_commit_sha
 from upgradepilot.services.repo.workspace import Workspace
@@ -40,6 +50,26 @@ _NON_INTERACTIVE_GIT_ENV = {
     "GIT_CONFIG_SYSTEM": "/dev/null",
     "PATH": "/usr/bin:/bin:/usr/local/bin",
 }
+"""Which of the entries above are proven by a test, and which are not:
+
+- `GIT_CONFIG_GLOBAL=/dev/null`: proven. Deleting it turns
+  `test_a_global_insteadof_rule_cannot_redirect_the_clone` red (a real
+  `insteadOf` rewrite fires and the clone fails against the rewritten,
+  nonexistent host).
+- `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`: defence in depth
+  with no hermetic test possible. Both guard against a *system-wide* git
+  config file, and this sandboxed test environment has no such file to
+  poison in the first place, so deleting either turns zero tests red. Kept
+  anyway because a deployment target is not guaranteed to share that
+  property.
+- `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=/usr/bin/true`: defence in depth
+  with no hermetic test possible. Both only matter for a repository that
+  actually prompts for credentials, and every test here clones from a
+  `file://` origin, which never prompts. Exercising this honestly would
+  need a real private repository, which is out of reach for a hermetic
+  suite. Kept anyway: the alternative is hanging on stdin against a private
+  repo in production. This is a deliberate, reported gap, not an oversight.
+"""
 
 
 def clone_repository(
@@ -57,6 +87,23 @@ def clone_repository(
     # and the normalised string is the only one that has actually been
     # screened.
     safe_url = validate_clone_url(url, allowed_schemes)
+
+    # A parser differential between the validator and git, not between the
+    # validator and itself: `guards.validate_clone_url` exempts `file:` from
+    # its host check, because file:// legitimately has no host -- but that
+    # exemption also lets a hostless, slash-less `file:./relative` or
+    # `file:../x` through unchanged. git's own transport selection only
+    # recognises `scheme://...`; anything shaped like `word:path` with no
+    # `//` falls through to git's scp-style remote-alias parsing, so git
+    # would treat `file:./relative` as ssh to a host literally named
+    # "file", not as a local-filesystem clone. Fixed here, in this module
+    # rather than in guards.py (which this task does not own), before the
+    # string ever reaches git.
+    if safe_url.startswith("file:") and not safe_url.startswith("file://"):
+        raise InvalidRepoUrlError(
+            "file: URLs must include '//' before the path (e.g. file:///path or file://host/path).",
+            detail="scheme=file missing '//' authority separator",
+        )
 
     dest_parent.mkdir(parents=True, exist_ok=True)
     destination = dest_parent / f"repo-{uuid.uuid4().hex[:12]}"
@@ -93,6 +140,9 @@ def clone_repository(
         ) from exc
 
     if completed.returncode != 0:
+        # ignore_errors=True: same reasoning as the TimeoutExpired branch
+        # above -- a RepoUnavailableError follows immediately on every path
+        # below, so nothing here is silently swallowed.
         shutil.rmtree(destination, ignore_errors=True)
         stderr_tail = completed.stderr.strip()[-_STDERR_DETAIL_BUDGET:]
         raise RepoUnavailableError(
