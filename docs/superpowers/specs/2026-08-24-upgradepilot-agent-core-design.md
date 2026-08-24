@@ -47,7 +47,7 @@ The original brief contained three internal contradictions and one architectural
 1. **Storage.** The brief described storage as checkpointer + ChromaDB, then later introduced PostgreSQL for history and OAuth tokens. Resolved: three stores with three distinct jobs, PostgreSQL deferred to Sub-project 3.
 2. **Repository access.** "Enter a public GitHub repository" versus "start local-only." Resolved: both, via one `RepositorySource` abstraction resolving to a working tree.
 3. **API contract versus UI.** A blocking `POST /start` cannot drive a live step-by-step activity timeline. Resolved: `202` + background task + status polling.
-4. **Metadata filtering.** An early design draft assumed `where={"affected_symbols": {"$in": [...]}}`. ChromaDB metadata values must be scalars, and `$contains` applies to document text rather than metadata. Resolved in §7.2.
+4. **Metadata filtering.** An early design draft assumed `where={"affected_symbols": {"$in": [...]}}`; a later revision of this document asserted that ChromaDB metadata values must be scalars and that `$contains` applies only to document text. Both were wrong: probing the pinned `chromadb==1.5.9` showed list-valued metadata is accepted and `$contains` matches its elements exactly, while `$in` silently returns nothing. Resolved in §7.2 — list-valued `affected_symbols` filtered with `$contains`, never `$in`.
 
 ---
 
@@ -91,7 +91,7 @@ Phase 0 installs, resolves, and *verifies* the dependency set before any applica
 - which usage-metadata surface is populated on the resolved `langchain-core`
 - whether `with_structured_output(..., include_raw=True)` preserves usage metadata
 - `AsyncSqliteSaver` interrupt/resume round-trip on the resolved `langgraph`
-- ChromaDB persistence and scalar metadata filtering
+- ChromaDB persistence, and the semantics of scalar *and* list-valued metadata filtering
 
 ### 5.3 Configuration
 
