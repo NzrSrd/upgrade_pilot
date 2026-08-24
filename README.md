@@ -72,8 +72,8 @@ See `frontend/README.md` for the rest, including what is not wired up yet.
 From `backend/`:
 
 ```bash
-./.venv/bin/python -m pytest                       # 430 passed, 5 skipped
-./.venv/bin/python -m pytest --live                # 433 passed, 2 skipped (no API key here)
+./.venv/bin/python -m pytest                       # hermetic; live tests skip
+./.venv/bin/python -m pytest --live                # also runs the opt-in live tests
 ./.venv/bin/python -m ruff check src tests
 ./.venv/bin/python -m ruff format --check src tests
 ./.venv/bin/python -m mypy                         # strict, over all of src/upgradepilot
