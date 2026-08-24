@@ -38,6 +38,61 @@ SKIP_DIRECTORIES = frozenset(
 _GIT_TIMEOUT_SECONDS = 30
 
 
+def probe_head_sha(root: Path, *, timeout: int) -> str | None:
+    """Probe `git rev-parse --quiet --verify HEAD` at `root`.
+
+    This is the single discriminator that `Workspace.git_log` and
+    `local.read_commit_sha` both use to tell "a real repository with no
+    commits yet" apart from "this repository is unusable" -- a documented
+    git exit-code contract, not a heuristic, and it requires parsing no
+    stderr text at all:
+
+      0   HEAD resolves. `--verify` prints the resolved sha to stdout on
+          success, which this returns directly.
+      1   A real, usable repository with no commits yet. Returns None --
+          a legitimate, documented empty result.
+      *   Anything else (typically 128, or a killed process) means the
+          repository itself is unusable: corrupted, permission denied, or
+          an incompatible git. Raises RepoUnavailableError.
+
+    A subprocess timeout is a fourth case, also never swallowed: it
+    raises RepoUnavailableError rather than returning None, because a
+    hang is not "no commits" and must not be read as if it were.
+
+    Callers are expected to have already checked that `.git` exists --
+    "not a git repository at all" is a distinct, subprocess-free case and
+    is not this function's concern.
+
+    The `detail` on a raised error carries only known-shape fields (the
+    return code and which git subcommand ran) -- never raw stderr, which
+    is untrusted, unbounded process output and must not be logged
+    verbatim.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--quiet", "--verify", "HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RepoUnavailableError(
+            "Reading the repository's current commit took too long and was aborted.",
+            detail=f"git rev-parse --quiet --verify HEAD timed out after {timeout}s root={root}",
+        ) from exc
+
+    if completed.returncode == 0:
+        return completed.stdout.strip() or None
+    if completed.returncode == 1:
+        return None
+    raise RepoUnavailableError(
+        "This repository's git history could not be read.",
+        detail=(f"git rev-parse --quiet --verify HEAD exited {completed.returncode} root={root}"),
+    )
+
+
 class Workspace:
     """A readable repository rooted at `root`.
 
@@ -134,29 +189,35 @@ class Workspace:
     def git_log(self, limit: int = 100) -> list[CommitRecord]:
         """Recent commits with the files each touched, newest first.
 
-        There are two distinct empty-result cases here, kept apart
-        deliberately:
+        Three distinct outcomes, kept apart on purpose -- a corrupted
+        repository must never read as "no history", because `git_log`
+        feeds the `churn_on_affected` risk factor and a silent empty
+        result would make risk get computed from evidence that was
+        never actually gathered:
 
-        - No `.git` directory: this is not a git checkout at all, so an
-          empty list is the only sensible answer.
-        - `.git` exists but `git log` exits non-zero (for example, a
-          repository that has been initialized but has no commits yet):
-          also documented as an empty list, because this process cannot
-          reliably tell "no history" apart from other non-hanging git
-          failures without parsing localized git stderr text, which is
-          fragile and not worth building.
+        - No `.git` directory: not a git checkout at all. No subprocess
+          is spawned; returns `[]`.
+        - `.git` exists and `probe_head_sha` reports no commits yet (a
+          real, usable repository that is simply new): returns `[]`.
+          This is a legitimate, documented empty result.
+        - `.git` exists and the repository is otherwise unusable
+          (corrupted, permission denied, an incompatible git) or a git
+          subprocess hangs: raises `RepoUnavailableError`. The caller
+          must be told history could not be read, not handed a zero.
 
-        A hung git process is different from both of those and is not
-        swallowed: it raises `RepoUnavailableError` rather than
-        masquerading as "no history".
+        See `probe_head_sha` for how "no commits" is distinguished from
+        "unusable" without parsing any git stderr text.
 
-        One subprocess call, not one per file.
+        One subprocess call for the log itself, not one per file.
         """
         if limit < 1:
             raise ValueError(f"git_log limit must be a positive integer, got {limit}")
 
         if not (self._root / ".git").exists():
             return []
+
+        if probe_head_sha(self._root, timeout=_GIT_TIMEOUT_SECONDS) is None:
+            return []  # a real, usable repository with no commits yet
 
         try:
             completed = subprocess.run(
@@ -181,8 +242,13 @@ class Workspace:
             ) from exc
 
         if completed.returncode != 0:
-            # Documented empty result, not a silent one -- see docstring.
-            return []
+            # probe_head_sha already confirmed HEAD resolves, so a non-zero
+            # exit here is a genuine, unexpected git failure -- not a case
+            # that has any legitimate reading as "no history".
+            raise RepoUnavailableError(
+                "This repository's git history could not be read.",
+                detail=f"git log exited {completed.returncode} root={self._root}",
+            )
 
         records: list[CommitRecord] = []
         sha: str | None = None

@@ -51,6 +51,29 @@ def git_repo(repo: Path) -> Path:
     return repo
 
 
+@pytest.fixture
+def empty_git_repo(tmp_path: Path) -> Path:
+    """A real, initialized git repository with no commits yet.
+
+    Distinct from `repo` (no `.git` at all) and from `broken_git_repo`
+    (a `.git` that exists but is unusable) -- this is the "usable
+    repository, simply new" case that must return an empty result, not
+    raise."""
+    root = tmp_path / "empty"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    return root
+
+
+@pytest.fixture
+def broken_git_repo(git_repo: Path) -> Path:
+    """A git repository that is unusable: `.git` exists but `HEAD` is gone.
+
+    This must never be read as "no history" -- it is a real failure."""
+    (git_repo / ".git" / "HEAD").unlink()
+    return git_repo
+
+
 # --- iteration ------------------------------------------------------------
 
 
@@ -205,12 +228,49 @@ def test_commit_sha_is_none_without_git(repo: Path) -> None:
 def test_read_commit_sha_raises_on_a_hung_git_process(git_repo: Path) -> None:
     with (
         patch(
-            "upgradepilot.services.repo.local.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["git", "rev-parse", "HEAD"], timeout=15),
+            "upgradepilot.services.repo.workspace.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(
+                cmd=["git", "rev-parse", "--quiet", "--verify", "HEAD"], timeout=15
+            ),
         ),
         pytest.raises(RepoUnavailableError),
     ):
         read_commit_sha(git_repo)
+
+
+# --- git failure modes: no commits vs. broken vs. no .git at all ----------
+
+
+def test_git_log_and_commit_sha_are_empty_for_a_repo_with_no_commits(
+    empty_git_repo: Path,
+) -> None:
+    """A real, usable repository that simply has no history yet is a
+    legitimate empty result, not an error."""
+    assert Workspace(root=empty_git_repo).git_log() == []
+    assert read_commit_sha(empty_git_repo) is None
+
+
+def test_git_log_raises_when_the_repository_is_broken(broken_git_repo: Path) -> None:
+    """`.git` exists but `HEAD` is gone: this must not read as "no history"."""
+    with pytest.raises(RepoUnavailableError):
+        Workspace(root=broken_git_repo).git_log()
+
+
+def test_read_commit_sha_raises_when_the_repository_is_broken(
+    broken_git_repo: Path,
+) -> None:
+    with pytest.raises(RepoUnavailableError):
+        read_commit_sha(broken_git_repo)
+
+
+def test_no_git_directory_is_a_distinct_no_subprocess_path(repo: Path) -> None:
+    """No `.git` at all must not spawn git and must not share a code path
+    with "no commits yet" -- it is checked and returned before any
+    subprocess call."""
+    with patch("upgradepilot.services.repo.workspace.subprocess.run") as run:
+        assert Workspace(root=repo).git_log() == []
+        assert read_commit_sha(repo) is None
+        run.assert_not_called()
 
 
 # --- lifecycle ------------------------------------------------------------
