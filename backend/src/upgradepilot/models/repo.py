@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Self
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, computed_field, model_validator
 
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import (
@@ -66,6 +66,23 @@ class SymbolStat(HonestModel):
     files: tuple[NonBlankStr, ...] = Field(min_length=1)
     confidence: Confidence
 
+    @model_validator(mode="after")
+    def _count_cannot_contradict_its_own_files(self) -> Self:
+        """`count` is usage *sites*, `files` is the distinct files they are
+        in, so `count >= len(files)` always. The reverse -- a count of 1
+        claiming three files -- is a stat that contradicts its own evidence,
+        and `count` feeds the blast-radius figures the report quotes.
+
+        Deliberately not `count == len(files)`: several sites in one file is
+        the normal case, and `from_sites` produces exactly that.
+        """
+        if self.count < len(self.files):
+            raise ValueError(
+                "count must be at least the number of files it spans: "
+                f"symbol={self.symbol!r}, count={self.count}, files={len(self.files)}"
+            )
+        return self
+
 
 class SymbolInventory(HonestModel):
     entries: tuple[SymbolStat, ...] = ()
@@ -77,6 +94,19 @@ class SymbolInventory(HonestModel):
         disagree; this property can't drift because it is derived fresh
         from `.symbol` every time."""
         return {stat.symbol: stat for stat in self.entries}
+
+    @model_validator(mode="after")
+    def _symbols_are_unique(self) -> Self:
+        """Two entries for one symbol make `by_symbol` silently drop one and
+        make `high_confidence_symbols` double-count it. Both feed
+        evidence_coverage, so a duplicate turns a coverage figure the report
+        quotes into a number that matches no set of entries.
+        """
+        symbols = [stat.symbol for stat in self.entries]
+        if len(symbols) != len(set(symbols)):
+            duplicated = sorted({s for s in symbols if symbols.count(s) > 1})
+            raise ValueError(f"duplicate symbols in inventory: {duplicated}")
+        return self
 
     @classmethod
     def from_sites(cls, sites: list[UsageSite]) -> Self:
@@ -113,10 +143,44 @@ class SymbolInventory(HonestModel):
 class AffectedFile(HonestModel):
     path: NonBlankStr
     usage_sites: tuple[UsageSite, ...] = Field(min_length=1)
-    symbols: tuple[str, ...] = ()
     is_test: bool = False
     commit_count: int = Field(default=0, ge=0)
     last_modified: datetime | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def symbols(self) -> tuple[NonBlankStr, ...]:
+        """The distinct symbols used in this file, sorted.
+
+        Derived, never stored -- CLAUDE.md rule 21, and the same argument
+        `SymbolInventory.by_symbol` makes just above. As a field it could
+        disagree with `usage_sites`, which is the one thing that must never
+        happen here: `usage_sites` carries the file and line the report
+        cites, and `symbols` is what the corpus is queried with, so drift
+        between them means citing evidence for a symbol nobody uses.
+
+        `@computed_field` rather than a bare property so it still appears in
+        `model_dump()`, keeping the serialised shape it had as a field. It
+        recomputes on access rather than caching: the input is a frozen
+        tuple, so there is nothing to invalidate and nothing to go stale.
+        """
+        return tuple(sorted({site.symbol for site in self.usage_sites}))
+
+    @model_validator(mode="after")
+    def _sites_belong_to_this_file(self) -> Self:
+        """Every usage site must be in the file this object names.
+
+        An AffectedFile whose `path` disagrees with its sites' `file` reports
+        a finding against one file while citing lines from another -- an
+        exact instance of the failure CLAUDE.md rule 1 exists to prevent,
+        and structurally valid without this check.
+        """
+        foreign = sorted({site.file for site in self.usage_sites if site.file != self.path})
+        if foreign:
+            raise ValueError(
+                f"usage_sites must all belong to path={self.path!r}; found sites in {foreign}"
+            )
+        return self
 
     @classmethod
     def from_sites(
@@ -131,7 +195,6 @@ class AffectedFile(HonestModel):
         return cls(
             path=path,
             usage_sites=tuple(sites),
-            symbols=tuple(sorted({s.symbol for s in sites})),
             is_test=is_test,
             commit_count=commit_count,
             last_modified=last_modified,
@@ -145,8 +208,29 @@ class CommitRecord(HonestModel):
 
 
 class RepoAnalysis(HonestModel):
-    commit_sha: str | None
-    languages: dict[str, float] = Field(default_factory=dict)
+    commit_sha: ShaStr | None
+    """`ShaStr`, not `str`: `commit_sha=""` used to construct, and this sha is
+    what every file-and-line citation in the report is resolved against.
+    `CommitRecord.sha` was already `ShaStr`; these two name the same kind of
+    thing and must be validated the same way."""
+
+    # The only stored mapping in this package. Bounded rather than
+    # redesigned: keys are non-blank language names and values are shares in
+    # [0.0, 1.0]. Deliberately NOT required to sum to 1.0 -- the analyzer
+    # that populates this does not exist yet (Phase 2), and whether it
+    # reports byte shares over all files, over recognised files only, or
+    # something else decides whether that sum is 1.0. Bounds plus non-blank
+    # keys is what can be defended today; a stricter contract would be
+    # invented against imagined behaviour.
+    #
+    # Residual, documented: `frozen=True` stops assignment but a `dict` is
+    # still mutable in place, so unlike every collection field here this one
+    # can be edited after construction. Left as a `dict` because fixing it
+    # properly means a shape change (a tuple of records), which is a Phase 2
+    # decision to make alongside the analyzer.
+    languages: dict[NonBlankStr, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
+        default_factory=dict
+    )
     manifests: tuple[Manifest, ...] = ()
     detected_version: DetectedVersion | None
     total_python_files: int = Field(ge=0)
