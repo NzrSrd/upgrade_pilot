@@ -45,19 +45,21 @@ Nothing here is assumed. Every item is a probe whose result gets written into AD
 
 ## Phase 1 — Domain models and repository access — COMPLETE
 
-- [x] Domain models per spec §6.3, with the honesty invariants (`BreakingChange.source` required, `RiskFactor.evidence` min length 1)
+- [x] The domain models Phase 1 consumes, with the honesty invariants (`BreakingChange.source` required, `RiskFactor.evidence` min length 1): the repository and analysis models (`RepoRef`, `Manifest`, `DetectedVersion`, `RepoAnalysis`, `UsageSite`, `AffectedFile`, `SkippedFile`, `SymbolInventory`, `CommitRecord`), the evidence models (`SourceRef`, `EvidenceRef`, `BreakingChange`, `RiskFactor`), the input models (`DependencySpec`, `UserConstraints`) and the error taxonomy (`AppError`, `ErrorCode`). Sixteen of the thirty-one models listed in spec §6.3 are deliberately **not** built yet — the RAG models (`RagQuery`, `RagEvaluation`, `RagContext`), the judgment and HITL models (`RiskAnalysis`, `DecisionOption`, `InterruptPayload`, `HumanDecision`, `DecisionApplication`), the plan models (`MigrationStep`, `MigrationPlan`, `ValidationReport`) and the run/usage models (`LLMCall`, `UsageSummary`, `TraceEvent`, `RunSnapshot`, `FinalReport`). Each arrives with the phase that consumes it (Phases 5–9), where its shape can be driven by a real caller instead of guessed at here
 - [x] `EvidenceRef` discriminated union
 - [x] `RepoRef` → `Workspace` abstraction
 - [x] Shallow-clone resolver (depth 100, single branch)
 - [x] Local-path resolver
-- [x] Path and URL guards: scheme allowlist, `ALLOWED_LOCAL_ROOTS`, symlink escape, size caps
-- [x] Workspace cleanup, including startup sweep of stale workspaces
-- [x] Hand-authored fixture repository with real git history (`backend/tests/fixtures/sample_repo/`, built by `build_sample_repo()`) — supersedes the "vendored, pinned to a commit" wording above; see spec §12 assumption 5 for the recorded deviation. A real public repository, pinned by commit, is still planned but deferred to Phase 12 for the demo and E2E path.
+- [x] Path and URL guards: scheme allowlist, `ALLOWED_LOCAL_ROOTS` (confining local-path refs **and** `file://` clone URLs, since git resolves a `file://` URL against local disk and ignores its host), symlink escape, size caps. One asymmetry to know about: a `file://` URL must percent-encode a space as `%20`, while a `LocalRepoRef` path accepts a raw space — so prefer the local-path form for a path like `/Users/me/My Documents/repo`
+- [x] Workspace cleanup, and `WorkspaceManager.sweep_stale` implemented and tested (`test_workspace_manager.py`). Its **startup invocation is not wired**: `sweep_stale` currently has no caller and there is no FastAPI lifespan to call it from. Wiring it needs a max-age setting, a lifespan handler and tests of its own, so it lands with the API lifespan in Phase 9 rather than being claimed here
+- [x] Hand-authored fixture repository with real git history (`backend/tests/fixtures/sample_repo/`, built by `build_sample_repo()`) — supersedes the "vendored, pinned to a commit" wording above; see spec §12 assumption 5 for the recorded deviation. A real public repository, pinned by commit, is still planned but deferred to Phase 12 for the demo and E2E path — carried there as an explicit item, not merely as a promise made here.
 - [x] Tests: each guard, both resolvers, cleanup, and the fixture repository's own shape (`test_fixture_repo.py`)
 
-**Exit:** a public URL and a local path both produce a `Workspace` the analyzer can read, and every guard has a failing-case test. Met — see `backend/tests/unit/{test_repo_guards,test_clone,test_workspace,test_workspace_manager,test_fixture_repo}.py`.
+**Exit:** a public URL and a local path both produce a `Workspace` the analyzer can read, and every guard has a failing-case test. Met — see `backend/tests/unit/{test_repo_guards,test_clone,test_workspace,test_workspace_manager,test_fixture_repo}.py` for the local path and the guards, and `backend/tests/repo/test_clone_live.py` for the public URL.
 
-**Note on scope:** several items originally listed under Phase 1's wording elsewhere in this doc's history ("detect repository languages", "detect dependency manifests", "identify the requested dependency", "read installed version", "identify direct imports", "calculate change indicators") are Phase 2 work in this plan's actual task structure — they consume the `Workspace` and fixture built here but are not domain-model or repository-access work themselves. Phase 1, as implemented, is scoped to domain models and repository access only; Phase 2 covers manifest/version/usage detection.
+The URL half needs that second file to be cited honestly. Every test in `test_clone.py` clones over `file://`, which is **not** in the shipped `allowed_url_schemes` (`https`, `git`), so the hermetic suite proved the clone machinery without ever proving the transport a real user gets. `test_clone_live.py` closes that with one real `https` clone of a small public repository, marked `@pytest.mark.live` to match the existing opt-in convention: it skips under plain `pytest` and runs under `pytest --live` (verified passing, 3 passed).
+
+**Note on scope:** five items originally listed under Phase 1's wording elsewhere in this doc's history ("detect dependency manifests", "identify the requested dependency", "read installed version", "identify direct imports", "calculate change indicators") are Phase 2 work in this plan's actual task structure — they consume the `Workspace` and fixture built here but are not domain-model or repository-access work themselves. Phase 1, as implemented, is scoped to domain models and repository access only; Phase 2 covers manifest/version/usage detection.
 
 ## Phase 2 — Repository analysis
 
@@ -71,6 +73,7 @@ Nothing here is assumed. Every item is a probe whose result gets written into AD
 - [ ] `SkippedFile` records for unparseable files
 - [ ] Churn from a single `git log --name-only` call
 - [ ] Test location detection
+- [ ] Language mix for `RepoAnalysis.languages` by counting file extensions over the workspace — the field exists and defaults to `{}`, so without this it stays empty and any UI reading it shows nothing. A sixth item in Phase 1's scope note ("detect repository languages") deferred here without a corresponding line; this is that line
 - [ ] `SymbolInventory` and `AffectedFile` assembly
 - [ ] Tests: fixture files for every usage kind, an unparseable file, every manifest type
 
@@ -80,14 +83,14 @@ Nothing here is assumed. Every item is a probe whose result gets written into AD
 
 - [ ] Document metadata schema and frontmatter format
 - [ ] Corpus authored one breaking change per document — real Pydantic v1→v2 primary sources, plus a small number of authored ADRs and upgrade reports representing internal engineering guidance
-- [ ] Ingestion: parse frontmatter, chunk, embed, persist with scalar metadata
-- [ ] `affected_symbols` stored as a parseable delimited string for post-retrieval use
-- [ ] Retrieval with scalar metadata filters
-- [ ] Python-side symbol coverage annotation and re-ranking
+- [ ] Ingestion: parse frontmatter, chunk, embed, persist — scalar metadata for the coarse fields, `affected_symbols` as a real list
+- [ ] `affected_symbols` stored as a **list-valued** metadata field, filtered in the database with `$contains` (exact-element) and never with `$in`
+- [ ] Retrieval with scalar metadata filters for coarse narrowing, plus the `$contains` symbol join
+- [ ] Symbol coverage annotation over retrieved candidates, and the deterministic sufficiency gate
 - [ ] Source metadata returned with every result
 - [ ] Deterministic fake embedding function for tests
 - [ ] Golden evaluation set (~15 cases) with recall@5 and MRR floors asserted in CI
-- [ ] Tests: retrieval, filtering, re-ranking, source metadata fidelity, Chroma-unavailable handling
+- [ ] Tests: retrieval, scalar filtering, `$contains` symbol filtering including the negative direction (a prefix-colliding symbol must not match), source metadata fidelity, Chroma-unavailable handling
 
 **Exit:** a migration question returns relevant evidence with source metadata that resolves, and the golden set meets its floors.
 
@@ -220,6 +223,7 @@ Nothing here is assumed. Every item is a probe whose result gets written into AD
 ## Phase 12 — Demo scenario and polish
 
 - [ ] Pinned demo: fixture repository, Pydantic v1 → v2, zero-downtime plus deadline constraints
+- [ ] A real public Python repository, vendored or cloned at a **fixed commit**, for the demo and the end-to-end path — the deferral recorded in Phase 1 and in spec §12 assumption 5, landing here. The hand-authored fixture stays the basis for analyzer unit tests; this is the second, realistic target
 - [ ] Verify the run reliably reaches a meaningful HITL decision
 - [ ] Empty, loading, and error states
 - [ ] Responsive layout; keyboard-navigable controls; accessible labels

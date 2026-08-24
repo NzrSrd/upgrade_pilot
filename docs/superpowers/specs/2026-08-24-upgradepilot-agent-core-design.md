@@ -95,7 +95,7 @@ Phase 0 installs, resolves, and *verifies* the dependency set before any applica
 
 ### 5.3 Configuration
 
-`pydantic-settings`, `.env` plus a committed `.env.example`. No secrets in git. Notable settings: `ALLOWED_LOCAL_ROOTS`, `MAX_REPO_FILES`, `MAX_REPO_BYTES`, `CLONE_DEPTH` (default 100), `MAX_RAG_ITERATIONS`, `MAX_CONCURRENT_RUNS` (default 4), `MODEL_PRICING`.
+`pydantic-settings`, `.env` plus a committed `.env.example`. No secrets in git. Notable settings: `ALLOWED_LOCAL_ROOTS` (governing local-path refs **and** `file://` clone URLs), `MAX_REPO_FILES`, `MAX_REPO_BYTES`, `CLONE_DEPTH` (default 100), `MAX_RAG_ITERATIONS`, `MAX_CONCURRENT_RUNS` (default 4), `MODEL_PRICING`.
 
 ---
 
@@ -178,7 +178,8 @@ The parent's `agentic_rag` node is an **explicit wrapper** rather than a bare co
 **Guards**, because accepting a URL or filesystem path is an arbitrary-read surface:
 
 - URL scheme allowlist (`https`, `git`); credentials-in-URL rejected
-- local paths must resolve under a configured `ALLOWED_LOCAL_ROOTS`
+- local paths must resolve under a configured `ALLOWED_LOCAL_ROOTS` — and so must the path in a `file://` clone URL. The setting governs **both** doors, not just the local-path ref: git treats a `file://` URL as a local-disk read, ignoring the URL's host entirely, so confining only the local-path ref would leave the allowlist bypassable by spelling the same path as a URL.
+- the two forms differ on one point, and the difference is deliberate: a `file://` **URL** containing a space must percent-encode it as `%20`, because an unencoded space is invalid per RFC 3986 and the URL guard enforces that, while a `LocalRepoRef` **path** still accepts a raw space. This matters more than it sounds: `/Users/me/My Documents/repo` is an ordinary macOS path, so the local-path form is the one to reach for when a path has spaces in it. Note also that git percent-*decodes* the path it opens, so `file://.../a%20b` reads the directory `a b` — the guard and git agree on the decoded path, not the raw text.
 - symlinks resolving outside the workspace root are skipped
 - hard caps on file count and total bytes, enforced before analysis begins
 - temp workspaces cleaned on run completion and on startup sweep
@@ -373,7 +374,7 @@ START → analyze_repo → inspect_dependency → agentic_rag ⟨subgraph⟩ →
 
 | Endpoint | Returns |
 |---|---|
-| `GET /api/health` | `{status, version, checks: {chroma, checkpointer, openai_configured}}`. Checks configuration and local stores; does **not** call OpenAI — a health probe should not cost money or inherit its latency. |
+| `GET /api/health` | `{status, version, checks: {chroma_dir, checkpoint_dir, openai_configured}}`, where `status` is `"ok"` when every check is true and `"degraded"` otherwise — **derived** from `checks`, never asserted alongside them. Checks configuration and local stores; does **not** call OpenAI — a health probe should not cost money or inherit its latency. The field names were `chroma`/`checkpointer` in an earlier version of this table; they are `chroma_dir`/`checkpoint_dir` to match the implementation, and the spec was the side that changed. `chroma`/`checkpointer` implied the *stores* had been probed, whereas what is actually checked — deliberately, so the probe stays free and local — is whether each store's **directory** exists and is writable, or could be created. The narrower name is the one that does not overclaim. |
 | `POST /api/agent/start` | **202** `{thread_id, status: "running", poll_url}` |
 | `GET /api/agent/status/{thread_id}` | `RunSnapshot` — status, current step, completed steps, trace, usage, evidence so far, `pending_decision` when interrupted, `final_report` when done, errors |
 | `POST /api/agent/resume` | **202**, same shape as start. **409** if not awaiting input, **404** unknown thread, **422** invalid decision |
@@ -482,7 +483,11 @@ Layer 6 exists for a specific reason: with a fake LLM supplying synthetic usage 
 
 Frontend: Vitest and React Testing Library over the polling hook (with MSW) and `HumanReviewPanel` (renders options, disables on submit).
 
-CI: `pytest`, `ruff`, `mypy` (strict over `models/` and `services/`), `vitest`, `tsc --noEmit`.
+CI: `pytest`, `ruff`, `mypy`, `vitest`, `tsc --noEmit`.
+
+**mypy scope.** Strict over the whole of `src/upgradepilot`. This clause previously sanctioned "strict over `models/` and `services/`", which left `__init__.py`, `config.py` and all four files under `api/` unchecked — `config.py` being the module everything else imports — so `strict = true` was doing visibly less than it appeared to. Widening it cost nothing: all six previously-excluded files pass strict as they stand.
+
+`tests` is **not** in scope, and that is a measured decision rather than the old omission carried forward: adding it reports 117 errors across 13 files. Most are ordinary test-code looseness (22 unannotated functions, plus `arg-type` and `call-overload` noise from calling LangGraph and Chroma with literal dicts where the stubs want `RunnableConfig`), but 8 of them are in `tests/fixtures/sample_repo/` — the deliberately Pydantic-v1, deliberately-unparseable fixture tree, whose contents must never be "fixed". Bringing `tests` under mypy therefore requires excluding that fixture first, and is its own piece of work rather than a config edit.
 
 ---
 

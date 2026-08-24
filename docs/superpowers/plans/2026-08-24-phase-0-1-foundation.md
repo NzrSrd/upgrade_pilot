@@ -893,9 +893,11 @@ pre-interrupt side effects run twice, aborted-pass writes are discarded."
 
 ---
 
-### Task 4: ChromaDB probe — persistence and scalar metadata filtering
+### Task 4: ChromaDB probe — persistence and metadata filtering
 
-Spec §7.2 depends on two ChromaDB facts: a persistent client survives process restart, and scalar metadata filters work while list-valued metadata does not. Both are verified here rather than assumed.
+> **Superseded by what this task actually found — read this before reusing anything below.** This task was planned on the assumption that list-valued metadata is *rejected* by ChromaDB, and therefore that symbol matching had to be a post-retrieval Python re-rank over a delimited string. **Running the probe refuted that.** Against the pinned `chromadb==1.5.9`, list-valued metadata is accepted and round-trips as a real `list`; `$contains` matches its elements exactly (`Config` does not match `ConfigDict`); and `$in` silently returns nothing and must never be used. So the symbol join is a database predicate, not a Python post-pass, and `affected_symbols` is stored as a real list, not a delimited string. The corrected design is spec §7.2 and §4 correction 4; the executed test is `backend/tests/knowledge/test_chroma_contract.py`, which asserts the opposite of the code sketched in the steps below. The step text and code blocks are left as the historical record of what was planned — they are **not** the design, and the delimited-string/re-rank approach in them must not be revived by a later phase.
+
+Spec §7.2 depends on two ChromaDB facts: a persistent client survives process restart, and metadata filtering behaves as the retrieval design assumes. Both are verified here rather than assumed — and the second came back different from the assumption, which is what the probe was for.
 
 **Files:**
 - Create: `backend/probes/probe_chroma.py`
@@ -915,6 +917,8 @@ Spec §7.2 depends on two ChromaDB facts: a persistent client survives process r
 2. Scalar metadata filters work.
 3. List-valued metadata is rejected — which is *why* symbol matching is
    post-retrieval re-ranking rather than a database predicate.
+   [SUPERSEDED: false. List-valued metadata is accepted; the join is a
+   `$contains` where-clause. See the banner at the top of this task.]
 """
 
 import hashlib
@@ -1022,6 +1026,7 @@ def test_source_metadata_round_trips(tmp_path):
     assert metadata["source_type"] == "migration_guide"
     assert metadata["to_version_major"] == 2
     # Symbols travel as a delimited string, parsed after retrieval.
+    # [SUPERSEDED: they travel as a real list. See this task's banner.]
     assert [s for s in metadata["symbols"].split("|") if s] == ["validator", "root_validator"]
 
 
@@ -1134,6 +1139,8 @@ git commit -m "test(knowledge): lock ChromaDB persistence and metadata contract
 Confirms scalar filters work and list metadata is rejected, which is why
 symbol matching is post-retrieval re-ranking. Adds the deterministic
 offline embedding function Phase 3 tests will share."
+# [SUPERSEDED: the probe refuted this; the committed message differs.
+#  See this task's banner.]
 ```
 
 ---
@@ -3144,7 +3151,8 @@ in place and never deleted."
 
 **Interfaces:**
 - Consumes: `guards.validate_clone_url`, `workspace.Workspace`, `local.read_commit_sha`.
-- Produces: `clone_repository(url, dest_parent, *, depth, allowed_schemes, timeout=180) -> Workspace` returning a Workspace whose `cleanup_dir` is the created directory.
+- Produces: `clone_repository(url, dest_parent, *, depth, allowed_schemes, allowed_local_roots, timeout=180) -> Workspace` returning a Workspace whose `cleanup_dir` is the created directory.
+- `allowed_local_roots` was added after this plan was written and is **required**, not defaulted: `ALLOWED_LOCAL_ROOTS` now confines `file://` clone URLs as well as local-path refs, since a `file://` URL is a local-disk read that git resolves ignoring the URL's host. Requiring the argument forces every call site to state its filesystem policy; a default would let a new one silently inherit one. It is consulted only for a `file://` URL.
 
 Tests clone from a **local bare repository over `file://`**, injecting `allowed_schemes={"file"}`. No network, so tests stay hermetic and fast.
 
