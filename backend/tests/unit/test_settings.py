@@ -20,15 +20,143 @@ def test_comma_separated_env_values_parse_into_collections(monkeypatch) -> None:
     assert settings.cors_origins == ("http://localhost:5173",)
 
 
-def test_api_key_is_read_without_the_up_prefix(monkeypatch) -> None:
-    """An explicit alias bypasses env_prefix."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-unprefixed")
-    monkeypatch.delenv("UP_OPENAI_API_KEY", raising=False)
-    assert Settings(_env_file=None).openai_configured is True
+def _clear_key_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "OPENROUTER_API_KEY",
+        "OPENAI_API_KEY",
+        "UP_LLM_API_KEY",
+        "OPENROUTER_BASE_URL",
+        "OPENAI_BASE_URL",
+        "UP_LLM_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
-    monkeypatch.delenv("OPENAI_API_KEY")
-    monkeypatch.setenv("UP_OPENAI_API_KEY", "sk-prefixed")
-    assert Settings(_env_file=None).openai_configured is False
+
+def test_either_provider_variable_supplies_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`AliasChoices` bypasses env_prefix, and either vendor's name works."""
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-unprefixed")
+    assert Settings(_env_file=None).llm_configured is True
+
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oa-unprefixed")
+    assert Settings(_env_file=None).llm_configured is True
+
+
+def test_openrouter_wins_when_both_provider_variables_are_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A machine that has both exported must resolve one way, every run.
+
+    First choice wins, measured against pydantic-settings 2.15.0. Without a
+    pinned order the process would pick a provider by whichever variable the
+    environment happened to carry, and the run's cost and model identifiers
+    would follow a provider nobody chose.
+    """
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-wins")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-oa-loses")
+
+    key = Settings(_env_file=None).llm_api_key
+    assert key is not None
+    assert key.get_secret_value() == "sk-or-wins"
+
+
+def test_all_three_key_spellings_resolve_in_a_fixed_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three names reach this one field, and the order between them is pinned.
+
+    `OPENROUTER_API_KEY` > `OPENAI_API_KEY` > `UP_LLM_API_KEY`. The last is
+    the `env_prefix` spelling every other setting uses, and it works only
+    because `validate_by_name=True` is set -- measured, and measured a second
+    time after adding that flag, because adding it CHANGED this answer.
+    Without it the prefixed spelling was silently ignored.
+
+    A machine can carry more than one of these: a shared shell profile
+    exporting `OPENAI_API_KEY` for other tools, plus this project's own. An
+    unpinned order would pick the provider by whichever variable happened to
+    be present, and the run's cost, model identifiers and error taxonomy
+    would all follow a provider nobody chose.
+    """
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("UP_LLM_API_KEY", "sk-prefixed")
+    assert Settings(_env_file=None).llm_configured is True
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+    key = Settings(_env_file=None).llm_api_key
+    assert key is not None and key.get_secret_value() == "sk-openai"
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    key = Settings(_env_file=None).llm_api_key
+    assert key is not None and key.get_secret_value() == "sk-openrouter"
+
+
+def test_settings_can_still_be_built_by_field_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`validate_by_name=True`, asserted rather than trusted.
+
+    A field with a `validation_alias` accepts ONLY that alias unless this is
+    set -- and because `extra="ignore"` swallows the unknown keyword instead
+    of raising, `Settings(llm_api_key=...)` returned a Settings whose key was
+    silently None. Every test here builds Settings by keyword, so the whole
+    suite would have been exercising an unconfigured object while reading as
+    though it were configured.
+    """
+    _clear_key_env(monkeypatch)
+    settings = Settings(_env_file=None, llm_api_key="sk-by-field-name")
+    assert settings.llm_configured is True
+    assert settings.llm_api_key is not None
+    assert settings.llm_api_key.get_secret_value() == "sk-by-field-name"
+
+
+def test_an_unset_base_url_means_the_client_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """None, not "" -- an empty string is a base URL the client would try to
+    use. None is what makes an unconfigured install behave exactly as it did
+    before this setting existed."""
+    _clear_key_env(monkeypatch)
+    assert Settings(_env_file=None).llm_base_url is None
+
+
+def test_a_base_url_without_a_scheme_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`openrouter.ai/api/v1` is the shape an operator naturally types and
+    the one that fails worst: the client reads it as a relative reference and
+    the eventual error names a host nobody configured."""
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "openrouter.ai/api/v1")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_a_blank_base_url_is_refused_rather_than_treated_as_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sixth appearance of this project's empty-exported-variable defect.
+    `OPENROUTER_BASE_URL=` must not silently become the OpenAI default -- the
+    operator wrote the variable, and guessing which provider they meant is
+    how the previous five instances did damage."""
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "   ")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_a_base_url_with_a_trailing_newline_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What a copied `.env` line or a shell heredoc leaves behind. Accepted,
+    it reaches the HTTP client as part of the host."""
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1\n")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_a_real_base_url_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The negative tests above are worthless unless the positive direction
+    is shown to pass: a validator refusing everything would satisfy them."""
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    assert Settings(_env_file=None).llm_base_url == "https://openrouter.ai/api/v1"
 
 
 def test_explicit_kwargs_override_the_environment(monkeypatch) -> None:
@@ -184,24 +312,27 @@ def test_split_csv_drops_blank_parts(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_api_key_is_not_in_the_settings_repr(monkeypatch: pytest.MonkeyPatch) -> None:
     """`repr(settings)` is what reaches a log line, a traceback frame and a
     pytest failure report. As a plain `str` the key was in all three."""
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-do-not-leak-me")
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-do-not-leak-me")
 
     settings = Settings(_env_file=None)
 
     assert "sk-do-not-leak-me" not in repr(settings)
     assert "sk-do-not-leak-me" not in str(settings)
-    assert settings.openai_api_key is not None
-    assert settings.openai_api_key.get_secret_value() == "sk-do-not-leak-me"
+    assert settings.llm_api_key is not None
+    assert settings.llm_api_key.get_secret_value() == "sk-do-not-leak-me"
 
 
 def test_an_empty_api_key_is_not_reported_as_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`OPENAI_API_KEY=` gives a SecretStr wrapping "", and a SecretStr is an
-    object -- reading it as truthy would report a key that is not there."""
-    monkeypatch.setenv("OPENAI_API_KEY", "")
-    assert Settings(_env_file=None).openai_configured is False
+    """`OPENROUTER_API_KEY=` gives a SecretStr wrapping "", and a SecretStr
+    is an object -- reading it as truthy would report a key that is not
+    there."""
+    _clear_key_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    assert Settings(_env_file=None).llm_configured is False
 
-    monkeypatch.setenv("OPENAI_API_KEY", "   ")
-    assert Settings(_env_file=None).openai_configured is False
+    monkeypatch.setenv("OPENROUTER_API_KEY", "   ")
+    assert Settings(_env_file=None).llm_configured is False
 
 
 # --- clone_depth ----------------------------------------------------------
@@ -258,11 +389,16 @@ def test_a_typoed_env_var_is_not_caught_by_either_extra_mode(
 
 def test_forbid_would_reject_an_unrelated_key_in_the_dotenv_file(tmp_path: Path) -> None:
     """The other half of the measurement: what `forbid` *does* reject is any
-    key in the .env file that is not a field, prefix or no prefix. This
-    repository's own .env holds an unrelated non-UpgradePilot key, so
-    `forbid` would make `get_settings()` raise on it."""
+    key in the .env file that is not a field, prefix or no prefix.
+
+    The example used to be `OPENROUTER_API_KEY`, which stopped being
+    unrelated the moment `llm_api_key` began reading it -- and the test went
+    green-to-red rather than silently wrong, which is why it is still an
+    honest measurement. `AWS_REGION` stands in for the general case: a `.env`
+    shared with any other tool on the machine.
+    """
     env_file = tmp_path / "dotenv"
-    env_file.write_text("OPENROUTER_API_KEY=abc\nUP_MAX_REPO_FILES=11\n")
+    env_file.write_text("AWS_REGION=eu-west-1\nUP_MAX_REPO_FILES=11\n")
 
     class Forbidding(Settings):
         model_config = SettingsConfigDict(env_file=None, env_prefix="UP_", extra="forbid")

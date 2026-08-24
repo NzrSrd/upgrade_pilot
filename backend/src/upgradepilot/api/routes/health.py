@@ -24,7 +24,7 @@ rank failures would be asserting a severity ordering nothing here measures.
 class HealthChecks(BaseModel):
     chroma_dir: bool
     checkpoint_dir: bool
-    openai_configured: bool
+    llm_configured: bool
 
 
 class HealthResponse(BaseModel):
@@ -72,12 +72,12 @@ def health() -> HealthResponse:
     already-loaded settings. Nothing here is reported as unknown because
     nothing here is expensive enough to need to be. In particular this
     deliberately does **not** open the Chroma store, connect to the
-    checkpointer database, or call OpenAI -- a health probe must not cost
+    checkpointer database, or call the model provider -- a health probe must not cost
     money or inherit third-party latency, so what it reports is the
     readiness of the store *locations* and the presence of a key, which is
     exactly what the field names say and no more.
 
-    `openai_configured` counts toward `status` like any other check. A
+    `llm_configured` counts toward `status` like any other check. A
     missing key means the agent cannot do its job, so reporting `"ok"`
     without one would be the same class of false claim in a smaller font.
     """
@@ -85,6 +85,6 @@ def health() -> HealthResponse:
     checks = HealthChecks(
         chroma_dir=_store_ready(settings.chroma_dir),
         checkpoint_dir=_store_ready(settings.checkpoint_db.parent),
-        openai_configured=settings.openai_configured,
+        llm_configured=settings.llm_configured,
     )
     return HealthResponse(status=_derive_status(checks), version=__version__, checks=checks)

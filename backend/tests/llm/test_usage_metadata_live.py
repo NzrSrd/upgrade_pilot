@@ -22,17 +22,23 @@ class Verdict(BaseModel):
 @pytest.fixture
 def model() -> ChatOpenAI:
     settings = get_settings()
-    if not settings.openai_configured:
-        pytest.skip("OPENAI_API_KEY not configured")
+    if not settings.llm_configured:
+        pytest.skip("no LLM API key configured")
     # Rule 18 exception, deliberate and scoped: TrackedLLM is the only place
     # application code may construct a chat model. This test exists to
     # establish what TrackedLLM's extractor must read, so it has to bypass it.
-    # `openai_api_key` is a SecretStr, so the value has to be unwrapped
-    # explicitly. `openai_configured` above guarantees it is not None.
-    assert settings.openai_api_key is not None
+    # `llm_api_key` is a SecretStr, so the value has to be unwrapped
+    # explicitly. `llm_configured` above guarantees it is not None.
+    #
+    # `base_url=None` is the OpenAI default, so this test runs unchanged
+    # against either provider -- which is the point: what it asserts is that
+    # `usage_metadata` is populated by whatever endpoint is configured, and
+    # a pass against one provider is not a claim about the other.
+    assert settings.llm_api_key is not None
     return ChatOpenAI(
         model=settings.chat_model,
-        api_key=settings.openai_api_key.get_secret_value(),
+        api_key=settings.llm_api_key.get_secret_value(),
+        base_url=settings.llm_base_url,
         temperature=0,
     )
 

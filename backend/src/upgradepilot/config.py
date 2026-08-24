@@ -5,7 +5,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import AfterValidator, BeforeValidator, Field, SecretStr, field_validator
+from pydantic import (
+    AfterValidator,
+    AliasChoices,
+    BeforeValidator,
+    Field,
+    SecretStr,
+    field_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -177,6 +184,34 @@ def _require_matchable_scheme(value: str) -> str:
 
 NonBlankSetting = Annotated[str, AfterValidator(_reject_blank_element)]
 
+_HTTP_BASE_URL = re.compile(r"https?://[^\s]+\Z")
+r"""An absolute http(s) base URL with no whitespace.
+
+`\Z` and not `$` so a trailing newline -- what a shell heredoc or a copied
+`.env` line leaves behind -- is not quietly accepted into a URL the HTTP
+client then fails on with a message about the host.
+"""
+
+
+def _require_http_base_url(value: str) -> str:
+    """Reject a base URL the OpenAI client could not use.
+
+    `openrouter.ai/api/v1`, with no scheme, is the shape an operator
+    naturally types and the one that fails worst: the client treats it as a
+    relative reference and the eventual error names a host nobody
+    configured. Refused here, where the message can name the variable.
+    """
+    if not _HTTP_BASE_URL.match(value):
+        raise ValueError(f"must be an absolute http(s) URL with no whitespace (got {value!r})")
+    return value
+
+
+BaseUrl = Annotated[
+    str, BeforeValidator(_reject_blank_text), AfterValidator(_require_http_base_url)
+]
+"""An OpenAI-compatible API base URL. Absolute, or rejected at startup."""
+
+
 UrlScheme = Annotated[NonBlankSetting, AfterValidator(_require_matchable_scheme)]
 """An entry in the clone-URL scheme allowlist. Lowercase and scheme-shaped,
 or rejected at startup -- an entry that cannot match is a policy that
@@ -197,9 +232,15 @@ class Settings(BaseSettings):
         #     unknown `UP_*` variable never becomes an extra input and there
         #     is nothing for `forbid` to reject. Verified both ways.
         #   - What `forbid` *does* reject is any key in the `.env` file that
-        #     is not a field, including keys with no `UP_` prefix. This
-        #     repository's own `.env` holds an unrelated non-UpgradePilot
-        #     key, and `forbid` makes `get_settings()` raise on it.
+        #     is not a field, including keys with no `UP_` prefix. A `.env`
+        #     shared with any other tool on the machine -- an `AWS_REGION`, a
+        #     second project's token -- makes `get_settings()` raise.
+        #
+        #     This clause once cited this repository's own `.env` and its
+        #     `OPENROUTER_API_KEY` as the example. That stopped being true
+        #     when `llm_api_key` began reading that variable, so the example
+        #     is now the general case rather than a local fact that quietly
+        #     expired. The measurement it supports is unchanged.
         #
         # So `forbid` costs a real, reproducible startup failure and buys
         # nothing against the failure mode it was proposed for. Catching a
@@ -208,17 +249,64 @@ class Settings(BaseSettings):
         # cost -- an injected `UP_*` variable from unrelated infrastructure
         # would then hard-fail startup. Not taken here.
         extra="ignore",
+        # Required by `llm_api_key` / `llm_base_url`, which use
+        # `validation_alias`. Without it a field carrying a validation_alias
+        # can ONLY be populated by that alias -- `Settings(llm_api_key="sk-x")`
+        # returns a Settings whose `llm_api_key` is None, silently, because
+        # `extra="ignore"` swallows the keyword as an unknown extra rather
+        # than raising. Every test in this repository builds Settings by
+        # keyword, so the failure would have been a suite that tests an
+        # unconfigured object while appearing to test a configured one.
+        #
+        # `validate_by_name`, not the older `populate_by_name`: both were
+        # measured to work identically here, and the latter is deprecated in
+        # pydantic 2.13.4.
+        validate_by_name=True,
     )
 
-    # OpenAI. An explicit alias bypasses env_prefix entirely, so this is read
-    # from OPENAI_API_KEY and *not* from UP_OPENAI_API_KEY. Verified.
+    # The chat/embedding provider. Named for the ROLE, not for a vendor:
+    # OpenRouter serves the same OpenAI-compatible API, and the fields that
+    # select it should not read as if one vendor were assumed. Spec 12
+    # assumption 4 is amended to match.
+    #
+    # `AliasChoices` bypasses `env_prefix` entirely -- measured against
+    # pydantic-settings 2.15.0 rather than assumed:
+    #
+    #   OPENROUTER_API_KEY  >  OPENAI_API_KEY  >  UP_LLM_API_KEY
+    #
+    # All three are read, and that fixed order is what a machine carrying
+    # more than one of them resolves by -- a shared shell profile exporting
+    # `OPENAI_API_KEY` for other tools alongside this project's own key is
+    # the ordinary case, and an unpinned order would select a provider
+    # nobody chose.
+    #
+    # The `UP_` spelling works ONLY because `validate_by_name=True` is set
+    # in model_config above. It was measured as ignored before that flag was
+    # added and measured again afterwards, because adding it changed the
+    # answer; the test pins the order that is true now.
     #
     # SecretStr, not str: `repr(settings)` is the shape that reaches a log
     # line, a traceback frame and a pytest failure report, and a plain `str`
     # put the key in all three.
-    openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")
+    llm_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENROUTER_API_KEY", "OPENAI_API_KEY"),
+    )
+    llm_base_url: BaseUrl | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENROUTER_BASE_URL", "OPENAI_BASE_URL"),
+    )
+    """Where the OpenAI-compatible API lives. `None` means OpenAI direct --
+    the client's own default -- so an unset value keeps the previous
+    behaviour exactly and only an explicit setting redirects it."""
+
     chat_model: str = "gpt-4.1-mini"
     embedding_model: str = "text-embedding-3-small"
+    """Model identifiers are PROVIDER-SCOPED and the two providers disagree:
+    OpenAI direct wants `gpt-4.1-mini`, OpenRouter wants
+    `openai/gpt-4.1-mini`. The defaults here are OpenAI's, matching the
+    `llm_base_url=None` default, so the shipped configuration is internally
+    consistent; `.env.example` documents both sets."""
 
     # Local stores
     chroma_dir: StorePath = Path("./.chroma")
@@ -256,21 +344,19 @@ class Settings(BaseSettings):
         return value
 
     @property
-    def openai_configured(self) -> bool:
+    def llm_configured(self) -> bool:
         """Whether a usable key is present.
 
-        Spelled out rather than `bool(self.openai_api_key)`: a `SecretStr`
+        Spelled out rather than `bool(self.llm_api_key)`: a `SecretStr`
         wrapping `""` is an object, and reading it as truthy would report a
-        configured key where `OPENAI_API_KEY=` had been exported empty.
+        configured key where `OPENROUTER_API_KEY=` had been exported empty.
 
         Stripped for the same reason `NonBlankStr` strips -- a key of three
         spaces is not a key, and reporting it as configured would put a lie
-        in the health check and turn a misconfiguration into a 401 from
-        OpenAI instead of a clear local answer.
+        in the health check and turn a misconfiguration into a 401 from the
+        provider instead of a clear local answer.
         """
-        return self.openai_api_key is not None and bool(
-            self.openai_api_key.get_secret_value().strip()
-        )
+        return self.llm_api_key is not None and bool(self.llm_api_key.get_secret_value().strip())
 
 
 @lru_cache(maxsize=1)
