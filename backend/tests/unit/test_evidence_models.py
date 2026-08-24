@@ -278,3 +278,40 @@ def test_doc_evidence_relevance_may_be_absent() -> None:
     """None is a legitimate "not scored", distinct from a score of 0.0."""
     assert DocEvidence(source_id="s", chunk_id="c").relevance is None
     assert DocEvidence(source_id="s", chunk_id="c", relevance=0.0).relevance == 0.0
+
+
+_REJECTED = (
+    "/etc/passwd",              # absolute
+    "../outside/secrets.py",    # parent escape
+    "src/../../outside.py",     # parent escape, interior
+    "./src/app.py",             # curdir prefix
+    ".",                        # curdir itself
+    "src\\app\\models.py",      # windows separator
+    "   ",                      # blank (already covered by NonBlankStr, kept as a guard)
+)
+_ACCEPTED = (
+    "src/app/models.py",
+    "models.py",
+    "a/b/c/d/e.py",
+    "src/app/.hidden.py",       # a leading dot on a *segment* is a real filename
+)
+
+
+@pytest.mark.parametrize("path", _REJECTED)
+def test_repo_evidence_rejects_non_repo_relative_paths(path: str) -> None:
+    """Every citation this product prints resolves against a repository root.
+
+    An absolute path in a citation points at the analysis machine's disk, not
+    at the user's repository, and a `..` segment points outside the tree that
+    was analyzed at all. Either one is a citation the reader cannot check --
+    CLAUDE.md rule 1's exact failure.
+    """
+    with pytest.raises(ValidationError):
+        RepoEvidence(file=path, line=1)
+
+
+@pytest.mark.parametrize("path", _ACCEPTED)
+def test_repo_evidence_accepts_ordinary_repo_relative_paths(path: str) -> None:
+    """The negative test above is worthless unless the positive direction is
+    shown to still pass: a validator that rejected everything would satisfy it."""
+    assert RepoEvidence(file=path, line=1).file == path

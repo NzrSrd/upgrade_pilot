@@ -20,9 +20,10 @@ constraints. `model_construct` is a deliberate, documented exception — see
 `models/base.py` for why it is left open.
 """
 
+import posixpath
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints
+from pydantic import AfterValidator, Field, StringConstraints
 
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import RiskCategory, RiskLevel, Severity, SourceType
@@ -42,6 +43,55 @@ the source file's own indentation and stripping it would corrupt the quote.
 """
 
 
+def _require_repo_relative(value: str) -> str:
+    """Reject any path that does not name a file inside the analyzed tree.
+
+    Checked against the *text*, never the filesystem: this validator runs on
+    citations that may be constructed long after the workspace is deleted, and
+    a filesystem probe here would both fail spuriously and turn a model
+    constructor into an existence oracle.
+
+    `posixpath` explicitly, not `os.path`: repository paths are POSIX by
+    construction (`git log --name-only` emits POSIX, and `Path.as_posix()` is
+    what the analyzer calls), and `os.path` would quietly accept `a\\b` as a
+    single filename on this platform while treating it as a separator on
+    another.
+    """
+    if value.startswith("/"):
+        raise ValueError(f"path must be repository-relative, not absolute: {value!r}")
+    if "\\" in value:
+        raise ValueError(f"path must use '/' separators: {value!r}")
+    segments = value.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
+        raise ValueError(
+            f"path must not contain empty, '.' or '..' segments: {value!r}"
+        )
+    if posixpath.normpath(value) != value:
+        raise ValueError(f"path must already be normalised: {value!r}")
+    return value
+
+
+RepoRelativePath = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+    AfterValidator(_require_repo_relative),
+]
+"""A path naming a file inside the analyzed repository, relative to its root.
+
+Every file-and-line citation the report prints is resolved against a
+repository root the reader supplies. An absolute path resolves against the
+analysis machine instead, and a `..` segment resolves outside the tree that
+was analyzed -- both produce a citation that looks precise and cannot be
+checked.
+
+`NonBlankStr` alone was not enough: it accepted `/etc/passwd` and
+`../outside.py` without complaint, which `PLANNING.md` recorded as a Phase 2
+carry-in. The analyzer is the only producer of these values from Task 9
+onward, and it emits `Path.relative_to(root).as_posix()`, which satisfies
+this by construction.
+"""
+
+
 class SourceRef(HonestModel):
     """A resolvable pointer into the knowledge base."""
 
@@ -57,7 +107,7 @@ class RepoEvidence(HonestModel):
     """A specific line of the analyzed repository."""
 
     kind: Literal["repo"] = "repo"
-    file: NonBlankStr
+    file: RepoRelativePath
     line: int = Field(ge=1)
     snippet: str | None = None
 

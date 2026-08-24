@@ -13,7 +13,7 @@ from upgradepilot.models.enums import (
     UsageKind,
     VersionConfidence,
 )
-from upgradepilot.models.evidence import NonBlankStr
+from upgradepilot.models.evidence import NonBlankStr, RepoRelativePath
 
 _CONFIDENCE_ORDER: dict[Confidence, int] = {
     Confidence.LOW: 0,
@@ -28,7 +28,7 @@ whitespace is considered; stripping first closes that gap."""
 
 
 class Manifest(HonestModel):
-    path: NonBlankStr
+    path: RepoRelativePath
     kind: ManifestKind
     declared_specifier: str | None = None
 
@@ -42,7 +42,7 @@ class DetectedVersion(HonestModel):
 
 
 class UsageSite(HonestModel):
-    file: NonBlankStr
+    file: RepoRelativePath
     line: int = Field(ge=1)
     column: int = Field(ge=0)
     symbol: NonBlankStr
@@ -56,14 +56,14 @@ class UsageSite(HonestModel):
 
 
 class SkippedFile(HonestModel):
-    path: NonBlankStr
+    path: RepoRelativePath
     reason: NonBlankStr
 
 
 class SymbolStat(HonestModel):
     symbol: NonBlankStr
     count: int = Field(ge=1)
-    files: tuple[NonBlankStr, ...] = Field(min_length=1)
+    files: tuple[RepoRelativePath, ...] = Field(min_length=1)
     confidence: Confidence
 
     @model_validator(mode="after")
@@ -141,7 +141,7 @@ class SymbolInventory(HonestModel):
 
 
 class AffectedFile(HonestModel):
-    path: NonBlankStr
+    path: RepoRelativePath
     usage_sites: tuple[UsageSite, ...] = Field(min_length=1)
     is_test: bool = False
     commit_count: int = Field(default=0, ge=0)
@@ -204,7 +204,7 @@ class AffectedFile(HonestModel):
 class CommitRecord(HonestModel):
     sha: ShaStr
     timestamp: datetime
-    files: tuple[str, ...] = ()
+    files: tuple[RepoRelativePath, ...] = ()
 
 
 class RepoAnalysis(HonestModel):
@@ -239,7 +239,7 @@ class RepoAnalysis(HonestModel):
     affected_files: tuple[AffectedFile, ...] = ()
     symbol_inventory: SymbolInventory
     commit_records: tuple[CommitRecord, ...] = ()
-    test_paths: tuple[str, ...] = ()
+    test_paths: tuple[RepoRelativePath, ...] = ()
 
     @model_validator(mode="after")
     def _analyzed_and_skipped_fit_within_total(self) -> Self:
