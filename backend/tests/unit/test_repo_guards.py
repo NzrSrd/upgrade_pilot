@@ -1188,3 +1188,66 @@ def test_every_codepoint_that_cannot_encode_as_utf8_is_in_a_disallowed_category(
     )
     assert offending_count == 0xE000 - 0xD800
     assert offending_categories <= _DISALLOWED_CATEGORIES
+
+
+# --- Local path resolution: the allowlist is consulted first (wave B item 2) --
+
+
+def test_the_ambiguity_refusal_never_probes_a_path_the_allowlist_has_not_approved(
+    tmp_path: Path,
+) -> None:
+    """The ambiguity refusal ran before the containment check, which made it
+    a filesystem-existence oracle for paths outside every allowed root.
+
+    Three distinguishable answers came back for one out-of-bounds target,
+    selected purely by what exists next to it on disk: "does not exist",
+    "outside the allowed directories", and -- once a whitespace-suffixed
+    entry existed beside it -- "remove the whitespace". The third answer is
+    information about a path this function would refuse to open, obtained
+    from a `stat` the allowlist never authorised.
+
+    So the ordering is the thing under test: the refusal for an
+    out-of-bounds target must be the allowlist's own, and must not vary
+    with the existence of the probed sibling.
+
+    The last three assertions exist because the "whitespace" check is a
+    negative one, and a negative assertion is worthless until it is shown to
+    detect a presence: the same detector, on the same wording, fires for an
+    identically-shaped request whose target is INSIDE the allowlist. If the
+    ordering regresses, the middle assertion goes red; if the detector ever
+    stops matching the refusal it is looking for, the last-but-one does.
+    """
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target = outside / "secret"
+    target.mkdir()
+    requested = f"{target} "  # trailing ASCII space: stripping changes the string
+
+    with pytest.raises(LocalPathForbiddenError) as without_decoy:
+        resolve_local_path(requested, [allowed])
+
+    (outside / "secret ").mkdir()  # the whitespace-suffixed sibling, out of bounds
+
+    with pytest.raises(LocalPathForbiddenError) as with_decoy:
+        resolve_local_path(requested, [allowed])
+
+    assert without_decoy.value.message == with_decoy.value.message, (
+        "the refusal for an out-of-bounds target changed when a file appeared "
+        "outside the allowlist: that is the oracle"
+    )
+    assert without_decoy.value.detail == with_decoy.value.detail
+    assert "outside the allowed directories" in with_decoy.value.message
+
+    in_bounds = allowed / "secret"
+    in_bounds.mkdir()
+    (allowed / "secret ").mkdir()
+    with pytest.raises(LocalPathForbiddenError) as ambiguous:
+        resolve_local_path(f"{in_bounds} ", [allowed])
+
+    assert "whitespace" in ambiguous.value.message.lower(), (
+        "detector check: the ambiguity refusal must still be recognisable by "
+        "this word, or the assertion below proves nothing"
+    )
+    assert "whitespace" not in with_decoy.value.message.lower()

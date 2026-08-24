@@ -420,8 +420,12 @@ def resolve_local_path(raw: str, allowed_roots: Sequence[Path]) -> Path:
     trailing space around a pasted path is a plausible caller slip. That
     is a substitution, so it is not left silent either — if the literal,
     unstripped input also names something on the filesystem, the request
-    is ambiguous and is refused rather than guessed at. Interior spaces
-    are untouched: `My Documents` and `Café Projects` are ordinary paths.
+    is ambiguous and is refused rather than guessed at. That refusal is
+    checked LAST, after the allowlist has approved the target, so no
+    filesystem probe of caller-supplied input ever happens for a path this
+    function would decline to open; see the comment at the check. Interior
+    spaces are untouched: `My Documents` and `Café Projects` are ordinary
+    paths.
 
     `Path.resolve()` follows symlinks, so containment is checked against the
     real path — a symlink pointing outside an allowed root is rejected.
@@ -490,31 +494,6 @@ def resolve_local_path(raw: str, allowed_roots: Sequence[Path]) -> Path:
             detail=f"category={category!r}; length={len(candidate_text)}",
         )
 
-    if candidate_text != raw:
-        # Edge ASCII whitespace was removed, so the path about to be opened
-        # is not byte-identical to the one asked for. That is tolerated as a
-        # paste slip only while it cannot mean anything else: a trailing
-        # space is legal in a POSIX filename, so if the literal input also
-        # names something on disk, both readings are real and choosing one
-        # silently is the very defect this function was fixed for. Refuse
-        # instead, and say which whitespace to remove.
-        try:
-            literal_is_real = Path(raw).exists(follow_symlinks=False)
-            probe = "the literal input also names an existing filesystem entry"
-        except (OSError, RuntimeError, ValueError) as exc:
-            # Not a swallow (rule 20): the probe's failure is converted into
-            # the rejection below, with its type recorded in `detail`. Fail
-            # closed — an unprobeable literal is not evidence that
-            # substituting the stripped form is safe.
-            literal_is_real = True
-            probe = f"the literal input could not be probed: {type(exc).__name__}"
-        if literal_is_real:
-            raise LocalPathForbiddenError(
-                "Remove the whitespace from the start or end of that repository "
-                "path — with it present the path is ambiguous.",
-                detail=f"edge whitespace stripped; {probe}; length={len(raw)}",
-            )
-
     candidate = Path(candidate_text)
 
     try:
@@ -546,11 +525,55 @@ def resolve_local_path(raw: str, allowed_roots: Sequence[Path]) -> Path:
             detail=f"path={resolved}",
         )
 
-    for root in allowed_roots:
-        if _is_within(resolved, root):
-            return resolved
+    if not any(_is_within(resolved, root) for root in allowed_roots):
+        raise LocalPathForbiddenError(
+            "That repository path is outside the allowed directories.",
+            detail=f"path={resolved} roots={[str(r) for r in allowed_roots]}",
+        )
 
-    raise LocalPathForbiddenError(
-        "That repository path is outside the allowed directories.",
-        detail=f"path={resolved} roots={[str(r) for r in allowed_roots]}",
-    )
+    if candidate_text != raw:
+        # Deliberately the LAST check, after the allowlist has approved
+        # `resolved`. Edge ASCII whitespace was removed, so the path about
+        # to be opened is not byte-identical to the one asked for. That is
+        # tolerated as a paste slip only while it cannot mean anything
+        # else: a trailing space is legal in a POSIX filename, so if the
+        # literal input also names something on disk, both readings are
+        # real and choosing one silently is the very defect this function
+        # was fixed for. Refuse instead, and say which whitespace to remove.
+        #
+        # The ORDERING is itself a fix. Run first — as it was — this check
+        # stats a caller-supplied string the allowlist has not approved,
+        # and its result changes the caller-visible error, which made the
+        # guard a narrow existence oracle for whitespace-suffixed paths
+        # OUTSIDE every allowed root: "does not exist", "outside the
+        # allowed directories" and "remove the whitespace" were three
+        # distinguishable answers about a target this function would refuse
+        # to open. A guard must not answer questions about paths it will
+        # not open, so the probe now only ever asks "does the untrimmed
+        # literal also exist" about a target already known to be in bounds.
+        #
+        # Cost of the reorder, accepted: when the stripped candidate does
+        # not resolve at all, the rejection is now the plain "does not
+        # exist" rather than this more helpful message. Nothing becomes
+        # openable that was not openable before — a directory whose real
+        # name carries edge whitespace has never been reachable through
+        # this boundary — only the wording of its refusal changes, and it
+        # changes to the one that reveals nothing about an unapproved path.
+        try:
+            literal_is_real = Path(raw).exists(follow_symlinks=False)
+            probe = "the literal input also names an existing filesystem entry"
+        except (OSError, RuntimeError, ValueError) as exc:
+            # Not a swallow (rule 20): the probe's failure is converted into
+            # the rejection below, with its type recorded in `detail`. Fail
+            # closed — an unprobeable literal is not evidence that
+            # substituting the stripped form is safe.
+            literal_is_real = True
+            probe = f"the literal input could not be probed: {type(exc).__name__}"
+        if literal_is_real:
+            raise LocalPathForbiddenError(
+                "Remove the whitespace from the start or end of that repository "
+                "path — with it present the path is ambiguous.",
+                detail=f"edge whitespace stripped; {probe}; length={len(raw)}",
+            )
+
+    return resolved
