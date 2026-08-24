@@ -239,13 +239,14 @@ tags: [validators, api-rename]
 
 Body carries what changed, the old form, the new form, and a migration note.
 
-**ChromaDB metadata constraint and its resolution.** Chroma metadata values must be scalars (`str`, `int`, `float`, `bool`), so a list-valued `affected_symbols` is not filterable; Chroma's `$contains` applies to document text, not metadata. The symbol join is therefore performed in three stages:
+**ChromaDB metadata: corrected.** An earlier version of this section claimed Chroma metadata values must be scalars (`str`, `int`, `float`, `bool`), that a list-valued `affected_symbols` is therefore not filterable, and that `$contains` applies to document text rather than metadata. That claim was wrong and this replaces it. Probed directly against the pinned `chromadb==1.5.9` (`backend/tests/knowledge/test_chroma_contract.py`, `backend/probes/probe_chroma.py`):
 
-1. **Scalar metadata filters** for what Chroma does well — `dependency`, `source_type`, `to_version_major`. Real, supported, and used.
-2. **Embedding similarity** over queries derived from the discovered symbols.
-3. **Symbol coverage computed in Python** over returned candidates, from `affected_symbols` stored as a parseable delimited string and parsed *after* retrieval.
+- **Scalar metadata filters** (`dependency`, `source_type`, `to_version_major`) are used for coarse narrowing, as before.
+- **`affected_symbols` is stored as a real list**, not a delimited string, and is filtered with `$contains` (`$or` across a `where` clause for several symbols at once) — so the symbol join is performed by retrieval in the database, not by a Python post-pass over returned candidates.
+- **`$contains` is exact-element, not substring**, which is what makes filtering on it safe: a filter for `Config` does not match a document tagged `ConfigDict`, and a filter for `valid` does not match `validator`.
+- **`$in` does not work against list-valued metadata** — it returns an empty result rather than erroring — and must not be used; `$contains` is the only operator that behaves correctly here.
 
-Nothing hardcodes `validator → field_validator`. What changed relative to the first draft is that symbol matching is post-retrieval re-ranking rather than a database predicate.
+Nothing hardcodes `validator → field_validator`.
 
 **Embeddings:** `text-embedding-3-small`. Embedding calls are cheap but non-zero and enter the cost table separately from chat calls — otherwise "estimated cost" is simply wrong. Tests use a deterministic fake embedding function; unit tests touch no network.
 
