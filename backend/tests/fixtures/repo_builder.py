@@ -11,8 +11,14 @@ from pathlib import Path
 
 SAMPLE_REPO_DIR = Path(__file__).parent / "sample_repo"
 
-# Documented expectations, asserted in test_fixture_repo.py and reused by
-# Phase 2's analyzer tests.
+# Documented expectations, reused by Phase 2's analyzer tests. Every one of
+# these is bound to the *built* tree by a test in test_fixture_repo.py -- not
+# merely documented here -- because Phase 2 will trust them blindly as the
+# claim that this fixture contains the Pydantic v1 idioms the analyzer must
+# find. Three of them were once unasserted, and gutting models.py, gutting
+# service.py, or changing the specifier below to >=2.0 each left this
+# fixture's whole suite green. Add a constant here only together with the
+# assertion that binds it.
 EXPECTED_PYTHON_FILES = 6  # 4 in src/app (incl. __init__), broken.py, 1 test
 EXPECTED_HIGH_CONFIDENCE_SYMBOLS = ("Config", "validator")
 EXPECTED_MEDIUM_CONFIDENCE_SYMBOLS = ("copy", "dict", "parse_obj", "schema")
