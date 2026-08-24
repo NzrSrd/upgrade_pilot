@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from upgradepilot.models.enums import (
     Confidence,
@@ -53,6 +53,10 @@ class UsageSite(BaseModel):
     symbol: NonBlankStr
     kind: UsageKind
     confidence: Confidence
+    # Deliberately NOT `NonBlankStr`: this is a verbatim quote of the source
+    # line, and leading whitespace is the file's own indentation. Stripping
+    # it would corrupt the evidence (mirrors `RepoEvidence.snippet` in
+    # `models/evidence.py`).
     snippet: str | None = None
 
 
@@ -170,6 +174,25 @@ class RepoAnalysis(BaseModel):
     commit_records: tuple[CommitRecord, ...] = ()
     test_paths: tuple[str, ...] = ()
 
+    @model_validator(mode="after")
+    def _analyzed_and_skipped_fit_within_total(self) -> Self:
+        """Bounds `skipped_ratio` at 1.0 so it cannot corrupt the
+        analysis_coverage risk factor or the confidence ceiling that reads it.
+
+        Deliberately `<=`, not `==`: files excluded by the `max_repo_files` /
+        `max_repo_bytes` caps are attempted by neither the analyze path nor
+        the skip path, so they legitimately fall into neither bucket. `<=` is
+        what we can actually guarantee from these three counts alone.
+        """
+        skipped = len(self.skipped_files)
+        if self.analyzed_files + skipped > self.total_python_files:
+            raise ValueError(
+                "analyzed_files + len(skipped_files) must not exceed total_python_files: "
+                f"analyzed_files={self.analyzed_files}, skipped_files={skipped}, "
+                f"total_python_files={self.total_python_files}"
+            )
+        return self
+
     @property
     def skipped_ratio(self) -> float:
         """Share of Python files that could not be parsed. Feeds the
@@ -186,6 +209,11 @@ class RepoAnalysis(BaseModel):
         """
         if self.detected_version is None:
             return None
-        if stated.strip() == self.detected_version.value.strip():
+        # `stated` is raw caller input, not a validated model field, so it
+        # still needs stripping here. `self.detected_version.value` is
+        # already a stripped NonBlankStr; stripping it again would be
+        # redundant and would wrongly imply it is equally untrusted.
+        stated = stated.strip()
+        if stated == self.detected_version.value:
             return None
-        return (stated.strip(), self.detected_version.value)
+        return (stated, self.detected_version.value)

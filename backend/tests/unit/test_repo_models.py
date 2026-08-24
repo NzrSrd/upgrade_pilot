@@ -179,6 +179,15 @@ def test_affected_file_usage_sites_cannot_be_emptied_after_construction() -> Non
     assert len(affected.usage_sites) == 1
 
 
+def test_affected_file_from_sites_rejects_an_empty_sites_list() -> None:
+    """The most-likely-used entry point (`from_sites`, not the raw
+    constructor) must enforce the same non-empty invariant."""
+    with pytest.raises(ValidationError) as excinfo:
+        AffectedFile.from_sites(path="src/app/models.py", sites=[], is_test=False)
+    errors = excinfo.value.errors()
+    assert any(e["loc"] == ("usage_sites",) and e["type"] == "too_short" for e in errors)
+
+
 def test_detected_version_records_provenance() -> None:
     detected = DetectedVersion(
         value="1.10.13",
@@ -297,3 +306,57 @@ def test_a_whitespace_only_symbol_is_rejected() -> None:
         )
     errors = excinfo.value.errors()
     assert any(e["loc"] == ("symbol",) and e["type"] == "string_too_short" for e in errors)
+
+
+def _repo_analysis(
+    *, total_python_files: int, analyzed_files: int, skipped_count: int
+) -> RepoAnalysis:
+    return RepoAnalysis(
+        commit_sha=None,
+        languages={},
+        manifests=(),
+        detected_version=None,
+        total_python_files=total_python_files,
+        analyzed_files=analyzed_files,
+        skipped_files=tuple(
+            SkippedFile(path=f"src/broken_{i}.py", reason="SyntaxError")
+            for i in range(skipped_count)
+        ),
+        affected_files=(),
+        symbol_inventory=SymbolInventory.from_sites([]),
+        commit_records=(),
+        test_paths=(),
+    )
+
+
+def test_repo_analysis_rejects_analyzed_plus_skipped_exceeding_total() -> None:
+    """The reviewer constructed total=2 with 3 skipped_files and got
+    skipped_ratio == 1.5 -- an out-of-range ratio that would corrupt the
+    analysis_coverage risk factor and a confidence ceiling."""
+    with pytest.raises(ValidationError) as excinfo:
+        _repo_analysis(total_python_files=2, analyzed_files=0, skipped_count=3)
+    message = str(excinfo.value)
+    assert "analyzed_files=0" in message
+    assert "skipped_files=3" in message
+    assert "total_python_files=2" in message
+
+
+def test_repo_analysis_accepts_the_boundary_case_where_counts_exactly_fill_total() -> None:
+    """analyzed + skipped == total is the fully-accounted-for case."""
+    analysis = _repo_analysis(total_python_files=5, analyzed_files=3, skipped_count=2)
+    assert analysis.skipped_ratio == pytest.approx(2 / 5)
+
+
+def test_repo_analysis_accepts_cap_excluded_files() -> None:
+    """analyzed + skipped < total is legitimate: files excluded by the
+    max_repo_files / max_repo_bytes caps are attempted by neither path."""
+    analysis = _repo_analysis(total_python_files=10, analyzed_files=3, skipped_count=2)
+    assert analysis.skipped_ratio == pytest.approx(2 / 10)
+
+
+def test_repo_analysis_skipped_ratio_never_exceeds_one() -> None:
+    for total, analyzed, skipped_count in [(0, 0, 0), (1, 1, 0), (1, 0, 1), (100, 40, 60)]:
+        analysis = _repo_analysis(
+            total_python_files=total, analyzed_files=analyzed, skipped_count=skipped_count
+        )
+        assert 0.0 <= analysis.skipped_ratio <= 1.0
