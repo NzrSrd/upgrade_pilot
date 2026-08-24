@@ -1,9 +1,24 @@
-"""Single entry point for repository access.
+"""The intended entry point for repository access.
 
 Callers pass a RepoRef and receive a Workspace. Nothing outside this module
 needs to know whether the code was cloned or read in place -- Phase 2's
 analyzer and Phase 9's API both call `WorkspaceManager` instead of importing
 `clone.py` or `local.py` directly.
+
+WHAT IS AND IS NOT ENFORCED. "Entry point" is a convention plus a lint rule,
+not a property of the code. `clone.clone_repository` and
+`local.open_local_repository` are importable and neither enforces the
+repository size caps -- only `WorkspaceManager.open` does -- so a caller
+that imports them directly gets an UNCAPPED workspace. What stands in the
+way is ruff's `flake8-tidy-imports` banned-api rule (see `pyproject.toml`),
+which fails the build on either import outside this module and the tests
+that must exercise those functions directly. That rule reaches exactly as
+far as this repository's lint run: it catches the accidental in-repo import,
+which is the realistic mistake, and nothing else. The security guards
+themselves do NOT depend on this: `validate_clone_url`,
+`resolve_local_path` and `allowed_local_roots` are enforced inside
+`clone.py` and `local.py`, so bypassing this module loses the caps, never
+the allowlists.
 """
 
 import shutil
@@ -20,8 +35,9 @@ OWNED_WORKSPACE_PREFIX = "repo-"
 """Must match the literal `clone_repository` (`services/repo/clone.py`) uses
 to name a clone's destination directory (`f"repo-{uuid4().hex[:12]}"`).
 
-`clone.py` does not export this as a constant, and this module does not
-import from it either, so the two are not mechanically coupled -- see
+`clone.py` does not export this as a constant, and this module imports only
+`clone_repository` from it, never the literal, so the two are not
+mechanically coupled -- see
 `test_sweep_stale_prefix_matches_what_clone_repository_actually_produces` in
 `test_workspace_manager.py`, which performs a real clone and asserts the
 directory it actually produces is matched by this prefix. That test is the
@@ -125,7 +141,19 @@ class WorkspaceManager:
         return workspace
 
     def sweep_stale(self, max_age_seconds: int) -> list[Path]:
-        """Remove workspaces this service created and then abandoned.
+        """Remove stale directories under `workspace_dir` named `repo-*`.
+
+        WHAT "OWNED" MEANS HERE, precisely: a directory whose name starts
+        with `OWNED_WORKSPACE_PREFIX` and whose mtime is older than the
+        cutoff. That is a five-character name match, not provenance --
+        nothing records which process created a directory, so a directory an
+        operator happens to name `repo-notes` inside the workspace directory
+        is indistinguishable from a clone this service abandoned and WILL be
+        removed. The workspace directory is this service's to manage and
+        must not be shared with anything else; that convention, not a
+        recorded fact, is what makes the prefix sufficient. Real provenance
+        tracking would be a design change, not a fix, and is deliberately
+        not attempted.
 
         This is the backstop half of `open`'s ownership contract above:
         it reclaims workspaces a process crashed before closing. Every
@@ -169,6 +197,12 @@ class WorkspaceManager:
         attempted. A caller logging this return value, or an operator
         reading that log to explain reclaimed disk, must never be told
         about a removal that did not happen.
+
+        "One bad directory must not abort the rest" covers the *inspection*
+        of an entry as well as its removal: an entry that vanishes or
+        becomes unreadable between `iterdir()` and the `stat()` below is
+        skipped and the loop continues. See the comment at that call for
+        why skipping is the whole of the obligation there.
         """
         if max_age_seconds < 0:
             # Checked before the early return below so the rejection does
@@ -190,7 +224,29 @@ class WorkspaceManager:
         for entry in sorted(root.iterdir()):
             if not entry.is_dir() or not entry.name.startswith(OWNED_WORKSPACE_PREFIX):
                 continue
-            if entry.stat().st_mtime < cutoff:
+            try:
+                mtime = entry.stat().st_mtime
+            except OSError:
+                # An entry that vanished between `iterdir()` above and this
+                # `stat()` (another process's sweep, or an operator's `rm`),
+                # or one whose metadata cannot be read at all, must not abort
+                # the sweep of the entries after it -- which an unguarded
+                # `stat()` did: a concurrently removed directory raised
+                # FileNotFoundError out of this method and every later entry
+                # was left untouched, contradicting the docstring above.
+                #
+                # Skipping is the whole of the obligation here, and nothing
+                # is swallowed in the sense rule 20 forbids. There is no
+                # failure to report: this method's only output is a list of
+                # directories it removed, and a skipped entry is simply
+                # absent from it, so the caller is never told about a removal
+                # that did not happen. A vanished directory is in fact the
+                # outcome the sweep wanted; an unreadable one is the same
+                # best-effort case as the unremovable directory the
+                # `ignore_errors=True` below already covers, and it stays on
+                # disk for the next sweep to retry.
+                continue
+            if mtime < cutoff:
                 # A `repo-`-prefixed *symlink* pointing at a directory
                 # reaches this line -- `Path.is_dir()` follows symlinks,
                 # so the two conditions above do not exclude it -- and

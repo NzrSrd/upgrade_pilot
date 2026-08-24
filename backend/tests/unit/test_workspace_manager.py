@@ -364,3 +364,83 @@ def test_sweep_stale_prefix_matches_what_clone_repository_actually_produces(
     """
     with WorkspaceManager(settings).open(RemoteRepoRef(url=f"file://{origin}")) as workspace:
         assert workspace.root.name.startswith(manager_module.OWNED_WORKSPACE_PREFIX)
+
+
+def test_sweep_stale_continues_past_an_entry_that_vanishes_mid_sweep(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One bad directory must not abort the sweep of the rest -- which the
+    docstring promised and an unguarded `entry.stat()` did not deliver.
+
+    `iterdir()` produces the whole list before any of it is stat'ed, so an
+    entry another process removes in between raises `FileNotFoundError`
+    straight out of `sweep_stale` and every later entry is left untouched.
+    Demonstrated before the fix: with the first entry removed mid-sweep,
+    the two stale directories after it survived.
+
+    The race is made deterministic by patching `Path.stat` to delete the
+    first owned entry the moment it is asked about -- a real removal, not a
+    faked exception, so the assertions below are about real directories.
+    Two stale controls after it prove the sweep continued, and the return
+    value must name only what is genuinely gone: the vanished entry is not
+    in it, because this method's only output is a claim about removals and
+    it never removed that one.
+    """
+    settings.workspace_dir.mkdir(parents=True)
+    vanishing = settings.workspace_dir / "repo-a-vanishes"
+    later_one = settings.workspace_dir / "repo-b-stale"
+    later_two = settings.workspace_dir / "repo-c-stale"
+    for directory in (vanishing, later_one, later_two):
+        directory.mkdir()
+    stale_time = time.time() - 7200
+    for directory in (vanishing, later_one, later_two):
+        os.utime(directory, (stale_time, stale_time))
+
+    real_stat = Path.stat
+
+    def stat_that_removes_the_first_entry(self: Path, **kwargs: object) -> os.stat_result:
+        if self == vanishing and vanishing.exists():
+            vanishing.rmdir()
+        return real_stat(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", stat_that_removes_the_first_entry)
+
+    removed = WorkspaceManager(settings).sweep_stale(max_age_seconds=3600)
+
+    assert removed == [later_one, later_two], (
+        "the sweep must continue past a vanished entry and report only real removals"
+    )
+    assert not later_one.exists()
+    assert not later_two.exists()
+    assert not vanishing.exists()
+
+
+def test_sweep_stale_continues_past_an_entry_it_cannot_stat(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the same guard: an entry that is present but
+    unreadable. It is left on disk for a later sweep to retry and is absent
+    from the return value, so no caller is told about a removal that did
+    not happen."""
+    settings.workspace_dir.mkdir(parents=True)
+    unreadable = settings.workspace_dir / "repo-a-unreadable"
+    later = settings.workspace_dir / "repo-b-stale"
+    for directory in (unreadable, later):
+        directory.mkdir()
+    stale_time = time.time() - 7200
+    for directory in (unreadable, later):
+        os.utime(directory, (stale_time, stale_time))
+
+    real_stat = Path.stat
+
+    def stat_that_fails_for_one_entry(self: Path, **kwargs: object) -> os.stat_result:
+        if self == unreadable:
+            raise PermissionError(13, "Permission denied")
+        return real_stat(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", stat_that_fails_for_one_entry)
+
+    removed = WorkspaceManager(settings).sweep_stale(max_age_seconds=3600)
+
+    assert removed == [later]
+    assert unreadable.exists(), "an unstattable entry must be left for the next sweep"
