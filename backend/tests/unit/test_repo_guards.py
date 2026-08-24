@@ -603,3 +603,356 @@ def test_error_converts_to_an_app_error_preserving_technical_detail() -> None:
 def test_base_error_is_catchable_as_one_type() -> None:
     with pytest.raises(UpgradePilotError):
         raise LocalPathForbiddenError("denied")
+
+
+# --- URL validation: the hostile-input contract sweep (fix wave B, item 3) --
+
+_HOSTILE_URLS = [
+    pytest.param("http://[::1", id="unclosed_ipv6_bracket"),
+    pytest.param("https://[::1", id="unclosed_ipv6_bracket_https"),
+    pytest.param("https://[::1]junk/x", id="trailing_junk_after_ipv6_literal"),
+    pytest.param("https://[]/x", id="empty_ipv6_literal"),
+    pytest.param("https://[/x", id="lone_open_bracket"),
+    pytest.param("https://]/x", id="lone_close_bracket"),
+    pytest.param("https://℀.com/x", id="nfkc_decomposing_So_in_netloc"),
+    pytest.param("https://＃/x", id="nfkc_decomposing_Po_in_netloc"),
+    pytest.param("https://a℀b/x", id="nfkc_decomposing_interior"),
+    pytest.param("file://℀/x", id="nfkc_decomposing_netloc_file_scheme"),
+    pytest.param("https://github.com:notaport/x", id="non_numeric_port"),
+    pytest.param("https://[v1.fe80::a]/x", id="ipvfuture_literal"),
+    pytest.param("https://\ud800/x", id="lone_surrogate_in_netloc"),
+    pytest.param("\ud800", id="lone_surrogate_alone"),
+    pytest.param("https://user@@github.com/x", id="double_at_in_authority"),
+    pytest.param("https://%00/x", id="percent_encoded_nul_in_netloc"),
+    pytest.param("https://xn--/x", id="malformed_punycode"),
+    pytest.param("https://github.com/x#℀", id="nfkc_decomposing_in_fragment"),
+    pytest.param("", id="empty"),
+    pytest.param("   ", id="only_ascii_space"),
+    pytest.param(":", id="bare_colon"),
+    pytest.param("://x", id="scheme_separator_only"),
+    pytest.param("//github.com/x", id="protocol_relative"),
+    pytest.param("https:", id="scheme_only"),
+    pytest.param("https://", id="scheme_and_separator_only"),
+    pytest.param("\U0001f600" * 50, id="emoji_run"),
+    pytest.param("/" * 5000, id="slash_run_over_the_length_cap"),
+    pytest.param("a" * 100_000, id="hundred_thousand_characters"),
+    pytest.param("https://github.com/" + "a" * 3000, id="valid_shape_over_the_length_cap"),
+]
+
+
+@pytest.mark.parametrize("hostile_url", _HOSTILE_URLS)
+def test_every_hostile_url_input_raises_only_upgradepilot_error(hostile_url: str) -> None:
+    """The counterpart the path side had and the URL side did not.
+
+    `resolve_local_path` has had a hostile-input sweep since fix round 3;
+    `validate_clone_url` had none, and the module docstring's contract --
+    that no `str` input raises anything outside the `UpgradePilotError`
+    hierarchy -- was therefore false and nothing noticed. `urlsplit` raises
+    a bare `ValueError` for a malformed IPv6 literal and for a netloc
+    containing a character that decomposes under NFKC, and neither is
+    caught by the category rule: brackets are Ps/Pe and the NFKC
+    troublemakers are So/Po, none of which are in `_DISALLOWED_CATEGORIES`.
+
+    The consequence was not cosmetic: a user typo became an unhandled
+    exception, i.e. an HTTP 500 whose traceback carried the raw URL -- at a
+    point in the function where the URL has NOT yet been credential-
+    screened.
+
+    The missing sweep is the actual defect. The inputs below are its
+    symptoms, so this is written as the contract, over every shape anyone
+    has thought to try, and it must be extended rather than replaced when
+    the next one turns up.
+    """
+    with contextlib.suppress(UpgradePilotError):
+        validate_clone_url(hostile_url, DEFAULT_SCHEMES | frozenset({"file"}))
+
+
+@pytest.mark.parametrize("hostile_url", _HOSTILE_URLS)
+def test_no_hostile_url_rejection_echoes_the_input_into_a_logged_detail(
+    hostile_url: str,
+) -> None:
+    """Every rejection above must also stay credential-safe.
+
+    A URL is unscreened until the credentials check, which most of these
+    inputs never reach, so no rejection along the way may echo the input.
+    `urlsplit`'s own NFKC error message quotes the entire netloc -- which is
+    exactly where userinfo lives -- so the tempting `detail=f"{exc}"` would
+    have reopened the leak that fix round 1 closed.
+    """
+    try:
+        validate_clone_url(hostile_url, DEFAULT_SCHEMES | frozenset({"file"}))
+    except UpgradePilotError as error:
+        detail = error.detail or ""
+        if hostile_url:
+            assert hostile_url not in detail
+        if len(hostile_url) > 12:
+            assert hostile_url[:12] not in detail
+        assert len(detail) < 200, f"detail is not bounded: {len(detail)} characters"
+
+
+# --- URL validation: the length cap has teeth (fix wave B, item 5.1) --
+
+
+def test_a_url_over_the_length_cap_is_rejected_even_when_otherwise_valid() -> None:
+    """The cap turned zero tests red when deleted.
+
+    Every other over-long input in this file is malformed for some second
+    reason, so the cap was never the thing doing the rejecting. This URL is
+    well-formed in every other respect -- valid scheme, real host, no
+    credentials, no disallowed characters, parses and round-trips -- so the
+    cap is the only check that can refuse it. It matters because this is
+    the only bound on the URL that `clone.py` writes into a logged
+    `detail`.
+    """
+    url = "https://github.com/acme/" + "a" * 3000
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url(url, DEFAULT_SCHEMES)
+
+    assert excinfo.value.detail == f"length={len(url)}"
+    assert "aaaa" not in (excinfo.value.detail or ""), "the over-long URL must not be echoed"
+
+
+def test_a_url_at_the_length_cap_is_accepted() -> None:
+    """The cap is an inclusive maximum, so the boundary is pinned on both
+    sides: the test above proves it rejects, this one proves it does not
+    reject one character early."""
+    prefix = "https://github.com/acme/"
+    url = prefix + "a" * (2048 - len(prefix))
+    assert len(url) == 2048
+    assert validate_clone_url(url, DEFAULT_SCHEMES) == url
+
+
+# --- URL validation: the file:// missing-path rejection has teeth (item 5.2) --
+
+
+@pytest.mark.parametrize("url", ["file://", "file://localhost"], ids=["no_host", "localhost"])
+def test_a_file_url_with_no_path_is_rejected(url: str) -> None:
+    """Deleting this guard turned zero tests red, and it is the only call
+    site of `_redact` -- so that function's "no code path may place an
+    un-redacted URL into a detail" claim had no test exercising it in
+    place either.
+
+    `file://` and `file://localhost` are the two shapes that satisfy every
+    earlier check (scheme allowed, host legitimately absent for file, no
+    credentials) and still name nothing at all. Without this guard they are
+    returned as valid clone URLs.
+    """
+    with pytest.raises(InvalidRepoUrlError) as excinfo:
+        validate_clone_url(url, frozenset({"file"}))
+    assert "path" in excinfo.value.message.lower()
+    assert (excinfo.value.detail or "").startswith("url=")
+
+
+def test_the_file_missing_path_detail_is_redacted() -> None:
+    """`_redact` is called at that raise site defensively -- credentials are
+    rejected earlier, so it cannot fire through the public function today.
+    Assert the property the docstring claims by driving `_redact` with the
+    string that site would hand it, so the claim is tested rather than
+    asserted."""
+    assert _redact("file://user:tok@") == "file://***@"
+
+
+# --- URL validation: normalisation is the contract, byte-identity is not (item 7) --
+
+
+def test_an_already_normal_url_is_returned_byte_identical() -> None:
+    """Byte-identity holds for a URL that needs no normalisation, and this
+    pins that narrow case only.
+
+    It used to be named as though byte-identity were the general property
+    of `validate_clone_url`, while exercising nothing but an already-normal
+    URL. That framing invites the parser differential this module has now
+    fixed three times: the two accepted normalisations (ASCII edge
+    stripping, scheme lower-casing) are each *deliberately* not
+    byte-identical, and a future contributor reading a byte-identity
+    property test would be led to remove them -- or worse, to "fix" a
+    failure by returning `raw` instead of the validated candidate, which is
+    the original defect exactly.
+
+    The general property is idempotence, tested below.
+    """
+    raw = "https://github.com/acme/payment-service.git"
+    assert validate_clone_url(raw, DEFAULT_SCHEMES) == raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "https://github.com/acme/repo",
+        "  https://github.com/acme/repo  ",
+        "HTTPS://GitHub.com/Acme/Repo",
+        "  HTTPS://GitHub.com/Acme/Repo  ",
+    ],
+)
+def test_validation_is_idempotent_so_the_returned_url_is_final(raw: str) -> None:
+    """The real general property, and the one a caller depends on:
+    re-validating the returned value returns it unchanged. If it did not,
+    the returned string would not be fully normalised and `clone.py` would
+    be handing git something this function has not settled on."""
+    once = validate_clone_url(raw, DEFAULT_SCHEMES)
+    assert validate_clone_url(once, DEFAULT_SCHEMES) == once
+
+
+# --- Local path resolution: a path is never silently substituted (item 1) --
+
+
+def test_an_interior_nbsp_is_rejected_not_stripped_into_a_different_directory(
+    tmp_path: Path,
+) -> None:
+    """The blocking defect, as a test: two real directories whose names
+    differ only by a trailing NBSP.
+
+    `Path(raw.strip())` -- a bare strip, the exact anti-pattern the URL
+    half of this module spends fifteen lines condemning -- removed the NBSP
+    and resolved the *other* directory. Reproduced before the fix: asking
+    for `repo\\xa0` returned `repo` and listed `repo`'s contents, with no
+    error. Every file path, line number and sha the product cited
+    afterwards would then belong to a repository the caller never named,
+    which is this product's central failure mode occurring silently.
+
+    Both directories are created on purpose. With only the NBSP one
+    present, a bare strip would fail with "does not exist" and this test
+    would pass while the defect stood.
+    """
+    named = tmp_path / "repo\xa0"
+    sibling = tmp_path / "repo"
+    named.mkdir()
+    sibling.mkdir()
+    (sibling / "NOT_THE_REQUESTED_REPO.py").write_text("x = 1\n")
+
+    with pytest.raises(LocalPathForbiddenError) as excinfo:
+        resolve_local_path(str(named), [tmp_path])
+
+    assert "category='Zs'" in (excinfo.value.detail or "")
+
+
+@pytest.mark.parametrize(
+    ("name", "invisible"),
+    [
+        ("nbsp_U+00A0", "\xa0"),
+        ("nel_U+0085", "\x85"),
+        ("zero_width_space_U+200B", "\u200b"),
+        ("ogham_space_mark_U+1680", "\u1680"),
+        ("en_quad_U+2000", "\u2000"),
+        ("line_separator_U+2028", "\u2028"),
+        ("paragraph_separator_U+2029", "\u2029"),
+        ("tab_U+0009", "\t"),
+    ],
+)
+def test_no_invisible_codepoint_can_substitute_one_directory_for_another(
+    name: str, invisible: str, tmp_path: Path
+) -> None:
+    """The whole class, not just the NBSP that was reported.
+
+    `str.strip()` removes seventeen codepoints. Each one below sits in the
+    *interior* of the name -- where no reading of "tolerate a paste slip"
+    justifies removing it -- and each has a real sibling directory that a
+    strip would resolve to instead. The invariant asserted is the strong
+    one: either the call raises, or it returns the directory that was
+    asked for. Silently returning the sibling is the only forbidden
+    outcome.
+    """
+    named = tmp_path / f"a{invisible}b"
+    sibling = tmp_path / "ab"
+    named.mkdir()
+    sibling.mkdir()
+
+    try:
+        resolved = resolve_local_path(str(named), [tmp_path])
+    except LocalPathForbiddenError:
+        return
+    assert resolved.samefile(named), (
+        f"{name} was stripped and the wrong directory was returned: {resolved}"
+    )
+
+
+@pytest.mark.parametrize("name", ["My Documents", "Café Projects", "a-b_c.d", "a b c"])
+def test_ordinary_real_paths_are_still_accepted(name: str, tmp_path: Path) -> None:
+    """Spaces and accents are normal in real paths, and the fix must not
+    make them collateral damage. An interior ASCII space is category Zs,
+    the same category as the NBSP rejected above -- which is why the shared
+    category rule exempts U+0020 specifically, and only for paths: in a URL
+    a raw space must be percent-encoded, while in a filename it is an
+    ordinary legal character with no encoded alternative."""
+    project = tmp_path / name
+    project.mkdir()
+    assert resolve_local_path(str(project), [tmp_path]) == project.resolve()
+
+
+def test_edge_ascii_whitespace_is_stripped_so_a_pasted_path_still_works(tmp_path: Path) -> None:
+    """The one tolerated normalisation, matching `validate_clone_url`: a
+    leading or trailing ASCII space around a pasted path is a plausible
+    caller slip, unlike an interior NBSP."""
+    project = tmp_path / "demo"
+    project.mkdir()
+    assert resolve_local_path(f"  {project}\t", [tmp_path]) == project.resolve()
+
+
+def test_a_path_whose_literal_form_also_exists_is_refused_not_guessed(tmp_path: Path) -> None:
+    """The residual substitution that edge-stripping would otherwise leave.
+
+    A trailing space is legal in a POSIX filename, so `demo ` and `demo`
+    can both be real, different directories. Stripping the space then picks
+    one silently -- the same defect class as the NBSP above, just reached
+    through the tolerated normalisation instead of the forbidden one. When
+    both readings exist the request is genuinely ambiguous, so it is
+    refused and the caller is told which whitespace to remove.
+    """
+    spaced = tmp_path / "demo "
+    plain = tmp_path / "demo"
+    spaced.mkdir()
+    plain.mkdir()
+
+    with pytest.raises(LocalPathForbiddenError) as excinfo:
+        resolve_local_path(str(spaced), [tmp_path])
+
+    assert "whitespace" in excinfo.value.message.lower()
+    assert "edge whitespace stripped" in (excinfo.value.detail or "")
+
+
+# --- Local path resolution: no unbounded input in a logged detail (item 6) --
+
+
+def test_a_path_over_the_length_cap_is_rejected_reporting_only_its_length(
+    tmp_path: Path,
+) -> None:
+    """A 100k-character path produced a 100,047-character `detail`, which is
+    logged. The existing hostile-input sweep parametrises exactly this
+    input but asserts only the exception type, so it never caught it."""
+    with pytest.raises(LocalPathForbiddenError) as excinfo:
+        resolve_local_path("a" * 100_000, [tmp_path])
+
+    assert excinfo.value.detail == "length=100000"
+    assert "aaaa" not in (excinfo.value.detail or "")
+
+
+def test_a_long_but_legal_path_is_echoed_bounded_rather_than_dropped(tmp_path: Path) -> None:
+    """For "that path does not exist" the path is the operator's most
+    useful datum -- it is server-side, thread_id-correlated, and unlike a
+    URL a local path has no standardised credential slot -- so it is
+    echoed. The defect was the unboundedness, not the echo, so this
+    asserts both halves: the leaf name survives (the detail is still
+    diagnostic) and the whole thing stays short.
+    """
+    missing = tmp_path / ("b" * 3000) / "distinctive-leaf"
+    with pytest.raises(LocalPathForbiddenError) as excinfo:
+        resolve_local_path(str(missing), [tmp_path])
+
+    detail = excinfo.value.detail or ""
+    assert "distinctive-leaf" in detail
+    assert "tail of" in detail, "truncation must be announced, not silent"
+    assert len(detail) < 400, f"detail is not bounded: {len(detail)} characters"
+
+
+def test_a_short_missing_path_is_echoed_in_full_with_the_error_type(tmp_path: Path) -> None:
+    """Under the budget nothing is truncated, and the exception's *type* is
+    what accompanies the path. `repr(exc)` on an OSError re-embeds the
+    filename, which would put the unbounded path back into the very string
+    the budget just bounded."""
+    missing = tmp_path / "nope"
+    with pytest.raises(LocalPathForbiddenError) as excinfo:
+        resolve_local_path(str(missing), [tmp_path])
+
+    detail = excinfo.value.detail or ""
+    assert str(missing) in detail
+    assert "FileNotFoundError" in detail

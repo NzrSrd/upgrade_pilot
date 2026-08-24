@@ -77,8 +77,84 @@ and GitHub and GitLab sanitise repository paths to ASCII regardless. Do not
 widen this set to "fix" the ZWJ over-rejection.
 """
 
+_MAX_PATH_LENGTH = 4096
+"""Longest local path this boundary will look at, checked before anything
+else touches the string.
+
+4096 is Linux's `PATH_MAX`; macOS's is 1024. A longer path cannot name a
+file on either platform, so rejecting it loses nothing and it bounds two
+things that are otherwise unbounded: the work done below (the category scan
+walks the whole string) and, with `_PATH_DETAIL_BUDGET`, the length of the
+`detail` this function can write to the log. The rejection carries the
+length and nothing else -- a path that has not been looked at yet is not
+echoed."""
+
+_PATH_DETAIL_BUDGET = 200
+"""How much of a rejected path may reach a logged `AppError.detail`.
+
+The same shape as `clone.py`'s `_STDERR_DETAIL_BUDGET`, for the same reason
+and with the same tail-keeping bias: the tail of a path is its leaf name,
+which is the part that explains a "does not exist" rejection. Unlike a URL,
+a local path has no standardised credential slot and is the operator's most
+useful datum for that rejection, so it is echoed -- bounded, not dropped."""
+
+_ASCII_EDGE_WHITESPACE = " \t\r\n\f\v"
+"""The only whitespace either public function will silently remove, and only
+from the edges of its input.
+
+Never bare `.strip()`, which uses `str.isspace()` and removes seventeen
+codepoints -- NBSP, NEL, the U+2000 block, the line/paragraph separators.
+Removing those silently is the "validate one string, use a different one"
+anti-pattern this module exists to prevent, and it is exactly as harmful for
+a path as for a URL: see `resolve_local_path`, where it caused the boundary
+to open a *different directory* than the caller named. Everything outside
+this set is rejected by `_first_disallowed_category` instead."""
+
 _USERINFO = re.compile(r"(?<=//)[^/@]*@")
 """Matches a `user:pass@` or bare `token@` authority prefix after `//`."""
+
+
+def _first_disallowed_category(text: str, *, allow_ascii_space: bool) -> str | None:
+    """Return the Unicode general category of the first disallowed
+    character in `text`, or None if every character is allowed.
+
+    One implementation, one category set, shared by both public functions.
+    A second, hand-rolled rule on the path side is precisely how the two
+    sides drifted apart before: the URL side rejected invisible whitespace
+    while the path side silently stripped it.
+
+    `allow_ascii_space` is the single, deliberate difference between the two
+    callers, and it is a difference in the *input domain*, not in the rule:
+
+    - In a URL, a raw space is forbidden by RFC 3986 and percent-encoding is
+      the correct, lossless spelling -- so `Zs` is rejected wholesale and
+      `%20` is accepted (`validate_clone_url` passes False).
+    - In a filesystem path, U+0020 is an ordinary, legal filename character
+      with no encoded alternative. `My Documents` and `Café Projects` are
+      real paths that must keep working, so the ASCII space is exempted --
+      and only the ASCII space (`resolve_local_path` passes True). An
+      interior NBSP, ZWSP or NEL stays rejected, because a caller cannot see
+      one and neither can the operator reading the citation afterwards.
+    """
+    for character in text:
+        if allow_ascii_space and character == " ":
+            continue
+        category = unicodedata.category(character)
+        if category in _DISALLOWED_CATEGORIES:
+            return category
+    return None
+
+
+def _bounded_for_detail(text: str) -> str:
+    """Render caller-supplied text for a logged `detail`, length-bounded.
+
+    Truncation is announced with the original length rather than left to
+    look like the whole value, so an operator reading the log can tell a
+    200-character path from a truncated 4000-character one.
+    """
+    if len(text) <= _PATH_DETAIL_BUDGET:
+        return repr(text)
+    return f"{text[-_PATH_DETAIL_BUDGET:]!r} (tail of {len(text)} characters)"
 
 
 def _redact(raw: str) -> str:
@@ -101,11 +177,33 @@ def _redact(raw: str) -> str:
 
 
 def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
-    """Return the URL unchanged if safe to hand to `git clone`.
+    """Return a NORMALISED URL that is safe to hand to `git clone`.
+
+    The return value is the *only* string a caller may use. It is not
+    always byte-identical to `raw`: two normalisations are applied, and
+    both are deliberate and observable in the return value.
+
+    - ASCII whitespace (`_ASCII_EDGE_WHITESPACE`) is stripped from the
+      edges, so a pasted URL with a stray leading space is accepted.
+    - The scheme is lower-cased, because schemes are case-insensitive
+      (RFC 3986) and git accepts `HTTPS://`, while `urlsplit` lower-cases
+      it and would otherwise fail the round-trip check on letter case
+      alone. Nothing else is touched: host and path case are preserved,
+      because `github.com/Acme/Repo` is a different repository from
+      `github.com/acme/repo`.
+
+    Everything else is rejected rather than normalised. A caller that uses
+    `raw` instead of the return value reintroduces the parser differential
+    this function exists to close -- validating one string and cloning
+    another -- which is why `clone.py` uses the return value and says so.
 
     Checks run in order: length, control characters, disallowed unicode
-    categories, parse round-trip, scheme, credentials, host — a caller
-    should learn the most fundamental problem first.
+    categories, parse, parse round-trip, scheme, credentials, host — a
+    caller should learn the most fundamental problem first.
+
+    Raises only `InvalidRepoUrlError` for any `str` input, per this
+    module's contract; see the `urlsplit` branch below for the case that
+    used to escape as a bare `ValueError`.
     """
     if len(raw) > _MAX_URL_LENGTH:
         raise InvalidRepoUrlError(
@@ -127,19 +225,21 @@ def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
     # bare `.strip()`, which uses `str.isspace()` and would silently drop
     # NBSP, NEL, line/paragraph separators, and other non-ASCII "whitespace"
     # that `_FORBIDDEN_URL_CHARS` does not cover. See `_DISALLOWED_CATEGORIES`.
-    candidate = raw.strip(" \t\r\n\f\v")
+    candidate = raw.strip(_ASCII_EDGE_WHITESPACE)
     if not candidate:
         raise InvalidRepoUrlError("A repository URL is required.")
 
-    for ch in candidate:
-        if unicodedata.category(ch) in _DISALLOWED_CATEGORIES:
-            # Do not echo `candidate`: same reasoning as the control-
-            # character branch above — this has not been screened for
-            # credentials yet.
-            raise InvalidRepoUrlError(
-                "Repository URL contains disallowed control, formatting, or separator characters.",
-                detail=f"category={unicodedata.category(ch)!r}; length={len(candidate)}",
-            )
+    # allow_ascii_space=False: in a URL a raw space is forbidden by RFC 3986
+    # and `%20` is the correct spelling, so category Zs is rejected outright
+    # once the edges have been stripped.
+    category = _first_disallowed_category(candidate, allow_ascii_space=False)
+    if category is not None:
+        # Do not echo `candidate`: same reasoning as the control-character
+        # branch above — this has not been screened for credentials yet.
+        raise InvalidRepoUrlError(
+            "Repository URL contains disallowed control, formatting, or separator characters.",
+            detail=f"category={category!r}; length={len(candidate)}",
+        )
 
     scheme, separator, remainder = candidate.partition("://")
     if separator:
@@ -153,7 +253,28 @@ def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
         # dropped, not letter case.
         candidate = f"{scheme.lower()}{separator}{remainder}"
 
-    parts = urlsplit(candidate)
+    try:
+        parts = urlsplit(candidate)
+    except ValueError as exc:
+        # `urlsplit` raises a bare ValueError for several shapes the checks
+        # above do not cover, because the offending characters are in
+        # categories this module deliberately permits: an unterminated or
+        # malformed IPv6 literal (`http://[::1`, `https://[::1]junk/x`,
+        # `https://[]/x` — brackets are Ps/Pe) and a netloc containing a
+        # character that changes under NFKC normalisation (`℀` is So, `＃`
+        # is Po). Without this branch a user typo escaped the
+        # `UpgradePilotError` hierarchy this module's contract promises, and
+        # surfaced as an unhandled exception whose traceback carried the raw
+        # URL — which at this point has NOT yet been credential-screened.
+        #
+        # `exc` itself is never echoed: `urlsplit`'s NFKC message quotes the
+        # whole netloc, and the netloc is where userinfo lives, so the
+        # exception's own text is a credential-leak channel. Report the
+        # length only, exactly as the round-trip branch below does.
+        raise InvalidRepoUrlError(
+            "Repository URL could not be parsed.",
+            detail=f"urlsplit rejected the URL; length={len(candidate)}",
+        ) from exc
 
     # Deliberately redundant with the control-character check above: that
     # check rejects the specific characters urlsplit() is known to strip
@@ -251,6 +372,25 @@ def _is_within(resolved: Path, root: Path) -> bool:
 def resolve_local_path(raw: str, allowed_roots: Sequence[Path]) -> Path:
     """Resolve a local repository path, confined to the configured roots.
 
+    The returned path is the directory that gets read, and it always
+    corresponds to `raw`. That invariant is the whole point of this
+    function and it was broken: a bare `Path(raw.strip())` removed all
+    seventeen codepoints `str.isspace()` covers, so asking for a real
+    directory named `repo\\xa0` silently resolved and returned the
+    *different* real directory `repo` — after which every file path, line
+    number and sha the product cited belonged to a repository the caller
+    never named. The fix is the URL side's rule, shared rather than
+    re-derived (`_first_disallowed_category`): reject a disallowed Unicode
+    category instead of silently stripping it.
+
+    Exactly one normalisation survives, matching `validate_clone_url`:
+    ASCII whitespace is stripped from the *edges*, because a leading or
+    trailing space around a pasted path is a plausible caller slip. That
+    is a substitution, so it is not left silent either — if the literal,
+    unstripped input also names something on the filesystem, the request
+    is ambiguous and is refused rather than guessed at. Interior spaces
+    are untouched: `My Documents` and `Café Projects` are ordinary paths.
+
     `Path.resolve()` follows symlinks, so containment is checked against the
     real path — a symlink pointing outside an allowed root is rejected.
     An empty root list denies everything: this is the single most important
@@ -289,7 +429,61 @@ def resolve_local_path(raw: str, allowed_roots: Sequence[Path]) -> Path:
                 detail=f"non-absolute root={root!r}",
             )
 
-    candidate = Path(raw.strip())
+    # Before `raw` is used for anything, including being echoed into a
+    # `detail`. Length only in this rejection: an unlooked-at path is not
+    # written to the log. See `_MAX_PATH_LENGTH`.
+    if len(raw) > _MAX_PATH_LENGTH:
+        raise LocalPathForbiddenError(
+            f"That repository path is too long (max {_MAX_PATH_LENGTH} characters).",
+            detail=f"length={len(raw)}",
+        )
+
+    candidate_text = raw.strip(_ASCII_EDGE_WHITESPACE)
+    if not candidate_text:
+        raise LocalPathForbiddenError(
+            "A repository path is required.",
+            detail=f"blank after stripping ASCII edge whitespace; length={len(raw)}",
+        )
+
+    # allow_ascii_space=True: U+0020 is a legal, ordinary filename
+    # character with no encoded alternative, unlike in a URL. Everything
+    # else in `_DISALLOWED_CATEGORIES` — NBSP, ZWSP, NEL, the bidi
+    # overrides, the U+2000 block — stays rejected, because a caller cannot
+    # see one and the citation that follows would name the wrong directory.
+    category = _first_disallowed_category(candidate_text, allow_ascii_space=True)
+    if category is not None:
+        raise LocalPathForbiddenError(
+            "That repository path contains disallowed control, formatting, "
+            "or separator characters.",
+            detail=f"category={category!r}; length={len(candidate_text)}",
+        )
+
+    if candidate_text != raw:
+        # Edge ASCII whitespace was removed, so the path about to be opened
+        # is not byte-identical to the one asked for. That is tolerated as a
+        # paste slip only while it cannot mean anything else: a trailing
+        # space is legal in a POSIX filename, so if the literal input also
+        # names something on disk, both readings are real and choosing one
+        # silently is the very defect this function was fixed for. Refuse
+        # instead, and say which whitespace to remove.
+        try:
+            literal_is_real = Path(raw).exists(follow_symlinks=False)
+            probe = "the literal input also names an existing filesystem entry"
+        except (OSError, RuntimeError, ValueError) as exc:
+            # Not a swallow (rule 20): the probe's failure is converted into
+            # the rejection below, with its type recorded in `detail`. Fail
+            # closed — an unprobeable literal is not evidence that
+            # substituting the stripped form is safe.
+            literal_is_real = True
+            probe = f"the literal input could not be probed: {type(exc).__name__}"
+        if literal_is_real:
+            raise LocalPathForbiddenError(
+                "Remove the whitespace from the start or end of that repository "
+                "path — with it present the path is ambiguous.",
+                detail=f"edge whitespace stripped; {probe}; length={len(raw)}",
+            )
+
+    candidate = Path(candidate_text)
 
     try:
         candidate = candidate.expanduser()
@@ -301,9 +495,17 @@ def resolve_local_path(raw: str, allowed_roots: Sequence[Path]) -> Path:
         # ValueError rather than OSError. Both are caller input, not a
         # config or filesystem-identity problem, so they get the same
         # "does not exist" treatment as an ordinary missing path.
+        #
+        # The path IS echoed here — for "that path does not exist" it is
+        # the operator's most useful datum, it is server-side and
+        # thread_id-correlated, and a local path has no standardised
+        # credential slot — but bounded (`_bounded_for_detail`), never
+        # verbatim. Only the exception's *type* accompanies it: `repr(exc)`
+        # on an OSError re-embeds the filename, which would put the
+        # unbounded path back into the same string the budget just bounded.
         raise LocalPathForbiddenError(
             "That repository path does not exist.",
-            detail=f"path={raw!r} error={exc!r}",
+            detail=f"path={_bounded_for_detail(candidate_text)} error={type(exc).__name__}",
         ) from exc
 
     if not resolved.is_dir():
