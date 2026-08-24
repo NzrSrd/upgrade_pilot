@@ -171,3 +171,62 @@ def test_breaking_change_symbols_cannot_be_emptied_after_construction() -> None:
     assert not hasattr(change.affected_symbols, "append")
     with pytest.raises(ValidationError):
         change.affected_symbols = ()  # type: ignore[misc]
+
+
+def test_a_whitespace_only_citation_is_rejected() -> None:
+    """`min_length=1` alone accepts "   ", which would let a citation be
+    structurally present and practically unresolvable — an uncited claim
+    wearing a citation's clothes."""
+    with pytest.raises(ValidationError) as exc:
+        SourceRef(
+            source_id="pydantic-v2-migration#validator-renamed",
+            title="@validator replaced by @field_validator",
+            source_type=SourceType.MIGRATION_GUIDE,
+            url_or_reference="   ",
+            chunk_id="chunk-1",
+            relevance=0.94,
+        )
+
+    assert exc.value.errors()[0]["type"] == "string_too_short"
+    assert exc.value.errors()[0]["loc"] == ("url_or_reference",)
+
+
+def test_a_whitespace_only_symbol_is_rejected() -> None:
+    """Blankness is checked per element, not just on the tuple's length."""
+    with pytest.raises(ValidationError) as exc:
+        BreakingChange(
+            id="bc-1",
+            title="@validator removed",
+            description="renamed to @field_validator",
+            severity=Severity.HIGH,
+            affected_symbols=["validator", "  "],
+            source=a_source(),
+        )
+
+    assert exc.value.errors()[0]["type"] == "string_too_short"
+    assert exc.value.errors()[0]["loc"] == ("affected_symbols", 1)
+
+
+def test_symbols_are_stripped_so_they_match_the_corpus_filter() -> None:
+    """The corpus is filtered with Chroma's `$contains`, which is
+    exact-element: a symbol stored as " Config " would never match a query
+    for "Config". Normalising here is what makes that join reliable."""
+    change = BreakingChange(
+        id="bc-1",
+        title="  @validator removed  ",
+        description="renamed to @field_validator",
+        severity=Severity.HIGH,
+        affected_symbols=["  validator  ", "\troot_validator\n"],
+        source=a_source(),
+    )
+
+    assert change.affected_symbols == ("validator", "root_validator")
+    assert change.title == "@validator removed"
+
+
+def test_snippet_keeps_its_indentation() -> None:
+    """RepoEvidence.snippet is a verbatim quote from the repository. Stripping
+    it would corrupt the evidence, so NonBlankStr is deliberately not used."""
+    evidence = RepoEvidence(file="src/models.py", line=12, snippet="    @validator('email')")
+
+    assert evidence.snippet == "    @validator('email')"

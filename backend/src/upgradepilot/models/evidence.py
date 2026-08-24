@@ -14,9 +14,23 @@ lifetime, not just at construction time.
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from upgradepilot.models.enums import RiskCategory, RiskLevel, Severity, SourceType
+
+NonBlankStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+"""A string that carries actual content.
+
+`Field(min_length=1)` alone accepts `"   "`, so a citation could be
+structurally present and practically unresolvable — a `url_or_reference` of
+whitespace is an uncited claim wearing a citation's clothes. Stripping first
+also normalises symbol names, which matters because the corpus is filtered
+with Chroma's `$contains`, and that match is exact-element: a symbol stored as
+`" Config "` would never match a query for `"Config"`.
+
+Deliberately NOT applied to `RepoEvidence.snippet`, where leading whitespace is
+the source file's own indentation and stripping it would corrupt the quote.
+"""
 
 
 class SourceRef(BaseModel):
@@ -24,11 +38,11 @@ class SourceRef(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    source_id: str = Field(min_length=1)
-    title: str = Field(min_length=1)
+    source_id: NonBlankStr
+    title: NonBlankStr
     source_type: SourceType
-    url_or_reference: str = Field(min_length=1)
-    chunk_id: str = Field(min_length=1)
+    url_or_reference: NonBlankStr
+    chunk_id: NonBlankStr
     relevance: float = Field(ge=0.0, le=1.0)
 
 
@@ -38,7 +52,7 @@ class RepoEvidence(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: Literal["repo"] = "repo"
-    file: str = Field(min_length=1)
+    file: NonBlankStr
     line: int = Field(ge=1)
     snippet: str | None = None
 
@@ -49,8 +63,8 @@ class DocEvidence(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: Literal["doc"] = "doc"
-    source_id: str = Field(min_length=1)
-    chunk_id: str = Field(min_length=1)
+    source_id: NonBlankStr
+    chunk_id: NonBlankStr
     relevance: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
@@ -62,13 +76,13 @@ class BreakingChange(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    id: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    description: str = Field(min_length=1)
-    old_form: str | None = None
-    new_form: str | None = None
+    id: NonBlankStr
+    title: NonBlankStr
+    description: NonBlankStr
+    old_form: NonBlankStr | None = None
+    new_form: NonBlankStr | None = None
     severity: Severity
-    affected_symbols: tuple[str, ...] = Field(min_length=1)
+    affected_symbols: tuple[NonBlankStr, ...] = Field(min_length=1)
     source: SourceRef
 
 
@@ -77,10 +91,10 @@ class RiskFactor(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
+    id: NonBlankStr
+    name: NonBlankStr
     category: RiskCategory
     level: RiskLevel
     weight: float = Field(ge=0.0, le=1.0)
-    detail: str = Field(min_length=1)
+    detail: NonBlankStr
     evidence: tuple[EvidenceRef, ...] = Field(min_length=1)
