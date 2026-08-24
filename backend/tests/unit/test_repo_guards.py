@@ -929,9 +929,35 @@ def test_an_interior_nbsp_is_rejected_not_stripped_into_a_different_directory(
     afterwards would then belong to a repository the caller never named,
     which is this product's central failure mode occurring silently.
 
-    Both directories are created on purpose. With only the NBSP one
-    present, a bare strip would fail with "does not exist" and this test
-    would pass while the defect stood.
+    What actually gives this test teeth, corrected. In the shipped code the
+    CATEGORY check is what rejects this input, and it needs neither the
+    sibling nor the ambiguity refusal — verified by creating the NBSP
+    directory alone, with no sibling, and getting `category='Zs'` back.
+    That is why the assertion below is on the category and not merely on
+    the exception type: the category is the rule, and the rule is the thing
+    under test.
+
+    Against a bare-`.strip()` regression the test goes red either way, but
+    by two different routes, and the earlier docstring named neither:
+
+    - with the sibling present, the stripped name resolves to a real
+      directory inside the root, so the AMBIGUITY REFUSAL fires ("remove
+      the whitespace") — the detail says `edge whitespace stripped`;
+    - with the sibling absent, the stripped name resolves to nothing, so
+      the refusal is the plain "does not exist".
+
+    Both go red on the `category='Zs'` assertion, so the sibling is not
+    what gives this test teeth. The earlier claim — that without the
+    sibling a bare strip "would fail with 'does not exist' and this test
+    would pass while the defect stood" — got the mechanism right and the
+    conclusion wrong: that refusal fails this test too.
+
+    The sibling is kept for the thing it does do: it makes the original
+    defect's consequence concrete rather than hypothetical. A bare strip
+    did not merely fail, it opened this directory and offered
+    `NOT_THE_REQUESTED_REPO.py` as the caller's repository. Deleting the
+    sibling would not weaken the assertion; deleting the category check or
+    the ambiguity refusal would, and each has its own test saying so.
     """
     named = tmp_path / "repo\xa0"
     sibling = tmp_path / "repo"
