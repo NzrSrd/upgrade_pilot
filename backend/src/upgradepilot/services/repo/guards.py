@@ -68,6 +68,18 @@ def validate_clone_url(raw: str, allowed_schemes: frozenset[str]) -> str:
     if not candidate:
         raise InvalidRepoUrlError("A repository URL is required.")
 
+    scheme, separator, remainder = candidate.partition("://")
+    if separator:
+        # Schemes are case-insensitive (RFC 3986) and git accepts HTTPS://,
+        # but urlsplit lowercases the scheme, which would fail the
+        # round-trip check below on nothing more than letter case.
+        # Normalise the scheme only — never the host or path, which stay
+        # case-sensitive (github.com/Acme/Repo is a different repository
+        # from github.com/acme/repo) — so the round-trip check tests what
+        # we actually care about: that no character was silently added or
+        # dropped, not letter case.
+        candidate = f"{scheme.lower()}{separator}{remainder}"
+
     parts = urlsplit(candidate)
 
     # Deliberately redundant with the control-character check above: that

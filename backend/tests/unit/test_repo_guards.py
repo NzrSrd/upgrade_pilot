@@ -116,6 +116,48 @@ def test_accepted_url_is_byte_identical_to_the_input() -> None:
     assert validate_clone_url(raw, DEFAULT_SCHEMES) == raw
 
 
+# --- URL validation: scheme case is normalised, host/path case is not (fix round 2) --
+
+
+@pytest.mark.parametrize("scheme_variant", ["HTTPS", "Https", "hTTps"])
+def test_accepts_a_case_varied_scheme_and_normalises_it_to_lowercase(scheme_variant: str) -> None:
+    """Schemes are case-insensitive per RFC 3986, and git accepts HTTPS://.
+    urlsplit() lowercases the scheme when parsing, so the round-trip
+    invariant must normalise scheme case before comparing — otherwise a
+    user pasting an uppercase-scheme URL from documentation is wrongly told
+    their URL 'did not round-trip'. The normalisation is observable in the
+    return value, so pin it: the returned scheme is always lowercase."""
+    url = f"{scheme_variant}://github.com/acme/repo"
+    assert validate_clone_url(url, DEFAULT_SCHEMES) == "https://github.com/acme/repo"
+
+
+def test_host_and_path_case_are_preserved_not_lowered() -> None:
+    """The fix must normalise only the scheme. Lowercasing the whole URL
+    would be wrong: github.com/Acme/Repo is a different repository from
+    github.com/acme/repo, and this is the test that stops someone
+    'simplifying' the scheme fix to candidate.lower()."""
+    url = "https://GitHub.com/Acme/Repo"
+    assert validate_clone_url(url, DEFAULT_SCHEMES) == "https://GitHub.com/Acme/Repo"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com/acme/repo\n--upload-pack=/bin/sh",
+        "https://github.com/acme/repo\t--config=core.sshCommand=evil",
+        "ht\ntps://github.com/x",
+        "https://github.com/acme/repo\r",
+        "https://github.com\r\n@evil.com/x",
+    ],
+)
+def test_scheme_case_normalisation_does_not_widen_the_control_character_hole(url: str) -> None:
+    """The scheme-case fix touches the same round-trip check that Finding 1
+    depends on. Re-assert, in this file rather than a one-off probe, that
+    normalising scheme case did not also let any of these back in."""
+    with pytest.raises(InvalidRepoUrlError):
+        validate_clone_url(url, DEFAULT_SCHEMES)
+
+
 # --- URL validation: no rejection path may leak a credential (fix round 1) --
 
 _TOKEN = "ghp_TOKEN_SECRET_VALUE"  # noqa: S105 - not a real credential, a test fixture
