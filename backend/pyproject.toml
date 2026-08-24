@@ -6,7 +6,14 @@ build-backend = "setuptools.build_meta"
 name = "upgradepilot"
 version = "0.1.0"
 description = "Dependency upgrade risk and migration planning"
-requires-python = ">=3.12"
+# 3.14, not 3.12 and not 3.13. `Workspace.iter_files` relies on
+# `Path.rglob` defaulting to `recurse_symlinks=False`, which arrived in
+# 3.13: on 3.12 an ancestor-pointing symlink in a user-supplied repository
+# makes that generator non-terminating, and `enforce_caps` cannot stop it
+# because caps are checked per yielded file. 3.13 would only trade a false
+# claim for an untested one -- 3.14.5 is the only interpreter this code has
+# ever run on. Reason recorded in ADR-001's Phase 0 verification record.
+requires-python = ">=3.14"
 dependencies = [
     "fastapi==0.141.1",
     "uvicorn==0.52.4",
@@ -65,6 +72,27 @@ addopts = "-q"
 line-length = 100
 src = ["src", "tests"]
 extend-exclude = ["tests/fixtures/sample_repo"]
+# `extend-exclude` alone is not enough: it is ignored when a path is named
+# explicitly on the command line, which is exactly how a pre-commit hook and
+# an editor's format-on-save invoke ruff. Verified before this line existed:
+# `ruff format --diff tests/fixtures/sample_repo/src/app/models.py`
+# reformatted the fixture, and `ruff check` on the same path raised UP045,
+# whose fix rewrites `Optional[str]` to `str | None` -- destroying the
+# Pydantic v1 idiom that fixture exists to provide.
+force-exclude = true
+
+# Deliberately one release below `requires-python`. This is a FORMATTING and
+# lint-modernisation target, not a compatibility claim -- the runtime floor is
+# 3.14 and stated once, above. Ruff infers its target from `requires-python`,
+# and at py314 the formatter applies PEP 758, rewriting
+# `except (OSError, RuntimeError):` into `except OSError, RuntimeError:` at
+# three sites in the repository guards. That form is valid 3.14 syntax and
+# semantically identical, but it is visually indistinguishable from Python 2's
+# `except E, name:` -- which BOUND the exception to the second name rather than
+# catching it. In the security boundary, where which exception types are caught
+# is the whole point of the clause, a form that misreads as variable binding is
+# a cost we decline to pay for a style change that buys nothing.
+target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
@@ -88,8 +116,24 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 "src/upgradepilot/services/repo/manager.py" = ["TID251"]
 "tests/unit/test_clone.py" = ["TID251"]
 "tests/unit/test_workspace.py" = ["TID251"]
+# The live https clone test calls the clone door directly for the same
+# reason `test_clone.py` does: it is testing that door's transport, so
+# routing through `WorkspaceManager` would test something else. Uncapped is
+# correct here -- the repository it clones is a fixed, known-small public
+# remote named in the module, not caller-supplied input.
+"tests/repo/test_clone_live.py" = ["TID251"]
 
 [tool.mypy]
-python_version = "3.12"
+# Must match `requires-python` above. The pin is not cosmetic: at
+# `--python-version 3.12` mypy *rejects* `rglob(..., recurse_symlinks=False)`
+# as an unexpected keyword argument and accepts it at 3.14, so a stale pin
+# type-checks this code against a stdlib it does not run on.
+python_version = "3.14"
 strict = true
-files = ["src/upgradepilot/models", "src/upgradepilot/services"]
+# The whole package, not just `models/` and `services/`. The narrow scope
+# left `__init__.py`, `config.py` and all four files under `api/` unchecked
+# -- `config.py` being the one everything imports -- so `strict = true` was
+# doing less than it appeared to. Widening cost nothing: the six previously
+# excluded files pass strict as they stand. `tests` is deliberately not
+# listed; see the note in spec §11.
+files = ["src/upgradepilot"]
