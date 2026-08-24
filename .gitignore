@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Environment & secrets
+.env
+.env.local
+*.pem
+
+# Local data stores
+backend/.chroma/
+backend/*.sqlite
+backend/*.sqlite3
+backend/checkpoints.db*
+
+# Workspaces created by repo cloning
+backend/.workspaces/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
