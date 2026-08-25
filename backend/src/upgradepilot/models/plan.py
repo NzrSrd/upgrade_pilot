@@ -249,3 +249,31 @@ class FinalReport(HonestModel):
         condition already carried by `migration_plan` being `None`.
         """
         return self.validation is not None and not self.validation.passed
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def version_discrepancy(self) -> tuple[str, str] | None:
+        """`(stated, detected)` when the two disagree, else `None`.
+
+        The rule itself is `RepoAnalysis.version_discrepancy`, which takes
+        the stated version as an argument because the analysis record does
+        not carry it -- the analyzer is told a dependency name, not what the
+        user believed its version to be. That makes it a method rather than a
+        field, and a method reaches no client: `model_dump()` does not call
+        it, so the one place in the product that knows the user's stated
+        version disagreed with the manifest was invisible to the report that
+        is supposed to say so (`docs/ui/READINESS.md` 3.9).
+
+        `FinalReport` is the only model holding both halves, so this is where
+        the rule becomes visible. It delegates rather than reimplements --
+        the comparison, including the strip of raw caller input, stays in one
+        place.
+
+        A `@computed_field` for the reason Phase 9 recorded against the four
+        it converted: a derived value the frontend cannot see is one the
+        frontend re-derives, which is a second implementation of the rule in
+        a language that cannot check it against this one.
+        """
+        if self.repo_analysis is None:
+            return None
+        return self.repo_analysis.version_discrepancy(self.dependency.current_version)
