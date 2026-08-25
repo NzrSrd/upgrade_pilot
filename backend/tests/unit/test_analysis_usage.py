@@ -186,6 +186,30 @@ def test_only_a_directly_nested_Config_counts() -> None:
     assert [s for s in _sites(source) if s.kind is UsageKind.NESTED_CONFIG] == []
 
 
+def test_a_nested_non_model_class_is_not_mistaken_for_a_same_named_indexed_one() -> None:
+    """RULING 46. `usage.py`'s `_model_classes` is keyed by `(name, line)`,
+    not `name` alone, exactly so this cannot happen: a module-level `class
+    Customer(BaseModel)` and an unrelated nested `class Customer:` (inside a
+    function, so it can never itself be indexed) share a NAME but not a
+    LINE. Keying by name alone would let the nested class inherit the
+    top-level one's `MODEL_DEFINITION` site -- a HIGH-confidence citation
+    for `BaseModel` on a line (`    class Customer:`) that does not derive
+    from it, or from anything -- a direct CLAUDE.md rule 1 violation at the
+    HIGH tier."""
+    source = (
+        "from pydantic import BaseModel\n"
+        "class Customer(BaseModel):\n"
+        "    x: int\n"
+        "def make():\n"
+        "    class Customer:\n"
+        "        pass\n"
+        "    return Customer\n"
+    )
+    sites = _sites(source)
+    definitions = [s for s in sites if s.kind is UsageKind.MODEL_DEFINITION]
+    assert [s.line for s in definitions] == [2]
+
+
 CONSUMER = """\
 from app.models import Customer, Invoice
 
@@ -332,6 +356,131 @@ def test_annotated_name_survives_a_nested_function_scope() -> None:
     by_line = {s.line: s.confidence for s in sites if s.kind is UsageKind.METHOD_CALL}
     assert by_line[4] == Confidence.LOW, "inner's `x` is unannotated"
     assert by_line[5] == Confidence.MEDIUM, "outer's `invoice` binding must survive inner's exit"
+
+
+def test_an_inner_functions_own_unannotated_parameter_shadows_the_outer_binding() -> None:
+    """RULING 49. Coverage for behaviour that already exists (the
+    `new_scope.pop(arg.arg, None)` branch in `_visit_function`), not a
+    defect: an inner function's own parameter, even unannotated, shadows an
+    outer annotated name of the same name for the DURATION of that inner
+    scope -- exactly as real Python scoping works. `inner`'s own `invoice`
+    has no annotation, so `inner`'s `invoice.dict()` must be LOW even though
+    `outer`'s `invoice` (the same NAME, a different binding) is annotated
+    `Invoice`; `outer`'s own call, once `inner` has exited, must still be
+    MEDIUM."""
+    source = (
+        "from app.models import Invoice\n"
+        "def outer(invoice: Invoice):\n"
+        "    def inner(invoice):\n"
+        "        return invoice.dict()\n"
+        "    return invoice.dict()\n"
+    )
+    models = ParsedModule(
+        file="app/models.py",
+        dotted_module="app.models",
+        source=MODELS_MODULE,
+        tree=ast.parse(MODELS_MODULE),
+    )
+    module = ParsedModule(file="c.py", dotted_module="c", source=source, tree=ast.parse(source))
+    index = build_model_index((module, models), import_root="pydantic")
+    sites = detect_usage(module, import_root="pydantic", index=index)
+    by_line = {s.line: s.confidence for s in sites if s.kind is UsageKind.METHOD_CALL}
+    assert by_line[4] == Confidence.LOW, "inner's own `invoice` param is unannotated"
+    assert by_line[5] == Confidence.MEDIUM, "outer's `invoice` is unaffected once inner exits"
+
+
+def test_a_call_through_an_optional_model_annotation_is_low_not_medium() -> None:
+    """RULING 48. An accepted precision/recall boundary, pinned so a future
+    widening is a reviewed choice rather than a silent regression --
+    mirrors how `test_an_optional_field_outside_a_model_is_not_flagged` pins
+    the OPTIONAL_FIELD boundary.
+
+    `_annotation_head_name` deliberately does not look inside a subscripted
+    annotation to find a contained model name: `Optional[Invoice]` could
+    just as easily have been `Union[Invoice, str]` or `list[Invoice]`, and
+    guessing which subscripted name is "the real type" is exactly the kind
+    of widening that trades an honest LOW for a MEDIUM that might not hold
+    (the plan's Deviation 1 reasoning). So `x: Optional[Invoice]` followed
+    by `x.dict()` grades LOW, not MEDIUM -- not a bug, a documented limit.
+    """
+    source = (
+        "from typing import Optional\n"
+        "from app.models import Invoice\n"
+        "def f(x: Optional[Invoice]):\n"
+        "    return x.dict()\n"
+    )
+    models = ParsedModule(
+        file="app/models.py",
+        dotted_module="app.models",
+        source=MODELS_MODULE,
+        tree=ast.parse(MODELS_MODULE),
+    )
+    module = ParsedModule(file="c.py", dotted_module="c", source=source, tree=ast.parse(source))
+    index = build_model_index((module, models), import_root="pydantic")
+    site = next(
+        s
+        for s in detect_usage(module, import_root="pydantic", index=index)
+        if s.kind is UsageKind.METHOD_CALL
+    )
+    assert site.confidence == Confidence.LOW
+
+
+def test_a_method_call_site_points_at_the_method_name_not_the_receiver() -> None:
+    """RULING 47. The reported `symbol` is `dict`, so the citation's column
+    must land on the `d` of `dict` -- not on `invoice`, where the raw `Call`
+    node's own `col_offset` starts. Same principle as the DECORATOR site's
+    `col_offset - 1` adjustment earlier in this file: point at the token the
+    symbol actually names, not wherever the enclosing expression begins."""
+    source = "from app.models import Invoice\ndef f(invoice: Invoice):\n    return invoice.dict()\n"
+    models = ParsedModule(
+        file="app/models.py",
+        dotted_module="app.models",
+        source=MODELS_MODULE,
+        tree=ast.parse(MODELS_MODULE),
+    )
+    module = ParsedModule(file="c.py", dotted_module="c", source=source, tree=ast.parse(source))
+    index = build_model_index((module, models), import_root="pydantic")
+    site = next(
+        s
+        for s in detect_usage(module, import_root="pydantic", index=index)
+        if s.kind is UsageKind.METHOD_CALL
+    )
+    assert site.line == 3
+    line = source.splitlines()[site.line - 1]
+    assert line[site.column : site.column + len("dict")] == "dict"
+
+
+def test_a_multiline_method_call_cites_the_line_the_method_name_is_actually_on() -> None:
+    """RULING 47's multiline proof. `Call.lineno` is the line the RECEIVER
+    starts on; the method name can be a line further down. Deriving `line`
+    and `column` from different nodes (the Call for one, the Attribute for
+    the other) would produce a citation whose column indexes into the WRONG
+    line's text -- and `snippet == lines[line - 1]` is this task's own
+    invariant (see `test_every_site_carries_the_source_line_it_cites`)."""
+    source = (
+        "from app.models import Invoice\n"
+        "def f(invoice: Invoice):\n"
+        "    x = (invoice\n"
+        "         .dict())\n"
+        "    return x\n"
+    )
+    models = ParsedModule(
+        file="app/models.py",
+        dotted_module="app.models",
+        source=MODELS_MODULE,
+        tree=ast.parse(MODELS_MODULE),
+    )
+    module = ParsedModule(file="c.py", dotted_module="c", source=source, tree=ast.parse(source))
+    index = build_model_index((module, models), import_root="pydantic")
+    site = next(
+        s
+        for s in detect_usage(module, import_root="pydantic", index=index)
+        if s.kind is UsageKind.METHOD_CALL
+    )
+    assert site.line == 4, "the method name `.dict()` is on line 4, not line 3 where `invoice` is"
+    line = source.splitlines()[site.line - 1]
+    assert line[site.column : site.column + len("dict")] == "dict"
+    assert site.snippet == line
 
 
 def test_import_pydantic_and_from_pydantic_import_are_low_confidence_import_sites() -> None:

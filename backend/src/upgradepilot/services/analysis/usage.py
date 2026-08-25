@@ -335,10 +335,33 @@ class _UsageVisitor(ast.NodeVisitor):
             confidence = (
                 Confidence.MEDIUM if self._receiver_is_model(node.func.value) else Confidence.LOW
             )
+            # The citation must point at the method NAME -- `symbol` is
+            # `dict`, not the receiver -- so both coordinates are derived
+            # from the Attribute node's END position, not the Call node's
+            # own start. `invoice.dict()`'s Call starts at column 0
+            # (`invoice`); deriving from the Attribute's end instead lands on
+            # the `d` of `dict`, matching what is actually reported.
+            #
+            # Both coordinates come from the SAME node deliberately: for a
+            # multiline call --
+            #     x = (invoice
+            #          .dict())
+            # -- `Call.lineno` is the line `invoice` starts on, while the
+            # method name itself is one line further down. Pairing
+            # `Call.lineno` with a column derived from the Attribute would
+            # index into the wrong line's text entirely, and `snippet` must
+            # equal `lines[line - 1]` (Task 10's own invariant).
+            attr = node.func
+            end_lineno = attr.end_lineno
+            end_col_offset = attr.end_col_offset
+            assert end_lineno is not None and end_col_offset is not None, (
+                "ast.parse always sets end positions; only a hand-built AST "
+                "node (never produced by this analyzer) would lack them"
+            )
             self._emit(
-                line=node.lineno,
-                column=node.col_offset,
-                symbol=node.func.attr,
+                line=end_lineno,
+                column=end_col_offset - len(attr.attr),
+                symbol=attr.attr,
                 kind=UsageKind.METHOD_CALL,
                 confidence=confidence,
             )
