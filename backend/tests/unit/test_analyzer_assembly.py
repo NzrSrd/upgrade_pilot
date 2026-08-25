@@ -244,3 +244,80 @@ def test_commit_records_are_populated_from_the_same_history_git_log_read(
     assert len(shas) == 2
     for record in analysis.commit_records:
         assert record.timestamp.tzinfo is not None
+
+
+# -- RULING 61: the three-way `commit_count` expression's untested branch ---
+
+
+def test_commit_count_is_zero_for_an_untracked_file_while_history_is_available(
+    tmp_path: Path,
+) -> None:
+    """The branch nothing exercised: `entry is None` while `churn.available`
+    is True. Every file in the sample repo's git history is committed in
+    commit 1, so `test_churn_reaches_the_affected_files` only ever proves
+    `entry is not None`, and `test_commit_count_is_None_when_the_repository_has_no_history`
+    only ever proves `churn.available is False`. Neither can tell
+    `(0 if churn.available else None)` from a bare `None`.
+
+    A new file, written to disk AFTER `build_sample_repo` returns and never
+    committed, is picked up by `Workspace.iter_files` (a filesystem walk,
+    not a git listing) so it becomes a real affected file with real usage
+    sites, while `git log` -- which only ever saw the two earlier commits --
+    has no `CommitRecord` naming it. History reads successfully
+    (`churn.available is True`) and this path simply never appears in it:
+    exactly "we looked and this file is quiet", which must read as `0`, not
+    `None`.
+    """
+    root = build_sample_repo(tmp_path)
+    new_file = root / "src" / "app" / "untracked_model.py"
+    new_file.write_text(
+        "from pydantic import BaseModel\n\n\nclass Widget(BaseModel):\n    name: str\n",
+        encoding="utf-8",
+    )
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    widget = next(a for a in analysis.affected_files if a.path == "src/app/untracked_model.py")
+    assert widget.commit_count == 0
+    assert widget.last_modified is None
+
+
+# -- RULING 62: the `scan.unreadable` reducer has zero coverage -------------
+
+
+def test_an_unparseable_manifest_becomes_a_confidence_reducer_naming_it(
+    tmp_path: Path,
+) -> None:
+    """Step 13's third reducer, gutted to `if False:`, still left the whole
+    suite green -- nothing had ever put an unparseable-but-present manifest
+    in front of the analyzer. A malformed `poetry.lock` (invalid TOML) is
+    read, fails to decode, and lands in `ManifestScan.unreadable` (Task 2's
+    own contract). `pyproject.toml`/`requirements.txt` still resolve the
+    version normally, which is what isolates this to the reducer under
+    test: the assertion on `detected_version` rules out this being a
+    Ruling-17 "no version" reducer in disguise.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "poetry.lock").write_text("not [ valid = toml", encoding="utf-8")
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    assert analysis.detected_version is not None
+    reducer = next((r for r in analysis.confidence_reducers if "poetry.lock" in r), None)
+    assert reducer is not None, analysis.confidence_reducers
+
+
+# -- RULING 63: the no-candidates reducer needs its negative direction ------
+
+
+def test_when_candidates_are_found_there_is_no_import_root_reducer(tmp_path: Path) -> None:
+    """The negative direction for the no-candidates reducer, in the same
+    shape as `test_no_gitmodules_means_no_submodule_reducer` above. Without
+    it, an implementation that appends the reducer unconditionally
+    (`if True:`) passes `test_finding_no_candidate_at_all_is_reported_as_a_reducer`
+    just as easily as a correct one."""
+    analysis = _analysis(tmp_path)
+    assert not any(
+        "no file in this repository names the module" in r.lower()
+        for r in analysis.confidence_reducers
+    )
