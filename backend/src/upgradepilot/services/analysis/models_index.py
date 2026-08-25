@@ -60,7 +60,21 @@ class ModelIndex(HonestModel):
         class.
 
         Used by Task 7, which resolves a call's receiver to a dotted import
-        path and asks whether that path names a model."""
+        path and asks whether that path names a model.
+
+        The one lookup here that legitimately keys on `dotted_module` rather
+        than `file`: `dotted` comes from an import statement, and an import
+        names a module, never a file. `ParsedModule.dotted_module` is not
+        injective (`src/app/models.py` and `app/models.py` both give
+        `app.models`), so in a repository holding both, an import of
+        `app.models.Invoice` cannot be attributed to one of them -- and True
+        here means "some indexed class has that dotted path", which is the
+        strongest true statement available. The cost is bounded to a
+        CONFIDENCE grade: `_receiver_is_model` turns this into MEDIUM versus
+        LOW and nothing else, so the file, line, column and symbol cited are
+        unaffected either way. Do not add a `file` parameter here expecting
+        it to sharpen the answer; the caller does not know which file the
+        import resolved to either."""
         return any(f"{entry.dotted_module}.{entry.name}" == dotted for entry in self.classes)
 
 
@@ -151,23 +165,46 @@ def build_model_index(modules: tuple[ParsedModule, ...], *, import_root: str) ->
         visitor.visit(module.tree)
         per_module.append((module, aliases, visitor.classes))
 
-    # found[(dotted_module, name)] -> (ParsedModule, ClassDef, base_symbol)
+    # found[(file, name)] -> (ParsedModule, ClassDef, base_symbol)
+    #
+    # Keyed on `file`, NOT on `dotted_module`: `_dotted_module` strips a
+    # leading `src/`, so `src/app/models.py` and `app/models.py` BOTH map to
+    # `app.models`. Keyed on the dotted name, whichever of two colliding
+    # files the seed loop reached second was skipped as already-`visited`,
+    # and a genuine model silently lost its HIGH-confidence
+    # MODEL_DEFINITION site -- with no `skipped_files` entry and no reducer,
+    # so the report claimed a completeness it did not have. `file` is the
+    # repo-relative path and is unique by construction; `dotted_module` is
+    # explicitly a best-effort guess (see `_dotted_module`'s docstring).
     found: dict[tuple[str, str], tuple[ParsedModule, ast.ClassDef, str]] = {}
     visited: set[tuple[str, str]] = set()
+
+    # The `dotted_module.name` paths of everything indexed so far. Kept
+    # separately from `visited` now that `visited` is file-keyed: this is
+    # what a first-party base resolves against in the fixed point below, and
+    # a base can only ever name a class by its dotted path, never by its
+    # file. Two files sharing one `dotted_module` therefore contribute the
+    # same entry here, which is the honest answer -- an import of
+    # `app.models.Invoice` genuinely cannot be attributed to one of them.
+    dotted_targets: set[str] = set()
+
+    def _record(module: ParsedModule, class_def: ast.ClassDef, base: ast.expr) -> None:
+        key = (module.file, class_def.name)
+        found[key] = (module, class_def, ast.unparse(base))
+        visited.add(key)
+        dotted_targets.add(f"{module.dotted_module}.{class_def.name}")
 
     # Seed: direct dependency bases. A base's leftmost name resolved, via
     # this module's AliasMap, to a dotted path whose top-level package is
     # `import_root`.
     for module, aliases, class_defs in per_module:
         for class_def in class_defs:
-            key = (module.dotted_module, class_def.name)
-            if key in visited:
+            if (module.file, class_def.name) in visited:
                 continue
             for base in class_def.bases:
                 leftmost = _leftmost_name(base)
                 if leftmost is not None and aliases.root_of(leftmost) == import_root:
-                    found[key] = (module, class_def, ast.unparse(base))
-                    visited.add(key)
+                    _record(module, class_def, base)
                     break
 
     # Fixed point: transitive first-party bases. A base resolves, via this
@@ -180,16 +217,14 @@ def build_model_index(modules: tuple[ParsedModule, ...], *, import_root: str) ->
         added = False
         for module, aliases, class_defs in per_module:
             for class_def in class_defs:
-                key = (module.dotted_module, class_def.name)
-                if key in visited:
+                if (module.file, class_def.name) in visited:
                     continue
                 for base in class_def.bases:
                     resolved = _dotted_base_path(aliases, base)
                     if resolved is None:
                         continue
-                    if any(f"{k[0]}.{k[1]}" == resolved for k in visited):
-                        found[key] = (module, class_def, ast.unparse(base))
-                        visited.add(key)
+                    if resolved in dotted_targets:
+                        _record(module, class_def, base)
                         added = True
                         break
         if not added:

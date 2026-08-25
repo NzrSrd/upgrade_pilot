@@ -254,3 +254,29 @@ def test_classes_are_sorted_by_file_then_line() -> None:
         import_root="pydantic",
     )
     assert [(c.file, c.line) for c in index.classes] == [("a.py", 2), ("z.py", 2)]
+
+
+# -- F2: two files can share one `dotted_module`, so it cannot be the key ---
+
+
+def test_two_files_sharing_one_dotted_module_are_both_indexed() -> None:
+    """`_dotted_module` strips a leading `src/`, so `src/app/models.py` and
+    `app/models.py` both map to `app.models`. Keying `found`/`visited` on
+    `(dotted_module, name)` therefore dropped whichever of the two the seed
+    loop reached second -- a genuine model losing its HIGH-confidence
+    MODEL_DEFINITION site with no `skipped_files` entry and no reducer, so
+    the report claims a completeness it does not have.
+
+    `file` is the repo-relative path and IS unique; `dotted_module` is
+    explicitly a best-effort guess (see `_dotted_module`'s docstring).
+    """
+    source = "from pydantic import BaseModel\n\n\nclass Invoice(BaseModel):\n    y: int\n"
+    both = tuple(
+        ParsedModule(file=path, dotted_module="app.models", source=source, tree=ast.parse(source))
+        for path in ("app/models.py", "src/app/models.py")
+    )
+    index = build_model_index(both, import_root="pydantic")
+    assert [(c.file, c.name, c.line) for c in index.classes] == [
+        ("app/models.py", "Invoice", 4),
+        ("src/app/models.py", "Invoice", 4),
+    ]

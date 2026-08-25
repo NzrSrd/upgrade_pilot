@@ -148,15 +148,29 @@ class _UsageVisitor(ast.NodeVisitor):
         self._import_root = import_root
         self._index = index
         self._lines = _source_lines(module.source)
-        # Keyed by (name, line): the *line* disambiguates a nested class that
-        # happens to share a name with a top-level indexed one from the
-        # indexed class itself -- `ModelIndex` only ever indexes top-level
-        # classes (see `models_index.py`'s `_TopLevelClassVisitor`), so a
-        # nested class can never legitimately match this map.
+        # Selected by `entry.file`, NOT by `entry.dotted_module`, and keyed
+        # by (name, line).
+        #
+        # The *file* is what makes the selection sound: `_dotted_module`
+        # strips a leading `src/`, so `src/app/models.py` and
+        # `app/models.py` BOTH map to `app.models`. Selecting on that name,
+        # a second file inherited the first file's `ModelClass` and this
+        # pass emitted a HIGH-confidence MODEL_DEFINITION naming
+        # `BaseModel` against a file that never mentions pydantic -- the
+        # record's own snippet contradicting its own `symbol` in the same
+        # breath. `file` is the repo-relative path and is unique;
+        # `dotted_module` is explicitly a best-effort guess (see its
+        # docstring). CLAUDE.md rule 1: this map is what decides whether a
+        # HIGH-confidence citation is emitted at all, so it must be keyed on
+        # something injective.
+        #
+        # The *line* disambiguates a nested class that happens to share a
+        # name with a top-level indexed one from the indexed class itself --
+        # `ModelIndex` only ever indexes top-level classes (see
+        # `models_index.py`'s `_TopLevelClassVisitor`), so a nested class can
+        # never legitimately match this map.
         self._model_classes: dict[tuple[str, int], ModelClass] = {
-            (entry.name, entry.line): entry
-            for entry in index.classes
-            if entry.dotted_module == module.dotted_module
+            (entry.name, entry.line): entry for entry in index.classes if entry.file == module.file
         }
         # One entry per enclosing class-or-function scope. `True`/`False` for
         # a class scope (is it an indexed model); `None` for a function

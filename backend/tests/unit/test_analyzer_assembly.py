@@ -17,6 +17,7 @@ from tests.fixtures.repo_builder import (
     EXPECTED_UNPARSEABLE,
     build_sample_repo,
 )
+from upgradepilot.models.enums import UsageKind
 from upgradepilot.models.errors import DependencyNotFoundError
 from upgradepilot.models.inputs import DependencySpec
 from upgradepilot.models.repo import RepoAnalysis
@@ -361,3 +362,41 @@ def test_no_star_import_means_no_star_import_reducer(tmp_path: Path) -> None:
     test above just as easily as a correct one."""
     analysis = _analysis(tmp_path)
     assert not any("import *" in r for r in analysis.confidence_reducers)
+
+
+# -- F2: a `dotted_module` collision must not fabricate a finding -----------
+
+
+def test_a_file_colliding_on_dotted_module_gets_no_borrowed_model_definition(
+    tmp_path: Path,
+) -> None:
+    """`_dotted_module` strips a leading `src/`, so a root-level
+    `app/models.py` maps to the same `app.models` as the fixture's
+    `src/app/models.py`. Keyed on that name, the impostor inherited the real
+    file's `ModelClass` and the analyzer emitted a HIGH-confidence
+    MODEL_DEFINITION naming `BaseModel` against a file that never mentions
+    pydantic -- its own snippet contradicting its own symbol. Ruling 46's
+    defect resurfacing in the variant that fix missed.
+
+    `class Customer` sits on line 8 in both files on purpose: the collision
+    needs the same name AND the same line. The impostor is reached by phase B
+    (it contains the byte string `Customer`), not phase A, which is why it
+    can be a candidate at all while containing no `pydantic`.
+    """
+    root = build_sample_repo(tmp_path)
+    impostor = root / "app"
+    impostor.mkdir()
+    impostor_source = '"""Not a model."""\n' + "\n" * 6 + "class Customer(dict):\n    pass\n"
+    assert impostor_source.split("\n")[7] == "class Customer(dict):"
+    assert "pydantic" not in impostor_source
+    (impostor / "models.py").write_text(impostor_source, encoding="utf-8")
+
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    assert "app/models.py" not in {a.path for a in analysis.affected_files}
+    for affected in analysis.affected_files:
+        for site in affected.usage_sites:
+            if site.kind is UsageKind.MODEL_DEFINITION:
+                assert site.snippet is not None
+                assert site.symbol in site.snippet, site

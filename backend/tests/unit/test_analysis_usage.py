@@ -590,3 +590,43 @@ def test_a_lone_carriage_return_is_a_line_break_here_too() -> None:
     site = _one(_sites(source), UsageKind.MODEL_DEFINITION)
     assert site.line == 3
     assert site.snippet == "class Invoice(BaseModel):"
+
+
+# -- F2: `dotted_module` is not injective, so it cannot select the map ------
+
+
+def test_a_same_named_class_in_a_colliding_dotted_module_is_not_reported_as_a_model() -> None:
+    """`_dotted_module` strips a leading `src/`, so `src/app/models.py` and
+    `app/models.py` BOTH map to `app.models`. Selecting `_model_classes` by
+    that name made the second file inherit the first file's `ModelClass`,
+    emitting a HIGH-confidence MODEL_DEFINITION naming `BaseModel` in a file
+    that does not contain the string `BaseModel` -- with its own snippet
+    (`class Invoice(Other):`) contradicting its own `symbol` field. The most
+    direct CLAUDE.md rule 1 violation on this branch, and Ruling 46's defect
+    resurfacing in the variant that fix missed.
+
+    The collision needs the same class NAME and the same LINE; both fixtures
+    put `Invoice` on line 4 deliberately.
+    """
+    real_source = "from pydantic import BaseModel\n\n\nclass Invoice(BaseModel):\n    y: int\n"
+    impostor_source = "class Other:\n    pass\n\nclass Invoice(Other):\n    y: int\n"
+    assert "BaseModel" not in impostor_source
+    real = ParsedModule(
+        file="src/app/models.py",
+        dotted_module="app.models",
+        source=real_source,
+        tree=ast.parse(real_source),
+    )
+    impostor = ParsedModule(
+        file="app/models.py",
+        dotted_module="app.models",
+        source=impostor_source,
+        tree=ast.parse(impostor_source),
+    )
+    index = build_model_index((impostor, real), import_root="pydantic")
+
+    assert [(c.file, c.line) for c in index.classes] == [("src/app/models.py", 4)]
+    impostor_sites = detect_usage(impostor, import_root="pydantic", index=index)
+    assert impostor_sites == (), impostor_sites
+    real_sites = detect_usage(real, import_root="pydantic", index=index)
+    assert _one(real_sites, UsageKind.MODEL_DEFINITION).symbol == "BaseModel"

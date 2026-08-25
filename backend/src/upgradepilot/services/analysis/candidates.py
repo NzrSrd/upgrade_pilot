@@ -78,7 +78,17 @@ class ParsedModule:
     dotted_module: str
     """Best-effort dotted name, e.g. `app.models` for `src/app/models.py`.
     Used only to match a first-party import against the module that defines a
-    model; a wrong guess costs a missed medium grade, never a wrong citation."""
+    model.
+
+    NOT injective, and nothing may key on it as though it were: the leading
+    `src/` strip means `src/app/models.py` and `app/models.py` both land on
+    `app.models`. Two places used to, and both produced a wrong claim -- see
+    `models_index.build_model_index` and `usage._UsageVisitor.__init__`,
+    which now select on `file` instead. What remains keyed on the dotted name
+    is `ModelIndex.is_model_class`, where it is unavoidable (an import names
+    a module, not a file) and where the cost is bounded: a wrong or
+    ambiguous guess mis-grades a call's CONFIDENCE in either direction, and
+    never affects the file, line, column or symbol that gets cited."""
     source: str
     tree: ast.Module
 
