@@ -414,6 +414,7 @@ and after execution:
   start time is not observable from here, and a checkpointed run can be
   resumed hours or days later, so wall-clock across a resume would be a
   number that looks authoritative and is not.
+- Graph execution state
 
 ### The cost card's two flags are not optional
 

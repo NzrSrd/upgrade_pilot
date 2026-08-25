@@ -14,9 +14,7 @@ from pathlib import Path
 
 from upgradepilot.api.app import create_app
 
-DESTINATION = (
-    Path(__file__).resolve().parents[2] / "frontend" / "src" / "api" / "openapi.json"
-)
+DESTINATION = Path(__file__).resolve().parents[2] / "frontend" / "src" / "api" / "openapi.json"
 
 
 def main() -> None:
