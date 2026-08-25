@@ -10,64 +10,21 @@
    over a delimited string.
 """
 
-import hashlib
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
 import chromadb
-import numpy as np
-import numpy.typing as npt
 from chromadb.api import ClientAPI
-from chromadb.api.types import (
-    Documents,
-    Embeddable,
-    EmbeddingFunction,
-    Embeddings,
-    Metadata,
-    Where,
-)
+from chromadb.api.types import Metadata, Where
 
-DIM = 16
+from tests.knowledge.fake_embedding import fake_embedding_function
 
-
-class DeterministicEmbedding(EmbeddingFunction[Documents]):
-    """Hash-based embeddings: stable, offline, and good enough to rank exact repeats first."""
-
-    def __init__(self) -> None:
-        pass
-
-    def __call__(self, input: Documents) -> Embeddings:
-        vectors: list[npt.NDArray[np.int32 | np.float32]] = []
-        for text in input:
-            digest = hashlib.sha256(text.lower().encode()).digest()
-            vectors.append(np.array([digest[i] / 255.0 for i in range(DIM)], dtype=np.float32))
-        return vectors
-
-    @staticmethod
-    def name() -> str:
-        return "deterministic-test-embedding"
-
-
-def fake_embedding_function() -> EmbeddingFunction[Embeddable]:
-    """Shared by every knowledge-base test from Phase 3 onward.
-
-    Returns `EmbeddingFunction[Embeddable]` rather than the concrete
-    `DeterministicEmbedding`, so the one unavoidable suppression lives here
-    instead of at all eight call sites. `EmbeddingFunction`'s `__call__`
-    takes its type parameter as a parameter, so the protocol is
-    contravariant in it: a `Documents`-only embedder cannot structurally
-    satisfy the `EmbeddingFunction[Embeddable]` that `create_collection` and
-    `get_collection` declare, even though it is exactly what chromadb calls
-    it with. Chromadb hits this in its own code and silences it the same
-    way, at the assignment of `DefaultEmbeddingFunction` in
-    `chromadb/api/types.py`. `Documents` is `list[str]`, and every caller's
-    input here is documents, so the cast is sound in practice.
-
-    A `cast`, not a `# type: ignore`: the mismatch is a variance fact about
-    the protocol, not an error to be suppressed, and a cast keeps the
-    return type honest for anything that later reads it.
-    """
-    return cast(EmbeddingFunction[Embeddable], DeterministicEmbedding())
+# The deterministic embedding function moved to
+# `tests/knowledge/fake_embedding.py` when Phase 3's store tests needed it
+# too, and became lexical rather than whole-text-hash in the same move --
+# see that module for why a hash-only embedder cannot support a golden set.
+# Nothing in this file depends on the embedding: every assertion below is
+# about metadata storage and filter semantics.
 
 
 def _contains(field: str, symbol: str) -> Where:

@@ -197,3 +197,16 @@ class RetrievedChunk(HonestModel):
             chunk_id=self.chunk_id,
             relevance=self.relevance,
         )
+
+
+class IngestReport(HonestModel):
+    """What an ingestion run actually wrote.
+
+    Counted from the store after the write rather than from the input, so a
+    write that silently did nothing cannot report success. This is the
+    operator's only confirmation that the corpus they authored is the corpus
+    that got indexed.
+    """
+
+    documents: int = Field(ge=0)
+    chunks: int = Field(ge=0)
