@@ -321,3 +321,43 @@ def test_when_candidates_are_found_there_is_no_import_root_reducer(tmp_path: Pat
         "no file in this repository names the module" in r.lower()
         for r in analysis.confidence_reducers
     )
+
+
+# -- RULING 64: `from <import_root> import *` becomes a confidence reducer --
+
+
+def test_a_star_import_from_the_dependency_becomes_a_confidence_reducer(
+    tmp_path: Path,
+) -> None:
+    """`AliasMap.has_star_import_from` (Task 4) was built and tested but
+    never consumed. `from pydantic import *` binds names this module cannot
+    enumerate without importing pydantic, so real usage in that module can
+    be silently missed -- the same "we could not find it" failure the
+    no-candidates reducer guards against, one file at a time. This must
+    read as a named, traceable gap, not a quietly smaller finding set.
+    """
+    root = build_sample_repo(tmp_path)
+    star_file = root / "src" / "app" / "star_import.py"
+    star_file.write_text("from pydantic import *\n", encoding="utf-8")
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    # "import *" -- not the bare word "import" -- is the discriminator: the
+    # no-candidates reducer's text also contains "import" ("The import name
+    # was inferred..."), but never "import *", and the two reducers cannot
+    # fire in the same run anyway (one requires candidates.modules to be
+    # empty, the other iterates it), so there is no fixture where both texts
+    # could satisfy the same substring check by accident.
+    reducer = next((r for r in analysis.confidence_reducers if "import *" in r), None)
+    assert reducer is not None, analysis.confidence_reducers
+    assert "src/app/star_import.py" in reducer
+    assert "enumerated" in reducer.lower()
+
+
+def test_no_star_import_means_no_star_import_reducer(tmp_path: Path) -> None:
+    """The negative direction, in the same shape as
+    `test_no_gitmodules_means_no_submodule_reducer` above. Without it, an
+    implementation that appends the reducer unconditionally passes the
+    test above just as easily as a correct one."""
+    analysis = _analysis(tmp_path)
+    assert not any("import *" in r for r in analysis.confidence_reducers)

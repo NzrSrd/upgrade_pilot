@@ -17,6 +17,7 @@ from upgradepilot.models.inputs import DependencySpec
 from upgradepilot.models.repo import AffectedFile, RepoAnalysis, SymbolInventory, UsageSite
 from upgradepilot.services.analysis.candidates import expand_candidates, select_candidates
 from upgradepilot.services.analysis.churn import ChurnIndex
+from upgradepilot.services.analysis.imports import AliasMap
 from upgradepilot.services.analysis.layout import is_test_path, language_shares
 from upgradepilot.services.analysis.manifests import scan_manifests
 from upgradepilot.services.analysis.models_index import build_model_index
@@ -171,6 +172,34 @@ def analyze_repository(
             "The following manifests exist but could not be parsed, so any "
             "version or dependency information they might contain is missing "
             "from this report: " + ", ".join(scan.unreadable) + "."
+        )
+
+    # RULING 64: `from <import_root> import *` binds names this module
+    # cannot enumerate without importing the dependency (a static analyzer
+    # must not do that), so real usage in that module can be silently
+    # missed -- the same "we could not find it" failure the no-candidates
+    # reducer above guards against, one file at a time. Placed LAST: the
+    # five reducers above run repository-wide -> analysis-coverage ->
+    # manifest-level in scope, and this one is the narrowest, a per-module
+    # completeness caveat.
+    #
+    # `detect_usage` already builds an `AliasMap` per module internally,
+    # but `_UsageVisitor` does not expose it, so reaching into it would mean
+    # changing usage.py's public surface for this one flag. Building one
+    # more `AliasMap.from_module(module.tree)` here is cheap instead: the
+    # modules are already parsed, so this costs one extra `ast.walk` per
+    # module, not a second parse of the file.
+    star_import_files = sorted(
+        module.file
+        for module in candidates.modules
+        if AliasMap.from_module(module.tree).has_star_import_from(import_root)
+    )
+    if star_import_files:
+        confidence_reducers.append(
+            f"The following modules use `from {import_root} import *`, whose "
+            f"bound names cannot be enumerated without importing the "
+            f"dependency: {', '.join(star_import_files)}. Usage in these "
+            f"files may be under-reported."
         )
 
     # -- Step 14: assemble. ----------------------------------------------------
