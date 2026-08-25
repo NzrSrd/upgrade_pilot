@@ -28,18 +28,34 @@ Which of `_parse`'s except branches are proven by a test, and which are not
   production, and CLAUDE.md rule 20 requires the outcome be recorded rather
   than the exception left to propagate, regardless of whether a test can
   force the path.
-- `ValueError`: not proven. `ast.parse` raises this (not `SyntaxError`) for
-  a source containing a NUL byte, but a fixture with a NUL byte has to get
-  past `Workspace.read_text`'s UTF-8 decode first -- a NUL is valid UTF-8,
-  so it does, and reaching `ast.parse` with a genuinely NUL-containing
-  string is straightforward in principle; not yet exercised here regardless.
-- `RecursionError`: not proven. Forcing it needs a source nested deeply
-  enough to exceed the interpreter's recursion limit, which is expensive to
-  construct and whose exact threshold is interpreter-version-dependent --
-  a fixture tuned to trip on this machine risks passing to no purpose, or
-  failing to trip at all, on another. Kept as defence in depth: the
-  branch's cost of being wrong (an uncaught `RecursionError` breaking rule
-  20) is worse than its cost of being untested.
+- `ValueError`: not proven, and no reachable example is known on this
+  project's pinned interpreter (3.14.5). The textbook trigger -- a NUL
+  byte in the source -- does NOT reach this branch here: verified,
+  `ast.parse("x = 1\\0")` raises `SyntaxError: source code string cannot
+  contain null bytes` on 3.14, caught by the clause above instead. That
+  NUL-bytes-raise-`ValueError` behaviour is stale knowledge from an older
+  CPython; do not re-add it as the justification for this branch.
+  `UnicodeEncodeError` is a real `ValueError` subclass `ast.parse` does
+  raise (e.g. for a lone surrogate in the source), but it cannot arrive
+  here either: `Workspace.read_text` decodes UTF-8 strictly, so a lone
+  surrogate never survives decoding to reach `ast.parse` at all. The
+  branch is kept for CLAUDE.md rule 20's defensive breadth -- `ast.parse`
+  is not contractually limited to raising only `SyntaxError`, and this
+  clause exists so that whatever else it might someday raise still
+  becomes a recorded `SkippedFile` rather than an uncaught crash -- not
+  because a specific input is known to trigger it today.
+- `RecursionError`: not proven by a test, but genuinely reachable --
+  verified, `ast.parse("x" + "+x" * 100000)` raises `RecursionError:
+  Stack overflow (used 16352 kB) during compilation` on the pinned
+  3.14.5 interpreter. (Deeply nested parentheses or `if` blocks do NOT
+  reach this branch: verified, those raise `SyntaxError` and
+  `IndentationError` respectively instead.) Left untested anyway: the
+  trigger is a C stack-limit overflow, and the repeat count needed to
+  hit it varies with platform, interpreter build and thread stack size,
+  so a test pinned to a literal count would either pass here without
+  truly exercising the branch, or hard-crash the interpreter on a
+  machine with a smaller stack. A flaky or platform-dependent test is
+  worse than a documented, unproven branch.
 """
 
 from __future__ import annotations
