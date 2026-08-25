@@ -205,3 +205,32 @@ def test_a_prerelease_target_version_still_agrees_with_its_major() -> None:
     doc = parse_document(document(to_version='"2.0b1"'), path="p.md")
     assert doc.to_version == "2.0b1"
     assert doc.to_version_major == 2
+
+
+def test_a_file_whose_name_starts_with_an_underscore_is_not_a_corpus_document(
+    tmp_path: Path,
+) -> None:
+    """A corpus directory wants a README beside the documents it describes,
+    and a README is not a document -- it has no frontmatter, so loading it
+    fails the whole corpus.
+
+    Skipped by a general rule (a leading underscore) rather than by matching
+    the name `README.md`. A filename special-case would silently drop a real
+    document that happened to be called that, and silence is the thing this
+    parser exists to avoid. The underscore is visible in the filename itself,
+    so the exemption is legible from a directory listing.
+    """
+    (tmp_path / "_README.md").write_text("Prose about the corpus.\n", encoding="utf-8")
+    (tmp_path / "real.md").write_text(FRONTMATTER, encoding="utf-8")
+
+    docs = load_corpus(tmp_path)
+
+    assert tuple(d.path for d in docs) == ("real.md",)
+
+
+def test_a_directory_of_only_skipped_files_is_still_an_empty_corpus(tmp_path: Path) -> None:
+    """The skip must not become a way to end up with nothing and no error."""
+    (tmp_path / "_README.md").write_text("Prose about the corpus.\n", encoding="utf-8")
+
+    with pytest.raises(CorpusDocumentError, match="no corpus documents"):
+        load_corpus(tmp_path)

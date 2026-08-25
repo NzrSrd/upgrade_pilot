@@ -21,6 +21,15 @@ from pydantic import ValidationError
 
 from upgradepilot.models.knowledge import CorpusDocument
 
+CORPUS_ROOT = Path(__file__).resolve().parents[4] / "corpus"
+"""The corpus that ships with the backend.
+
+Located relative to this file rather than to the process working directory,
+so ingestion finds it whichever directory it is invoked from. The configured
+`Settings.corpus_dir` is what an operator overrides to point at a different
+corpus; this is the default that override falls back to.
+"""
+
 FRONTMATTER_FENCE = "---"
 
 PARSER_OWNED_FIELDS = frozenset({"body", "path"})
@@ -113,6 +122,14 @@ def load_corpus(root: Path) -> tuple[CorpusDocument, ...]:
     citation keys differ between two ingests of identical content, and a
     checked-in golden set would pass or fail depending on the machine.
 
+    A file whose name begins with an underscore is not a corpus document --
+    `_README.md` is the case that prompted the rule. A general convention
+    rather than a match on the name `README.md`: a filename special-case
+    would silently drop a real document that happened to be called that, and
+    the underscore is visible in a directory listing, so nothing is skipped
+    invisibly. The rule cannot hide an empty corpus, because the refusal
+    below is checked after it.
+
     Two refusals, both of which are silent corruption otherwise:
 
     - An empty corpus. It ingests without error and then answers every query
@@ -123,7 +140,10 @@ def load_corpus(root: Path) -> tuple[CorpusDocument, ...]:
       second `add` silently overwrites the first, so the corpus quietly holds
       fewer documents than the author wrote.
     """
-    paths = sorted(root.rglob("*.md"), key=lambda p: p.relative_to(root).as_posix())
+    paths = sorted(
+        (path for path in root.rglob("*.md") if not path.name.startswith("_")),
+        key=lambda p: p.relative_to(root).as_posix(),
+    )
     documents = tuple(
         parse_document(
             path.read_text(encoding="utf-8"),
