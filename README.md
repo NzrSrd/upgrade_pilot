@@ -41,8 +41,12 @@ python3 -m venv .venv                     # first time only
 Then, from `backend/`:
 
 ```bash
-./.venv/bin/python -m uvicorn upgradepilot.api.app:app --port 8000
+./.venv/bin/python -m uvicorn upgradepilot.api.app:create_app --factory --port 8000
 ```
+
+`--factory` is not optional: `app.py` exports `create_app`, not a module-level
+`app`, so that the settings and the runtime factory stay injectable. Without
+the flag uvicorn reports `Attribute "app" not found`.
 
 Port 8000 matters: the frontend dev server proxies `/api` there. Check it:
 

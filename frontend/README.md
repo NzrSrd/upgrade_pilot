@@ -41,7 +41,7 @@ npx tsc -b        # typecheck only, no build output
 `http://localhost:8000`. From the repository root:
 
 ```bash
-cd backend && ./.venv/bin/python -m uvicorn upgradepilot.api.app:app --port 8000
+cd backend && ./.venv/bin/python -m uvicorn upgradepilot.api.app:create_app --factory --port 8000
 ```
 
 With both running, `curl http://localhost:5173/api/health` returns the
