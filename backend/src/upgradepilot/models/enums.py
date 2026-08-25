@@ -66,3 +66,31 @@ class ManifestKind(StrEnum):
     POETRY_LOCK = "poetry_lock"
     UV_LOCK = "uv_lock"
     PIPFILE_LOCK = "pipfile_lock"
+
+
+class LLMCallKind(StrEnum):
+    """What kind of model call a `LLMCall` records.
+
+    Embeddings are recorded alongside chat calls rather than in a separate
+    channel (spec §9.4) so that estimated cost includes retrieval spend
+    instead of quietly omitting it -- a run whose cost is dominated by
+    ingestion should not report only its chat tokens.
+    """
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+
+
+class CostBasis(StrEnum):
+    """Where a recorded cost came from.
+
+    A charge the provider reported and a figure computed from our own price
+    table are different facts, and the report must not print them as though
+    they were the same one. Measured 2026-08-25: OpenRouter returns a real
+    per-call charge in `response_metadata["token_usage"]["cost"]`; OpenAI
+    direct returns no such field, which is why both paths exist.
+    """
+
+    PROVIDER_REPORTED = "provider_reported"
+    PRICE_TABLE = "price_table"
+    UNKNOWN = "unknown"

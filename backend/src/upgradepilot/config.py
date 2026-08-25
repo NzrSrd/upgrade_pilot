@@ -8,6 +8,7 @@ from typing import Annotated
 from pydantic import (
     AfterValidator,
     AliasChoices,
+    BaseModel,
     BeforeValidator,
     Field,
     SecretStr,
@@ -218,6 +219,47 @@ or rejected at startup -- an entry that cannot match is a policy that
 silently denies everything."""
 
 
+class ModelPrice(BaseModel):
+    """What one model costs, per million tokens.
+
+    Input and output are priced separately because every provider in use
+    charges several times more for output. A single blended rate would
+    misprice every call whose output-to-input ratio differs from whatever
+    ratio the blend assumed -- which is all of them.
+    """
+
+    input_per_1m: float = Field(ge=0.0)
+    output_per_1m: float = Field(ge=0.0)
+
+
+DEFAULT_MODEL_PRICING: dict[str, ModelPrice] = {
+    # US dollars per million tokens, as published on 2026-08-25. Rates change,
+    # which is why this is a setting and not a code constant (spec §9.4) --
+    # `UP_MODEL_PRICING` takes a JSON object and replaces the whole table.
+    #
+    # Both spellings of each model are listed, and that repetition is
+    # deliberate. Model identifiers are provider-scoped and the two providers
+    # disagree: OpenAI direct wants `gpt-4.1-mini`, OpenRouter wants
+    # `openai/gpt-4.1-mini`. The tempting alternative -- strip the vendor
+    # prefix and look up what is left -- is refused in `price_call`, because
+    # the prefix names *who is serving* the model and a gateway sets its own
+    # price. Stripping it yields a confident number wrong by the gateway's
+    # margin; listing both yields two rows that can each be corrected.
+    #
+    # The OpenRouter rows currently carry OpenAI's list rates because that is
+    # what the gateway passes through today. They are separate rows precisely
+    # so that stops being an assumption the moment it stops being true. In
+    # practice OpenRouter also reports its own per-call charge, which
+    # `price_call` prefers over this table entirely.
+    "gpt-4.1-mini": ModelPrice(input_per_1m=0.40, output_per_1m=1.60),
+    "openai/gpt-4.1-mini": ModelPrice(input_per_1m=0.40, output_per_1m=1.60),
+    "text-embedding-3-small": ModelPrice(input_per_1m=0.02, output_per_1m=0.0),
+    "openai/text-embedding-3-small": ModelPrice(input_per_1m=0.02, output_per_1m=0.0),
+}
+"""The shipped price table. An unknown model yields `cost = None`, never a
+fabricated `$0.00` -- see `services/llm/pricing.price_call`."""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -307,6 +349,15 @@ class Settings(BaseSettings):
     `openai/gpt-4.1-mini`. The defaults here are OpenAI's, matching the
     `llm_base_url=None` default, so the shipped configuration is internally
     consistent; `.env.example` documents both sets."""
+
+    model_pricing: dict[str, ModelPrice] = Field(
+        default_factory=lambda: dict(DEFAULT_MODEL_PRICING)
+    )
+    """Per-model rates, replaceable wholesale via `UP_MODEL_PRICING` as JSON.
+
+    A `dict` field is JSON-decoded by pydantic-settings before validators run,
+    which is the behaviour wanted here -- unlike the CSV collection settings
+    below, which need `NoDecode` for the opposite reason."""
 
     # Local stores
     corpus_dir: StorePath | None = None
