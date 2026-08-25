@@ -56,6 +56,17 @@ def _require_repo_relative(value: str) -> str:
     what the analyzer calls), and `os.path` would quietly accept `a\\b` as a
     single filename on this platform while treating it as a separator on
     another.
+
+    The four checks are ORDERED, not merely present. The absolute-path check
+    is redundant for the OUTCOME -- every absolute path also begins with an
+    empty segment, so the third check would reject it anyway, which is why
+    replacing this `raise` with `pass` once left the whole suite green with
+    `/etc/passwd` in its rejected set. What it owns is the DIAGNOSIS:
+    running first is what makes `/etc/passwd` refused for being absolute
+    rather than for "containing an empty segment", which is true and useless
+    to whoever has to work out what was wrong with the path they supplied.
+    Bound by `test_an_absolute_path_is_rejected_by_the_check_that_names_it_
+    absolute`, which asserts the message rather than the rejection.
     """
     if value.startswith("/"):
         raise ValueError(f"path must be repository-relative, not absolute: {value!r}")

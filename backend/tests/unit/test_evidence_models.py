@@ -346,3 +346,35 @@ def test_risk_categories_match_the_spec_factor_table_exactly() -> None:
     tuples catches both; `all(x in y)` catches only one.
     """
     assert tuple(sorted(c.value for c in RiskCategory)) == tuple(sorted(_SPEC_8_1_FACTORS))
+
+
+# -- F8: the absolute-path rejection, and why `/etc/passwd` did not bind it -
+
+
+def test_an_absolute_path_is_rejected_by_the_check_that_names_it_absolute() -> None:
+    """Mutation A27 replaced the absolute-path `raise` with `pass` and left
+    the whole suite green -- including `/etc/passwd` in `_REJECTED` above.
+    The reason is the branch's own recurring pattern: EVERY absolute path
+    also fails the empty-segment check, because `"/etc/passwd".split("/")`
+    begins with `""`. The rejection outcome cannot bind that branch, because
+    the branch is redundant for the outcome.
+
+    What it is not redundant for is the DIAGNOSIS. Delete it and
+    `/etc/passwd` is refused for containing an empty segment -- true, and
+    useless to whoever has to work out what was wrong with the path they
+    supplied. This asserts the message, which is the only observable the
+    check actually owns, and it is why the check must stay ORDERED ahead of
+    the segment check rather than merely present.
+    """
+    with pytest.raises(ValidationError) as caught:
+        RepoEvidence(file="/etc/passwd", line=1)
+    assert "absolute" in str(caught.value)
+
+
+def test_a_relative_path_with_an_empty_segment_is_not_called_absolute() -> None:
+    """The negative direction. Without it, a validator that reported every
+    rejection as "absolute" would satisfy the test above."""
+    with pytest.raises(ValidationError) as caught:
+        RepoEvidence(file="src//app.py", line=1)
+    assert "absolute" not in str(caught.value)
+    assert "empty" in str(caught.value)
