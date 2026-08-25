@@ -1,9 +1,12 @@
 import { useState } from "react";
 
 import type { ViewStatus } from "./api/types";
+import { ActivityTimeline } from "./components/ActivityTimeline";
+import { AgentTraceDrawer } from "./components/AgentTraceDrawer";
 import { AppShell } from "./components/AppShell";
 import { ConfigurationForm } from "./components/ConfigurationForm";
 import { LeftSidebar } from "./components/LeftSidebar";
+import { RunMetrics } from "./components/RunMetrics";
 import { TopBar } from "./components/TopBar";
 import { WorkflowTimeline } from "./components/WorkflowTimeline";
 import { EmptyState, Panel } from "./components/ui";
@@ -14,6 +17,7 @@ import { useSessionRuns } from "./hooks/useSessionRuns";
 
 export default function App() {
   const [threadId, setThreadId] = useState<string | null>(null);
+  const [traceOpen, setTraceOpen] = useState(false);
   const { snapshot, error, reconnecting } = useRunPolling(threadId);
   const { health } = useHealth();
   const { runs, remember } = useSessionRuns();
@@ -29,7 +33,7 @@ export default function App() {
           status={status}
           reconnecting={reconnecting}
           summary={summary}
-          onOpenTrace={() => undefined}
+          onOpenTrace={() => setTraceOpen(true)}
         />
       }
       sidebar={
@@ -42,8 +46,14 @@ export default function App() {
           onSelectRun={setThreadId}
         />
       }
-      metrics={<Panel title="Telemetry"><EmptyState>Task 10.</EmptyState></Panel>}
-      drawer={null}
+      metrics={<RunMetrics snapshot={snapshot} />}
+      drawer={
+        <AgentTraceDrawer
+          trace={snapshot?.trace ?? []}
+          open={traceOpen}
+          onClose={() => setTraceOpen(false)}
+        />
+      }
     >
       <div className="space-y-5">
         {threadId !== null && <WorkflowTimeline snapshot={snapshot} />}
@@ -60,7 +70,8 @@ export default function App() {
             }}
           />
         )}
-        {view !== "configuration" && (
+        {view === "activity" && <ActivityTimeline snapshot={snapshot} />}
+        {view !== "configuration" && view !== "activity" && (
           <Panel title={view}>
             <EmptyState>This view arrives in a later task.</EmptyState>
           </Panel>
