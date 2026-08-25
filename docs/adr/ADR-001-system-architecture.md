@@ -210,4 +210,108 @@ passed to the constructor. *Source: `backend/tests/graph/test_checkpoint_serde.p
 and direct experiments run this session against the pinned
 `langgraph 1.2.11`.*
 
+### Finding not anticipated by the design: a loop bound written by a node body stops advancing when that body fails
+
+Found in Phase 6 and again, independently, in Phase 8 — which is why it is
+recorded as a rule rather than as two incidents.
+
+`traced` discards a failed node body's update. That is correct: a half-built
+update is not trustworthy, and rule 20's contract is an `AppError` plus a
+trace event, not a partial write. The consequence nobody anticipated is that
+**any counter a node body writes stops advancing the moment that body raises
+an unexpected exception** — and both of this system's loops were bounded on
+exactly such a counter.
+
+The RAG loop bounded on `iteration`, written by `plan_retrieval`. The plan
+repair loop bounded on `plan_attempts`, written by `generate_plan`. In both
+cases an exception in the body left the counter where it was and the router
+sent the run round again, forever: the run never completes, the API never
+returns, and the only symptom is a checkpoint file growing on disk. Measured
+both times, with a scripted model that ran out of responses standing in for
+the bug.
+
+**Rule adopted:** a loop bound is derived from `agent_trace`, never from a
+channel a node body writes. `traced` emits a `node_started` event for every
+node execution, before the body runs and regardless of what it does, so
+counting those advances unconditionally. See
+`graph/rag/state.rounds_started` and `graph/build.attempts_started`.
+
+### Finding not anticipated by the design: `traced` swallowed LangGraph's control flow
+
+Found in Phase 7, the first time a node called `interrupt()`.
+
+`interrupt()` pauses a run by *raising* `GraphInterrupt`. Rule 20's catch-all
+converted it into `AppError(INTERNAL)`: the graph recorded "an internal error
+occurred while running human_review", carried on to the end, and produced a
+complete report for a question nobody was ever asked. Nothing looked wrong
+except one extra error in a channel nothing was reading yet.
+
+**Rule adopted:** `traced` re-raises `langgraph.errors.GraphBubbleUp` before
+its own handlers. `GraphBubbleUp` rather than `GraphInterrupt` specifically,
+because `ParentCommand` and `GraphDelegate` are control flow too, and a
+handler naming only the one we happened to hit would swallow the next one
+silently. A paused run is not a failed one.
+
+### Finding not anticipated by the design: `StateSnapshot.next` cannot answer "is this run finished?"
+
+Found in Phase 9 while building spec §9.2's status ladder, whose second rung
+is worded "checkpoint next == ()". Measured against the pinned LangGraph,
+`next == ()` is true at **two** different moments, and the ladder cannot tell
+them apart:
+
+| moment | `next` | `tasks[*].interrupts` |
+|---|---|---|
+| input written, first node not yet scheduled | `()` | none |
+| paused on a first `interrupt()` | `('human_review',)` | one |
+| paused on a **re-asked** question | `()` | one |
+| finished | `()` | none |
+
+Two separate wrong answers follow. A ladder testing `next == ()` for
+completion tells a client polling a second after `start` that the run is
+`COMPLETED` — empty trace, no report — and the client stops polling. A ladder
+testing `next` for "awaiting a human" reports a re-asked question as finished,
+so the question is never answered and a partial report is presented as final.
+
+**Rules adopted.** "Awaiting a human" is read from `tasks[*].interrupts`
+(`graph/inspect.is_awaiting_human`), which is correct in every row above.
+"Finished" is read from `final_report`, which `finalize` sets and nothing else
+does, and which `traced` guarantees every path reaches. *Source:
+`backend/probes/probe_interrupt.py` and
+`tests/graph/test_human_in_the_loop.py::test_a_re_asked_question_still_reads_as_awaiting_a_human`,
+which pins the measurement so that a LangGraph change fixing `next` turns a
+test red rather than leaving a stale workaround in place.*
+
+### Amendment to D7: the interrupt predicate is an ordering, not a weighting
+
+D7 says the human-in-the-loop fires on a predicate. Phase 7 implemented it and
+found that the *recommendation* beside the question needs the same
+discipline. The first version scored strategies by summing weighted penalties,
+and it recommended the **highest**-effort strategy to a user who had asked to
+minimise effort, because the lowest-risk option's risk saving outweighed its
+effort cost at whatever weights happened to be written down. Every candidate
+fix was a matter of choosing a bigger number, which is the signal that the
+model was wrong rather than the numbers.
+
+**Rule adopted:** a stated preference reorders the comparison rather than
+reweighting it. `services/strategy/catalog.ranking_priority` puts the axes the
+user spoke about first and compares lexicographically, so there is nothing
+left to tune and no weight that can invert a stated preference.
+
+### Amendment to D5: the workspace does not survive the interrupt
+
+D5 abstracts repository access behind `Workspace`. Phase 5 wired it into the
+graph and the lifetime question became concrete: a run pauses at
+`human_review` and may be resumed days later, quite possibly by a different
+process after a restart, and a remote clone re-opened on resume is a
+*different* checkout of a branch that may have moved.
+
+**Rule adopted:** `analyze_repo` opens and closes the workspace inside its own
+node, and every file, line and version fact the report prints is captured into
+state there. No later node reads the repository. The consequence is that spec
+§8.4's checks 2 and 3 — worded "the file exists in the workspace" — resolve
+against `RepoAnalysis.citable_paths()` / `.citable_lines()` instead. That is a
+strengthening rather than a compromise: "exists on disk" would accept any path
+in the repository including one nothing here ever read, while the analysis
+record is exactly the set of locations this system is entitled to name.
+
 Findings that contradict this ADR must be raised and the ADR amended before implementation proceeds, per development rule 14.
