@@ -1,15 +1,10 @@
 """Assembling the parent graph.
 
-Spec 8.5's topology. One of its two conditional edges is now real -- the
-decision predicate before `human_review` -- and one is still absent:
-validation's bounded repair retry is defined by the ten validation checks,
-which are Phase 8's, and an edge wired now would have to guess at its own
-condition.
+Spec 8.5's topology, complete: both conditional edges are real. The decision
+predicate before `human_review` reads `pending_decisions`, and validation's
+bounded repair retry reads the report `validate_plan` just wrote.
 
-What is real: the evidence layer end to end (`analyze_repo`,
-`inspect_dependency`, and the retrieval subgraph behind `agentic_rag`), the
-judgment layer through `human_review`, the state channels and their reducers,
-the checkpointer, the trace, the usage records, and rule 20's error handling.
+Every node has a real body. What remains stubbed is nothing.
 """
 
 from collections.abc import Mapping, Sequence
@@ -20,14 +15,21 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from upgradepilot.graph.deps import GraphDeps
-from upgradepilot.graph.nodes import NodeBody, make_stub, traced
+from upgradepilot.graph.nodes import NodeBody, traced
 from upgradepilot.graph.nodes.evidence import (
     make_agentic_rag,
     make_analyze_repo,
     make_inspect_dependency,
 )
 from upgradepilot.graph.nodes.judgment import make_assess_risk, make_human_review
+from upgradepilot.graph.nodes.planning import (
+    MAX_PLAN_ATTEMPTS,
+    make_finalize,
+    make_generate_plan,
+    make_validate_plan,
+)
 from upgradepilot.models.decision import unanswered
+from upgradepilot.models.enums import TraceEventKind
 from upgradepilot.models.state import MigrationState
 
 NODE_SEQUENCE: tuple[str, ...] = (
@@ -70,6 +72,56 @@ def route_after_assess_risk(state: MigrationState) -> Literal["human_review", "g
     return "generate_plan"
 
 
+def attempts_started(state: MigrationState) -> int:
+    """How many times plan generation has begun, counted from the trace.
+
+    See `route_after_validate` for why this is not `state["plan_attempts"]`,
+    and `graph/rag/state.rounds_started` for the same argument in the other
+    loop.
+    """
+    return sum(
+        1
+        for event in state["agent_trace"]
+        if event.node == "generate_plan" and event.kind is TraceEventKind.NODE_STARTED
+    )
+
+
+def route_after_validate(state: MigrationState) -> Literal["generate_plan", "finalize"]:
+    """Spec 8.4's bounded repair: one retry, then finish and say so.
+
+    Three outcomes and no fourth. A passing report finishes. A failing report
+    with budget left goes back to `generate_plan`, which is handed the failed
+    checks as repair input. A failing report with the budget spent **still
+    finishes** -- the run terminates as `COMPLETED_WITH_WARNINGS` with the
+    failures shown in the report, because a validator that can be retried
+    indefinitely is a validator the generator learns to satisfy by attrition,
+    and a run that loops is worse for the user than a run that says what is
+    wrong with its own output.
+
+    A missing report finishes too. `validate_plan` always writes one, so
+    `None` here means that node itself failed and `traced` recorded it;
+    looping back to regenerate a plan whose validator is broken would spend
+    the budget learning nothing.
+
+    **The budget is counted from the trace, not from `plan_attempts`.** Same
+    reason the RAG loop counts `rounds_started`: `traced` discards a failed
+    body's update, so an unexpected exception inside `generate_plan` leaves
+    the counter it writes exactly where it was, and a router bounded on that
+    counter never terminates -- the run never completes, the API never
+    returns, and the only symptom is a checkpoint file growing on disk.
+    Measured twice now, in two different loops, which is why it is stated as a
+    rule: *a loop bound written by a node body is a bound that stops
+    advancing the moment that body fails.* `traced` emits `node_started`
+    whatever the body does, so counting those advances unconditionally.
+    """
+    report = state["validation"]
+    if report is None or report.passed:
+        return "finalize"
+    if attempts_started(state) >= MAX_PLAN_ATTEMPTS:
+        return "finalize"
+    return "generate_plan"
+
+
 def _bodies(deps: GraphDeps) -> dict[str, NodeBody[MigrationState]]:
     """One body per node, real where the phase that owns it has landed.
 
@@ -88,9 +140,9 @@ def _bodies(deps: GraphDeps) -> dict[str, NodeBody[MigrationState]]:
         ),
         "assess_risk": make_assess_risk(deps.llm),
         HUMAN_REVIEW: make_human_review(),
-        "generate_plan": make_stub("generate_plan"),  # Phase 8
-        "validate_plan": make_stub("validate_plan"),  # Phase 8
-        "finalize": make_stub("finalize"),  # Phase 8
+        "generate_plan": make_generate_plan(deps.llm),
+        "validate_plan": make_validate_plan(deps.store),
+        "finalize": make_finalize(),
     }
 
 
@@ -137,6 +189,9 @@ def build_graph(
             # than recomputing it. A predicate evaluated twice is a predicate
             # that can disagree with the trace event explaining it.
             graph.add_conditional_edges(earlier, route_after_assess_risk)
+            continue
+        if earlier == "validate_plan":
+            graph.add_conditional_edges(earlier, route_after_validate)
             continue
         graph.add_edge(earlier, later)
     # `human_review` routes through the same predicate it was reached by.

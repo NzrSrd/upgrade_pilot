@@ -219,3 +219,49 @@ class DecisionAxis(StrEnum):
     RISK = "risk"
     EFFORT = "effort"
     DOWNTIME = "downtime"
+
+
+class ValidationCheckId(StrEnum):
+    """Spec 8.4's ten deterministic checks, named.
+
+    An enum rather than free strings because `ValidationReport` is rendered in
+    the UI and quoted in the final report: a check whose id was a typo would
+    render as a check that passed silently, since nothing would look for it.
+    The membership of this enum is what `test_every_check_runs_on_every_plan`
+    asserts against the validator's output, so a check added here without an
+    implementation fails immediately.
+    """
+
+    SOURCES_RESOLVE = "sources_resolve"
+    REPO_EVIDENCE_RESOLVES = "repo_evidence_resolves"
+    STEP_FILES_EXIST = "step_files_exist"
+    RISK_FACTORS_CITE_EVIDENCE = "risk_factors_cite_evidence"
+    RISK_CLAMP_HOLDS = "risk_clamp_holds"
+    CONFIDENCE_CEILINGS_HOLD = "confidence_ceilings_hold"
+    PLAN_IS_ORDERED = "plan_is_ordered"
+    AFFECTED_FILES_ADDRESSED = "affected_files_addressed"
+    DECISIONS_APPLIED = "decisions_applied"
+    ZERO_DOWNTIME_RESPECTED = "zero_downtime_respected"
+
+
+class RunStatus(StrEnum):
+    """Spec 9.2's run states. Derived from the checkpoint plus the registry.
+
+    Never stored (spec 6.5): a stored status drifts from reality on crash,
+    which is precisely the case `ORPHANED` exists to describe -- and a field
+    written by the process that then died would say `RUNNING` forever.
+
+    `QUEUED` and `ORPHANED` are real states rather than politeness.
+    `QUEUED` is what a run beyond the concurrency cap actually is, and
+    reporting it as `RUNNING` would be a lie about work that has not started.
+    `ORPHANED` is a run whose checkpoint survived a restart that its task did
+    not; the alternative is a spinner that never resolves.
+    """
+
+    QUEUED = "queued"
+    RUNNING = "running"
+    AWAITING_HUMAN = "awaiting_human"
+    COMPLETED = "completed"
+    COMPLETED_WITH_WARNINGS = "completed_with_warnings"
+    FAILED = "failed"
+    ORPHANED = "orphaned"

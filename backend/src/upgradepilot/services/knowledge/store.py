@@ -254,6 +254,35 @@ class KnowledgeStore:
     def count(self) -> int:
         return int(self._collection().count())
 
+    def chunk_ids(self, wanted: list[str]) -> frozenset[str]:
+        """Which of `wanted` this collection actually holds.
+
+        Spec 8.4's first check needs to know whether a citation still
+        resolves, and the failure it guards against is quiet: a corpus
+        re-ingest rewrites a document from three chunks to one, and a report
+        generated before it now cites `#chunk-2`, which resolves to nothing.
+        The citation still looks right, and the reader following it finds a
+        real document with no such passage.
+
+        `include=[]` deliberately: the check needs existence, not content, and
+        asking for documents and metadata would pull the whole cited corpus
+        into memory to answer a set-membership question.
+
+        Returns what is *present* rather than what is missing, so a caller
+        that passes an empty list gets an empty set rather than a claim about
+        nothing.
+        """
+        if not wanted:
+            return frozenset()
+        try:
+            result = self._collection().get(ids=list(wanted), include=[])
+        except chromadb.errors.ChromaError as exc:
+            raise KnowledgeBaseUnavailableError(
+                "The knowledge base could not be queried to verify citations.",
+                detail=f"get(ids=[{len(wanted)} ids]): {exc}",
+            ) from exc
+        return frozenset(result["ids"])
+
     def drop(self) -> None:
         """Delete the collection. Used by ingestion's rebuild and by tests."""
         try:

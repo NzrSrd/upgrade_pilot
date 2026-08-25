@@ -7,8 +7,9 @@ where data lives, merging where merging happens.
 **This state grows phase by phase, and deliberately so.** The RAG loop
 fields (`rag_queries`, `rag_evaluations`, `rag_context`) arrived with Phase 5
 and `risk_analysis` with Phase 6. The remaining judgment fields
-arrived with Phase 7. The plan fields (`migration_plan`, `validation`) are
-still absent because the models they
+arrived with Phase 7 and the plan fields with Phase 8, so the state is now
+spec §6's listing plus the two departures §6.1 argues for. Anything still
+absent because the models they
 hold do not exist yet; each arrives with the phase that consumes it, where a
 real caller can shape it, exactly as the domain models did in Phase 1.
 Declaring them early would mean guessing at models to satisfy a type
@@ -27,6 +28,7 @@ from upgradepilot.models.errors import AppError
 from upgradepilot.models.evidence import BreakingChange, SourceRef
 from upgradepilot.models.inputs import DependencySpec, RepoRef, UserConstraints
 from upgradepilot.models.knowledge import RagContext, RagEvaluation, RagQuery
+from upgradepilot.models.plan import FinalReport, MigrationPlan, ValidationReport
 from upgradepilot.models.repo import AffectedFile, RepoAnalysis, SymbolInventory
 from upgradepilot.models.risk import RiskAnalysis
 from upgradepilot.models.trace import TraceEvent
@@ -139,6 +141,20 @@ class MigrationState(TypedDict):
     it.
     """
 
+    # Plan and its verdict.
+    migration_plan: MigrationPlan | None
+    validation: ValidationReport | None
+    plan_attempts: int
+    """How many times `generate_plan` has run for this thread.
+
+    A counter rather than a boolean because spec 8.4 allows exactly one
+    bounded repair, and the report has to say which attempt it is grading --
+    "failed after the retry" and "failed first time" are different facts
+    about the same failing check.
+    """
+
+    final_report: FinalReport | None
+
     # Append-only channels. A channel that lost its reducer degrades to
     # last-value, so each node's writes would *replace* the accumulated list
     # rather than extend it and the trace would show only the final node's
@@ -181,6 +197,10 @@ def initial_state(
         risk_analysis=None,
         pending_decisions=[],
         human_decisions=[],
+        migration_plan=None,
+        validation=None,
+        plan_attempts=0,
+        final_report=None,
         rag_queries=[],
         rag_evaluations=[],
         retrieved_sources=[],

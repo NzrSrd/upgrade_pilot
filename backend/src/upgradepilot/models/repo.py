@@ -323,6 +323,48 @@ class RepoAnalysis(HonestModel):
             return 0.0
         return len(self.skipped_files) / self.total_python_files
 
+    def citable_paths(self) -> frozenset[str]:
+        """Every repository path this analysis is entitled to name.
+
+        **The workspace is gone by the time anything needs this.**
+        `analyze_repo` opens and closes it inside its own node, because a run
+        pauses at `human_review` and may be resumed days later by a different
+        process -- a workspace handle cannot survive that, and a remote clone
+        re-opened on resume is a different checkout of a branch that may have
+        moved. So spec 8.4's checks 2 and 3, written as "the file exists in
+        the workspace", resolve against this record instead.
+
+        That is a deliberate strengthening rather than a weakening. "Exists on
+        disk" would accept any path in the repository, including one no part
+        of this analysis ever looked at; this set is the paths the analysis
+        actually read, so a citation outside it is one nothing here produced.
+        The paths are `Path.relative_to(root).as_posix()` by construction, and
+        they were verified to exist at the moment they were recorded.
+        """
+        return frozenset(
+            {file.path for file in self.affected_files}
+            | {manifest.path for manifest in self.manifests}
+            | {skipped.path for skipped in self.skipped_files}
+            | set(self.test_paths)
+        )
+
+    def citable_lines(self) -> frozenset[tuple[str, int]]:
+        """Every `(file, line)` pair a `RepoEvidence` may name.
+
+        Usage sites carry real, parsed line numbers. A manifest and an
+        unparseable file do not -- an unparseable file has no lines by
+        definition -- so both are citable at line 1 only, which points at the
+        file rather than claiming a location inside it. `analysis_coverage`
+        says so in its own detail text, and check 2 accepts it here so that
+        the factor's own citations validate.
+        """
+        pairs = {
+            (site.file, site.line) for file in self.affected_files for site in file.usage_sites
+        }
+        pairs |= {(manifest.path, 1) for manifest in self.manifests}
+        pairs |= {(skipped.path, 1) for skipped in self.skipped_files}
+        return frozenset(pairs)
+
     def version_discrepancy(self, stated: str) -> tuple[str, str] | None:
         """Return (stated, detected) when they disagree, else None.
 

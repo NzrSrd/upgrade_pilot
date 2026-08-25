@@ -26,6 +26,7 @@ from tests.graph.graph_fixtures import (
     a_full_run_script,
     a_graph_environment,
     a_state,
+    answer_all,
     run_to_completion,
 )
 from upgradepilot.graph.build import NODE_SEQUENCE, compile_graph
@@ -34,8 +35,8 @@ from upgradepilot.models.enums import TraceEventKind
 from upgradepilot.models.errors import ErrorCode, RepoUnavailableError
 from upgradepilot.models.usage import UsageSummary
 
-EXPECTED_CALLS_PER_RUN = 7
-"""Three retrieval rounds (a plan and a grade each) plus one risk narrative.
+EXPECTED_CALLS_PER_RUN = 8
+"""Three retrieval rounds (a plan and a grade each), one risk narrative, one plan draft.
 
 Written down rather than derived, because the number is the point: a change
 that makes the graph call the model more often should have to come here and
@@ -244,52 +245,47 @@ async def test_a_duplicated_call_record_does_not_change_the_totals(
 async def test_pausing_and_resuming_does_not_change_what_the_run_cost(
     tmp_path: Path,
 ) -> None:
-    """What a checkpointer resume actually does, measured rather than assumed.
+    """A run that stopped for a human, was closed, reopened and finished must
+    cost exactly what an uninterrupted one cost.
 
-    An earlier version of this test claimed a resume would double-count
-    without deduplication. That was wrong, and worth recording: measured
-    against the pinned LangGraph, `interrupt_before` pauses *between* nodes
-    and the completed node is not re-executed on resume -- the same
-    invocations, the same records, before and after. There is no duplication
-    for the dedup to remove, so an assertion that ids were unique proved
-    nothing.
-
-    The property that is genuinely available at this phase is the one
-    asserted here: pausing changes *when* the work happens and nothing else.
-    The re-execution case that really does bill twice needs `interrupt()`
-    inside a node body -- ADR-001 records it, and the rule adopted in response
-    (a node that interrupts performs no LLM call before interrupting) belongs
-    to Phase 7, along with the test that holds it.
+    This is the failure mode `UsageSummary`'s deduplication exists for, and it
+    is only reachable now that `interrupt()` is real: a node that interrupts
+    re-executes from the top on every resume, so a counter incremented in
+    `human_review` -- or a model call placed above its interrupt -- would
+    inflate on each pass while the run still looked normal. The checkpointer
+    is closed and reopened between the pause and the resume, so the resumed
+    half genuinely reads from disk rather than from a warm object.
     """
-    straight_deps, repo_root, _ = a_graph_environment(
+    straight_deps, straight_root, _ = a_graph_environment(
         tmp_path / "straight", responses=a_full_run_script()
     )
     async with open_checkpointer(tmp_path / "a.db") as saver:
         graph = compile_graph(deps=straight_deps, checkpointer=saver)
         straight = await run_to_completion(
-            graph, a_state(repo_root, "straight"), a_config("straight")
+            graph, a_state(straight_root, "straight"), a_config("straight")
         )
 
     paused_deps, paused_root, model = a_graph_environment(
         tmp_path / "paused", responses=a_full_run_script()
     )
-    async with open_checkpointer(tmp_path / "b.db") as saver:
-        graph = compile_graph(
-            deps=paused_deps, checkpointer=saver, interrupt_before=["generate_plan"]
-        )
-        await run_to_completion(graph, a_state(paused_root, "paused"), a_config("paused"))
-        invocations_at_pause = len(model.prompts)
-        resumed = await graph.ainvoke(None, a_config("paused"))
+    db = tmp_path / "b.db"
+    async with open_checkpointer(db) as saver:
+        graph = compile_graph(deps=paused_deps, checkpointer=saver)
+        paused = await graph.ainvoke(a_state(paused_root, "paused"), a_config("paused"))
+        calls_at_pause = len(model.prompts)
+        assert paused.get("__interrupt__"), "the run did not stop for a human"
 
-    assert invocations_at_pause == EXPECTED_CALLS_PER_RUN, (
-        "the pause fell somewhere other than after the last model call"
-    )
-    assert len(model.prompts) == EXPECTED_CALLS_PER_RUN, "the resume re-invoked the model"
+    async with open_checkpointer(db) as reopened:
+        graph = compile_graph(deps=paused_deps, checkpointer=reopened)
+        resumed = await answer_all(graph, a_config("paused"), paused)
 
     straight_usage = UsageSummary.from_calls(straight["llm_calls"])
     resumed_usage = UsageSummary.from_calls(resumed["llm_calls"])
+    assert straight_usage.calls == EXPECTED_CALLS_PER_RUN
     assert resumed_usage.calls == straight_usage.calls
     assert resumed_usage.total_tokens == straight_usage.total_tokens
+    # The calls made after the pause are exactly the ones the pause deferred.
+    assert calls_at_pause < len(model.prompts) == EXPECTED_CALLS_PER_RUN
 
 
 async def test_a_resumed_run_reaches_the_same_end_as_an_uninterrupted_one(
@@ -310,17 +306,23 @@ async def test_a_resumed_run_reaches_the_same_end_as_an_uninterrupted_one(
     paused_deps, paused_root, _ = a_graph_environment(
         tmp_path / "paused", responses=a_full_run_script()
     )
-    async with open_checkpointer(tmp_path / "b.db") as saver:
-        graph = compile_graph(
-            deps=paused_deps, checkpointer=saver, interrupt_before=["generate_plan"]
-        )
-        await run_to_completion(graph, a_state(paused_root, "paused"), a_config("paused"))
-        resumed = await graph.ainvoke(None, a_config("paused"))
+    db = tmp_path / "b.db"
+    async with open_checkpointer(db) as saver:
+        graph = compile_graph(deps=paused_deps, checkpointer=saver)
+        paused = await graph.ainvoke(a_state(paused_root, "paused"), a_config("paused"))
+
+    async with open_checkpointer(db) as reopened:
+        graph = compile_graph(deps=paused_deps, checkpointer=reopened)
+        resumed = await answer_all(graph, a_config("paused"), paused)
 
     def nodes(result: Any) -> list[str]:
         """`ainvoke` is typed `dict[str, Any] | Any` on this overload, so the
         annotation here would be a claim mypy cannot check either way."""
-        return [e.node for e in result["agent_trace"] if e.kind is TraceEventKind.NODE_COMPLETED]
+        return [
+            e.node
+            for e in result["agent_trace"]
+            if e.kind is TraceEventKind.NODE_COMPLETED and e.node in NODE_SEQUENCE
+        ]
 
     assert nodes(resumed) == nodes(straight)
 
@@ -426,5 +428,6 @@ async def test_an_unexpected_exception_is_recorded_as_internal_not_swallowed(
 
         result = await run_to_completion(graph, a_state(repo_root), a_config())
 
-    assert [e.code for e in result["errors"]] == [ErrorCode.INTERNAL]
-    assert "TypeError" in (result["errors"][0].detail or "")
+    from_assess_risk = [e for e in result["errors"] if e.node == "assess_risk"]
+    assert [e.code for e in from_assess_risk] == [ErrorCode.INTERNAL]
+    assert "TypeError" in (from_assess_risk[0].detail or "")

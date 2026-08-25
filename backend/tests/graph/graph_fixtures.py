@@ -29,6 +29,7 @@ from tests.llm.fake_chat_model import ScriptedChatModel, ScriptedResponse
 from upgradepilot.config import ModelPrice, Settings
 from upgradepilot.graph.deps import GraphDeps
 from upgradepilot.graph.nodes.judgment import RiskNarrative
+from upgradepilot.graph.nodes.planning import PlanDraft, PlannedStep
 from upgradepilot.graph.rag.nodes import CoverageGrade, PlannedQuery, RetrievalPlan
 from upgradepilot.models.enums import Severity, SourceType
 from upgradepilot.models.inputs import (
@@ -250,8 +251,37 @@ def a_narrative_response(
     return ScriptedResponse(parsed=RiskNarrative(summary=summary, notes=list(notes)), **overrides)
 
 
+def a_plan_response_draft(
+    *steps: tuple[str, tuple[str, ...]],
+    summary: str = "A scripted migration plan.",
+    mitigations: tuple[str, ...] = (),
+    **overrides: object,
+) -> ScriptedResponse:
+    """One scripted answer for `generate_plan`.
+
+    Each step is `(title, symbols)`. The schema carries no file paths and no
+    downtime flag -- both are resolved from the analysis record and the chosen
+    strategy -- so a test cannot accidentally script a path the analyzer never
+    saw, which is the point (CLAUDE.md rule 19).
+    """
+    draft = PlanDraft(
+        summary=summary,
+        steps=[
+            PlannedStep(
+                title=title,
+                description=f"Do the work for {title.lower()}.",
+                symbols=list(symbols),
+                validation="Run the test suite.",
+            )
+            for title, symbols in steps
+        ],
+        mitigations=list(mitigations),
+    )
+    return ScriptedResponse(parsed=draft, text="planned", **overrides)
+
+
 def a_full_run_script(
-    *, rounds: int = 3, model_says_sufficient: bool = False
+    *, rounds: int = 3, model_says_sufficient: bool = False, plan_attempts: int = 1
 ) -> list[ScriptedResponse]:
     """Responses for one complete run, in the order the graph asks for them.
 
@@ -272,6 +302,15 @@ def a_full_run_script(
             a_grade_response(sufficient=model_says_sufficient, missing=("BaseModel changes",))
         )
     script.append(a_narrative_response())
+    for _ in range(plan_attempts):
+        script.append(
+            a_plan_response_draft(
+                ("Replace @validator with @field_validator", ("validator",)),
+                ("Replace class Config with model_config", ("Config",)),
+                ("Update BaseModel method calls", ("BaseModel", "dict", "copy")),
+                ("Give Optional fields explicit defaults", ("Optional",)),
+            )
+        )
     return script
 
 
