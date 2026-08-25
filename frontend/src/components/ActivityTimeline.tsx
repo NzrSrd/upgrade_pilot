@@ -8,7 +8,7 @@
  * would be a lie about work that has not happened.
  */
 
-import { Loader } from "lucide-react";
+import { Circle } from "lucide-react";
 
 import type { RunSnapshot } from "../api/types";
 import { EvidencePanel, selectedSourceIds } from "./EvidencePanel";
@@ -19,7 +19,11 @@ export function ActivityTimeline({ snapshot }: { snapshot: RunSnapshot | null })
     return (
       <Panel title="Queued">
         <p className="flex items-center gap-2 text-sm text-ink-muted">
-          <Loader className="size-4 animate-spin" aria-hidden />
+          {/* Static, not spinning: `WorkflowTimeline`'s APPEARANCE table
+              reserves motion for `running` alone (`pending` gets this same
+              `Circle`). A spinner here would imply work in progress on a
+              run that, by definition, has not started. */}
+          <Circle className="size-4" aria-hidden />
           Waiting for a run slot. Nothing has started yet.
         </p>
       </Panel>
@@ -35,7 +39,7 @@ export function ActivityTimeline({ snapshot }: { snapshot: RunSnapshot | null })
   const breakingChanges = snapshot.breaking_changes ?? [];
   const retrievedSources = snapshot.retrieved_sources ?? [];
   const riskAnalysis = snapshot.risk_analysis ?? null;
-  const selected = selectedSourceIds(trace);
+  const selected = selectedSourceIds(breakingChanges);
 
   return (
     <div className="space-y-4">

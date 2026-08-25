@@ -4,33 +4,34 @@
  * `relevance` is labelled "similarity" because that is what it is — a vector
  * distance, not a judgement. `DESIGN.md` is explicit that the UI must never
  * imply a document is relevant because vector search returned it, so the
- * distinction that carries weight here is *selected* versus *retrieved*, and
- * that comes from the `sources_selected` trace event rather than from the
- * score.
+ * distinction that carries weight here is *selected* versus *retrieved*.
+ *
+ * "Selected" cannot come from the `sources_selected` trace event: its
+ * `summary` is prose ("N documented breaking change(s) affect symbols this
+ * repository uses...") and its `detail` holds `BreakingChange` ids, not
+ * `SourceRef` ids (`graph/rag/nodes.py:690-712`). Parsing either would only
+ * ever match stray words, never a real source id. `BreakingChange.source` is
+ * already a full `SourceRef`, so "selected" is read from there instead: a
+ * source counts as used exactly when a breaking change this report shows
+ * cites it.
  */
 
 import { FileText } from "lucide-react";
 
-import type { SourceRef, TraceEvent } from "../api/types";
+import type { BreakingChange, SourceRef } from "../api/types";
 import { EmptyState, Mono } from "./ui";
 
 /**
- * Source ids the agent selected, read off the trace.
+ * Source ids cited by the report's breaking changes.
  *
- * `sources_selected` events carry the ids in their summary text, which is the
- * observable record of a choice the agent made. Everything else in
- * `retrieved_sources` was returned by search and not used — a distinction
- * worth showing, because it is the difference between evidence and noise.
+ * `BreakingChange.source` is a full `SourceRef` (`source.source_id` is
+ * structured data, not text to parse), and `BreakingChange` requires a
+ * `source` — no citation, no change. So every breaking change the report
+ * shows names exactly one source it drew from, and that is the complete,
+ * checkable definition of "selected" this surface can make.
  */
-export function selectedSourceIds(trace: TraceEvent[]): Set<string> {
-  const selected = new Set<string>();
-  for (const event of trace) {
-    if (event.kind !== "sources_selected") continue;
-    for (const token of event.summary.split(/[\s,]+/)) {
-      if (token !== "") selected.add(token);
-    }
-  }
-  return selected;
+export function selectedSourceIds(breakingChanges: BreakingChange[]): Set<string> {
+  return new Set(breakingChanges.map((change) => change.source.source_id));
 }
 
 export function EvidencePanel({

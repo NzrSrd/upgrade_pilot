@@ -6,7 +6,33 @@
  * against an impossible fixture is worse than no test.
  */
 
-import type { RunSnapshot, UsageView } from "../api/types";
+import type { BreakingChange, RunSnapshot, SourceRef, UsageView } from "../api/types";
+
+export function aSourceRef(overrides: Partial<SourceRef> = {}): SourceRef {
+  return {
+    source_id: "src-1",
+    chunk_id: "chunk-1",
+    title: "Migrating to Pydantic V2",
+    source_type: "migration_guide",
+    url_or_reference: "https://docs.pydantic.dev/latest/migration/",
+    relevance: 0.8,
+    ...overrides,
+  };
+}
+
+export function aBreakingChange(overrides: Partial<BreakingChange> = {}): BreakingChange {
+  return {
+    id: "bc-1",
+    title: "Validators must be class methods",
+    description: "`@validator` is replaced by `@field_validator`.",
+    severity: "medium",
+    affected_symbols: [],
+    old_form: null,
+    new_form: null,
+    source: aSourceRef(),
+    ...overrides,
+  };
+}
 
 export function anUsageView(overrides: Partial<UsageView> = {}): UsageView {
   return {

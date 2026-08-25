@@ -394,9 +394,9 @@ and after execution:
 - Input, output and total tokens
 - Estimated cost
 - LLM call count
+- Model in use, from `UsageSummary.by_model`
 - Tokens by node — "where did the tokens go" is the second question a
   developer asks
-- Model in use, from `UsageSummary.by_model`
 - Elapsed time
 
 ### The cost card's two flags are not optional
