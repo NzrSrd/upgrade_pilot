@@ -7,16 +7,19 @@ returning nothing against a list -- are properties of the pinned
 pins those facts; this file pins what UpgradePilot builds on top of them.
 """
 
+from copy import deepcopy
 from datetime import date
 from pathlib import Path
+from typing import cast
 
 import pytest
+from chromadb.api.types import Embeddable, EmbeddingFunction
 
-from tests.knowledge.fake_embedding import fake_embedding_function
+from tests.knowledge.fake_embedding import LexicalEmbedding, fake_embedding_function
 from upgradepilot.models.enums import Severity, SourceType
 from upgradepilot.models.errors import ErrorCode, KnowledgeBaseUnavailableError
 from upgradepilot.models.knowledge import CorpusDocument
-from upgradepilot.services.knowledge.store import KnowledgeStore
+from upgradepilot.services.knowledge.store import CORPUS_CONFIGURATION, KnowledgeStore
 
 
 def a_document(
@@ -386,3 +389,53 @@ def test_searching_a_store_whose_collection_is_gone_raises_kb_unavailable(
 
     with pytest.raises(KnowledgeBaseUnavailableError):
         opened.search("validator", dependency="pydantic")
+
+
+def test_two_stores_with_different_embedders_do_not_interfere(tmp_path: Path) -> None:
+    """Opening a store must not leave anything behind that changes what the
+    next one gets.
+
+    Found by running the suite with `--live`: the live embedding test opened a
+    store with the real embedder, and every offline test after it failed at
+    fixture setup with an embedding-function conflict. The cause was not test
+    isolation but shared mutable state in the store itself — chroma **writes**
+    the embedding function into the `configuration` mapping it is handed, so a
+    module-level configuration constant is stamped by whichever store opens
+    first and then forces that embedder on every store after it.
+
+    The consequence outside the test suite is the same and worse: a process
+    that opens the corpus store and any second collection would have the first
+    one's embedder imposed on it, or would fail outright.
+    """
+
+    class OtherEmbedding(LexicalEmbedding):
+        @staticmethod
+        def name() -> str:
+            return "other-test-embedding"
+
+    first = KnowledgeStore.open(tmp_path / "a", embedding_function=fake_embedding_function())
+    second = KnowledgeStore.open(
+        tmp_path / "b",
+        embedding_function=cast(EmbeddingFunction[Embeddable], OtherEmbedding()),
+    )
+
+    first.ingest(CORPUS[:1])
+    second.ingest(CORPUS[:1])
+
+    assert first.count() == second.count() >= 1
+
+
+def test_opening_a_store_does_not_mutate_the_shared_configuration(tmp_path: Path) -> None:
+    """The invariant directly, so the cause is named and not only its symptom.
+
+    A future refactor that reintroduces a shared configuration object would
+    fail the test above only when two *different* embedders meet — which is
+    rare, and did not happen for days. This one fails immediately.
+    """
+    before = deepcopy(CORPUS_CONFIGURATION)
+
+    KnowledgeStore.open(tmp_path / "chroma", embedding_function=fake_embedding_function())
+
+    assert before == CORPUS_CONFIGURATION, (
+        "chroma mutated the shared configuration; it must be given a fresh one per call"
+    )

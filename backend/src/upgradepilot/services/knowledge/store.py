@@ -20,6 +20,7 @@ established by probe rather than assumed and pinned by
   key rather than storing `[]` -- see `_metadata`.
 """
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal, cast
 
@@ -41,7 +42,10 @@ COLLECTION_NAME = "upgradepilot-corpus"
 """Chroma requires 3-512 characters from `[a-zA-Z0-9._-]` (ADR-001)."""
 
 CORPUS_CONFIGURATION = CreateCollectionConfiguration(hnsw=CreateHNSWConfiguration(space="cosine"))
-"""Cosine, chosen so `distance` has a fixed, interpretable range rather than
+"""The collection's settings. **Never passed to chroma directly** -- see
+`_configuration()` below, which hands over a copy.
+
+Cosine, chosen so `distance` has a fixed, interpretable range rather than
 whatever magnitudes the embedding model happens to produce. `_relevance`
 depends on that: cosine distance is `1 - similarity`, which is what makes the
 mapping to a printable 0-1 relevance meaningful. Under Chroma's default L2 the
@@ -54,6 +58,29 @@ this one is the typed form and is the one the collection reflects back."""
 DEFAULT_LIMIT = 5
 """Matches the golden set's recall@5 so the number CI asserts is the number
 the product actually retrieves with."""
+
+
+def _configuration() -> CreateCollectionConfiguration:
+    """A fresh copy of `CORPUS_CONFIGURATION` for one `create` call.
+
+    Chroma **writes into** the configuration mapping it is given, inserting
+    the embedding function under an `embedding_function` key. Handing it a
+    module-level constant therefore makes that constant shared mutable state:
+    whichever store opens first stamps its embedder into it, and every store
+    opened afterwards is validated against that stale embedder rather than the
+    one it was actually given.
+
+    Found by running the suite with `--live`. The live embedding test opened a
+    store with the real embedder and every offline test after it failed at
+    fixture setup with an embedding-function conflict -- which looked like a
+    test-isolation problem and was not. Outside the suite the same defect means
+    a process opening a second collection gets the first one's embedder
+    imposed on it, or fails outright.
+
+    `deepcopy`, not `dict(...)`: the nested `hnsw` mapping would otherwise
+    still be shared, and it is a mapping chroma also fills in with defaults.
+    """
+    return deepcopy(CORPUS_CONFIGURATION)
 
 
 def _contains(field: str, value: str) -> Where:
@@ -210,7 +237,7 @@ class KnowledgeStore:
             if create:
                 return self._client.get_or_create_collection(
                     COLLECTION_NAME,
-                    configuration=CORPUS_CONFIGURATION,
+                    configuration=_configuration(),
                     embedding_function=self._embedding_function,
                 )
             return self._client.get_collection(

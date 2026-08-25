@@ -309,6 +309,18 @@ class Settings(BaseSettings):
     consistent; `.env.example` documents both sets."""
 
     # Local stores
+    corpus_dir: StorePath | None = None
+    """Where the authored corpus lives. `None` means the one that ships with
+    the backend (`services/knowledge/corpus.CORPUS_ROOT`).
+
+    Defaults to `None` rather than to a relative path, deliberately. Every
+    other path setting here is resolved against the process working
+    directory, which is right for a *store* the operator chooses the location
+    of; the corpus is content shipped alongside the code, so a relative
+    default would make ingestion succeed or fail depending on which directory
+    it was invoked from. `None` means "the one next to the code", found by
+    file location and immune to that."""
+
     chroma_dir: StorePath = Path("./.chroma")
     checkpoint_db: StorePath = Path("./checkpoints.db")
     workspace_dir: StorePath = Path("./.workspaces")
