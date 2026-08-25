@@ -23,7 +23,7 @@ where the two would be tempted to disagree.
 
 from typing import Self
 
-from pydantic import AwareDatetime, Field, model_validator
+from pydantic import AwareDatetime, Field, computed_field, model_validator
 
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.decision import DecisionApplication, HumanDecision
@@ -157,12 +157,21 @@ class ValidationReport(HonestModel):
 
     outcomes: tuple[ValidationOutcome, ...] = Field(min_length=1)
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def passed(self) -> bool:
         """Derived, never stored (CLAUDE.md rule 21). A stored verdict beside
         a list of failures is the one shape that can lie about itself, and
         `COMPLETED_WITH_WARNINGS` is exactly where the two would be tempted to
-        disagree."""
+        disagree.
+
+        `@computed_field` rather than a bare property, for the same reason
+        `AffectedFile.symbols` is one: it has to appear in `model_dump()`, and
+        therefore in the API response and the generated TypeScript. A derived
+        value the frontend cannot see is one the frontend re-derives, which is
+        a second implementation of the rule in a language that cannot check
+        it against this one.
+        """
         return all(outcome.passed for outcome in self.outcomes)
 
     @property
@@ -223,9 +232,15 @@ class FinalReport(HonestModel):
     responses and internal exception text into a document people share.
     """
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def completed_with_warnings(self) -> bool:
         """Whether validation failed after its one repair attempt.
+
+        A `@computed_field` because the API's status ladder and the report
+        header both read it; see `ValidationReport.passed` for why derived
+        values that reach the client must be serialised rather than left as
+        bare properties.
 
         Derived here rather than stored so that the report and the status
         cannot disagree -- see the class docstring. A report with no

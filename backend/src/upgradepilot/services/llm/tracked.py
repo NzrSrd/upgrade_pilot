@@ -36,9 +36,10 @@ from typing import Any, TypeVar
 import openai
 import tiktoken
 from langchain_core.language_models import BaseChatModel
+from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from upgradepilot.config import ModelPrice
+from upgradepilot.config import ModelPrice, Settings
 from upgradepilot.models.enums import LLMCallKind
 from upgradepilot.models.errors import LLMRateLimitedError, LLMUnavailableError
 from upgradepilot.models.usage import LLMCall
@@ -206,3 +207,44 @@ class TrackedLLM:
             started_at=started_at,
         )
         return parsed, call
+
+
+def build_tracked_llm(settings: Settings) -> TrackedLLM:
+    """Construct the one chat model this process is allowed to have.
+
+    CLAUDE.md rule 18 says nothing outside `TrackedLLM` may construct a chat
+    model. This function is inside that boundary on purpose: the `ChatOpenAI`
+    it builds is handed straight to `TrackedLLM` and is never returned, so
+    there is no way to obtain an untracked model from this module.
+
+    `temperature=0` because every call in this system asks for a structured
+    answer over evidence it was given. Sampling would make two runs over an
+    unchanged repository produce different queries and different prose, and
+    the whole point of the trace is that a reader can compare two runs.
+
+    Raises rather than returning `None` when no key is configured. A run
+    started without a model would produce a report with no narrative, no
+    queries and no plan, and the failure would surface as three separate
+    degradations rather than one clear "this is not configured".
+    """
+    if not settings.llm_configured:
+        raise LLMUnavailableError(
+            "No model provider is configured, so this run cannot be started.",
+            detail=(
+                "Settings.llm_api_key is unset or blank; set OPENROUTER_API_KEY, "
+                "OPENAI_API_KEY or UP_LLM_API_KEY"
+            ),
+        )
+    assert settings.llm_api_key is not None  # narrowed by llm_configured
+
+    model = ChatOpenAI(
+        model=settings.chat_model,
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        temperature=0,
+    )
+    return TrackedLLM(
+        model,
+        model_name=settings.chat_model,
+        pricing=settings.model_pricing,
+    )

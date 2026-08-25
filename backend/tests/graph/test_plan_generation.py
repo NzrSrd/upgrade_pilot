@@ -224,9 +224,9 @@ async def test_the_repair_attempt_is_told_what_failed(tmp_path: Path) -> None:
     async with open_checkpointer(tmp_path / "c.db") as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
         config = a_config()
-        result = await graph.ainvoke(a_state(repo_root), config)
+        await graph.ainvoke(a_state(repo_root), config)
         for answer in ("staged_rollout", "proceed-with-mitigation"):
-            result = await graph.ainvoke(Command(resume=answer), config)
+            await graph.ainvoke(Command(resume=answer), config)
 
     repair_prompt = model.prompts[-1]
     assert ValidationCheckId.PLAN_IS_ORDERED.value in repair_prompt

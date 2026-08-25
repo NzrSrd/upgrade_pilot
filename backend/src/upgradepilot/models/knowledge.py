@@ -20,7 +20,7 @@ what it asked, what it got graded, and what it concluded.
 from datetime import date
 from typing import Annotated, Self
 
-from pydantic import AfterValidator, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, ConfigDict, Field, computed_field, model_validator
 
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import QueryOrigin, RagStopReason, Severity, SourceType
@@ -289,6 +289,7 @@ class RagEvaluation(HonestModel):
 
     notes: str | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def sufficient(self) -> bool:
         """The gate can only ever veto.
@@ -367,9 +368,16 @@ class RagContext(HonestModel):
     the reader should know was not explained.
     """
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def evidence_available(self) -> bool:
-        """Whether anything was retrieved at all. See the class docstring."""
+        """Whether anything was retrieved at all. See the class docstring.
+
+        `@computed_field`, so it appears in `model_dump()` and therefore in
+        the API response: this is the flag the report header renders beside
+        the confidence figure, and a frontend that could not see it would
+        re-derive it from a source count it also has to be given.
+        """
         return self.sources_considered > 0
 
     @model_validator(mode="after")

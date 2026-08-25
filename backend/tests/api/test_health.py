@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from upgradepilot.api.app import create_app
 from upgradepilot.api.routes import health
+from upgradepilot.api.schemas import HealthChecks
 from upgradepilot.config import Settings
 
 MISSING_ROOT = Path("/nonexistent-upgradepilot-test-root/deeply/nested")
@@ -34,8 +35,8 @@ def _all_checks_pass(tmp_path: Path) -> Settings:
     )
 
 
-def test_health_responds_with_the_documented_shape() -> None:
-    client = TestClient(create_app())
+def test_health_responds_with_the_documented_shape(tmp_path: Path) -> None:
+    client = TestClient(create_app(_all_checks_pass(tmp_path)))
     response = client.get("/api/health")
 
     assert response.status_code == 200
@@ -48,9 +49,9 @@ def test_health_responds_with_the_documented_shape() -> None:
 def test_health_reports_ok_when_every_check_passes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(health, "get_settings", lambda: _all_checks_pass(tmp_path))
+    injected = _all_checks_pass(tmp_path)
 
-    body = TestClient(create_app()).get("/api/health").json()
+    body = TestClient(create_app(injected)).get("/api/health").json()
 
     assert body["checks"] == {
         "chroma_dir": True,
@@ -75,9 +76,9 @@ def test_health_does_not_require_an_api_key(monkeypatch: pytest.MonkeyPatch) -> 
     """
     _clear_key_env(monkeypatch)
     unconfigured = Settings(_env_file=None)
-    monkeypatch.setattr(health, "get_settings", lambda: unconfigured)
+    injected = unconfigured
 
-    response = TestClient(create_app()).get("/api/health")
+    response = TestClient(create_app(injected)).get("/api/health")
 
     assert response.status_code == 200
     assert response.json()["checks"]["llm_configured"] is False
@@ -87,9 +88,9 @@ def test_health_reports_store_ready_for_a_writable_location(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """chroma_dir/checkpoint_dir must actually verify usability, not just existence."""
-    monkeypatch.setattr(health, "get_settings", lambda: _all_checks_pass(tmp_path))
+    injected = _all_checks_pass(tmp_path)
 
-    checks = TestClient(create_app()).get("/api/health").json()["checks"]
+    checks = TestClient(create_app(injected)).get("/api/health").json()["checks"]
 
     assert checks["chroma_dir"] is True
     assert checks["checkpoint_dir"] is True
@@ -104,9 +105,9 @@ def test_health_reports_store_not_ready_for_an_uncreatable_location(
         chroma_dir=MISSING_ROOT / "chroma",
         checkpoint_db=MISSING_ROOT / "checkpoints.db",
     )
-    monkeypatch.setattr(health, "get_settings", lambda: settings)
+    injected = settings
 
-    checks = TestClient(create_app()).get("/api/health").json()["checks"]
+    checks = TestClient(create_app(injected)).get("/api/health").json()["checks"]
 
     assert checks["chroma_dir"] is False
     assert checks["checkpoint_dir"] is False
@@ -129,9 +130,9 @@ def test_health_is_not_ok_when_a_store_check_fails(
         chroma_dir=MISSING_ROOT / "chroma",
         checkpoint_db=tmp_path / "nested" / "checkpoints.db",
     )
-    monkeypatch.setattr(health, "get_settings", lambda: settings)
+    injected = settings
 
-    body = TestClient(create_app()).get("/api/health").json()
+    body = TestClient(create_app(injected)).get("/api/health").json()
 
     assert body["checks"] == {
         "chroma_dir": False,
@@ -157,9 +158,9 @@ def test_health_is_not_ok_when_the_api_key_is_missing(
         chroma_dir=tmp_path / "chroma",
         checkpoint_db=tmp_path / "nested" / "checkpoints.db",
     )
-    monkeypatch.setattr(health, "get_settings", lambda: settings)
+    injected = settings
 
-    body = TestClient(create_app()).get("/api/health").json()
+    body = TestClient(create_app(injected)).get("/api/health").json()
 
     assert body["checks"] == {
         "chroma_dir": True,
@@ -179,13 +180,13 @@ def test_every_reported_check_can_change_the_status() -> None:
     and forgotten in `_derive_status` fails here rather than shipping as a
     reassuring lie.
     """
-    fields = list(health.HealthChecks.model_fields)
+    fields = list(HealthChecks.model_fields)
     assert fields, "an empty check set would assert nothing"
 
     all_true = dict.fromkeys(fields, True)
-    assert health._derive_status(health.HealthChecks(**all_true)) == "ok"
+    assert health._derive_status(HealthChecks(**all_true)) == "ok"
 
     for field in fields:
         one_false = {**all_true, field: False}
-        status = health._derive_status(health.HealthChecks(**one_false))
+        status = health._derive_status(HealthChecks(**one_false))
         assert status != "ok", f"{field!r} is reported but does not affect the status"
