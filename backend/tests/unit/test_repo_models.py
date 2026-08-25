@@ -35,7 +35,9 @@ from upgradepilot.models.repo import (
 )
 
 
-def site(symbol: str, confidence: Confidence, file: str = "src/app/models.py", line: int = 1):
+def site(
+    symbol: str, confidence: Confidence, file: str = "src/app/models.py", line: int = 1
+) -> UsageSite:
     return UsageSite(
         file=file,
         line=line,
@@ -48,7 +50,7 @@ def site(symbol: str, confidence: Confidence, file: str = "src/app/models.py", l
 
 
 def test_repo_ref_discriminates_remote_and_local() -> None:
-    adapter = TypeAdapter(RepoRef)
+    adapter: TypeAdapter[RepoRef] = TypeAdapter(RepoRef)
 
     remote = adapter.validate_python(
         {"kind": "remote", "url": "https://github.com/acme/payment-service"}

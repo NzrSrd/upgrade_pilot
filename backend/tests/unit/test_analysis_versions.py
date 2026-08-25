@@ -16,10 +16,10 @@ from upgradepilot.services.analysis.versions import resolve_version
 def _declaration(
     kind: ManifestKind,
     *,
-    version=None,
-    specifier=None,
-    confidence=VersionConfidence.EXACT,
-    is_lockfile=False,
+    version: str | None = None,
+    specifier: str | None = None,
+    confidence: VersionConfidence = VersionConfidence.EXACT,
+    is_lockfile: bool = False,
     path: str | None = None,
 ) -> Declaration:
     if path is None:
@@ -60,6 +60,8 @@ def test_a_lockfile_pin_beats_a_pyproject_range() -> None:
         ),
         canonical_name="pydantic",
     )
+    assert detected is not None
+    assert detected is not None
     assert detected.value == "1.10.13"
     assert detected.confidence is VersionConfidence.EXACT
     assert detected.source_manifest.kind is ManifestKind.POETRY_LOCK
@@ -75,6 +77,7 @@ def test_an_exact_requirements_pin_beats_a_pyproject_range() -> None:
         ),
         canonical_name="pydantic",
     )
+    assert detected is not None
     assert detected.value == "1.10.13"
     assert detected.confidence is VersionConfidence.EXACT
 
@@ -91,6 +94,7 @@ def test_a_range_only_declaration_reports_the_specifier_as_the_value() -> None:
         ),
         canonical_name="pydantic",
     )
+    assert detected is not None
     assert detected.value == ">=1.10,<2"
     assert detected.specifier == ">=1.10,<2"
     assert detected.confidence is VersionConfidence.RANGE
@@ -104,6 +108,7 @@ def test_lockfile_only_means_the_user_does_not_control_the_pin() -> None:
         (_declaration(ManifestKind.POETRY_LOCK, version="1.10.13", is_lockfile=True),),
         canonical_name="pydantic",
     )
+    assert detected is not None
     assert detected.role is DependencyRole.TRANSITIVE_ONLY
 
 
@@ -116,6 +121,7 @@ def test_a_human_authored_manifest_means_direct() -> None:
             ),
             canonical_name="pydantic",
         )
+        assert detected is not None
         assert detected.role is DependencyRole.DIRECT, kind
 
 
@@ -137,6 +143,8 @@ def test_two_lockfiles_disagreeing_resolve_deterministically() -> None:
         ),
         canonical_name="pydantic",
     )
+    assert forward is not None
+    assert backward is not None
     assert forward.value == backward.value
     assert forward.source_manifest.kind is backward.source_manifest.kind
 
@@ -176,6 +184,8 @@ def test_same_kind_different_paths_resolve_by_path() -> None:
         canonical_name="pydantic",
     )
     # Both orders must select the same manifest (by path) and thus same version
+    assert forward is not None
+    assert backward is not None
     assert forward.source_manifest.path == "requirements-a.txt"
     assert backward.source_manifest.path == "requirements-a.txt"
     assert forward.value == "1.10.13"
@@ -202,5 +212,6 @@ def test_bare_declaration_alongside_real_version_returns_real_version() -> None:
         ),
         canonical_name="pydantic",
     )
+    assert detected is not None
     assert detected.value == "1.10.13"
     assert detected.confidence is VersionConfidence.EXACT

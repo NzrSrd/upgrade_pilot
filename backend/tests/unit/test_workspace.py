@@ -421,5 +421,10 @@ def test_the_hardened_environment_is_one_object_shared_by_clone_and_workspace() 
     from upgradepilot.services.repo import clone as clone_module
     from upgradepilot.services.repo import workspace as workspace_module
 
-    assert clone_module.HARDENED_GIT_ENV is workspace_module.HARDENED_GIT_ENV
+    # Unlike test_clone.py's read of the same name, this assertion's whole
+    # point is the identity check through BOTH modules' bindings -- there is
+    # no way to state "these are the same object" without naming the one
+    # `clone.py` merely imports, so the `--no-implicit-reexport` complaint
+    # is narrowly ignored here rather than routed around.
+    assert clone_module.HARDENED_GIT_ENV is workspace_module.HARDENED_GIT_ENV  # type: ignore[attr-defined]
     assert workspace_module.HARDENED_GIT_ENV["GIT_CONFIG_GLOBAL"] == "/dev/null"

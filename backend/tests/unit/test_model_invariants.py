@@ -197,7 +197,11 @@ def test_model_construct_is_a_documented_bypass() -> None:
 def test_severity_and_risk_level_are_distinct_enums() -> None:
     """Guards the parametrised sweep above against a future refactor that
     collapses the enums and makes `Severity`-typed fields accept a level."""
-    assert Severity.HIGH is not RiskLevel.HIGH
+    # mypy proves this `is not` always holds -- two distinct enum classes can
+    # never share a member -- and flags it as a likely-bug comparison. That
+    # is exactly the invariant this test pins: if a refactor ever merged the
+    # two enums, this same line would need to stop being trivially true.
+    assert Severity.HIGH is not RiskLevel.HIGH  # type: ignore[comparison-overlap]
 
 
 def test_every_source_file_compiles_without_a_syntax_warning() -> None:

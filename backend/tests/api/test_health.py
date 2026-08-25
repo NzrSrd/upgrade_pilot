@@ -45,7 +45,9 @@ def test_health_responds_with_the_documented_shape() -> None:
     assert isinstance(body["version"], str) and body["version"]
 
 
-def test_health_reports_ok_when_every_check_passes(tmp_path, monkeypatch) -> None:
+def test_health_reports_ok_when_every_check_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(health, "get_settings", lambda: _all_checks_pass(tmp_path))
 
     body = TestClient(create_app()).get("/api/health").json()
@@ -58,7 +60,7 @@ def test_health_reports_ok_when_every_check_passes(tmp_path, monkeypatch) -> Non
     assert body["status"] == "ok"
 
 
-def test_health_does_not_require_an_api_key(monkeypatch) -> None:
+def test_health_does_not_require_an_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """A health probe must never depend on, or spend money at, OpenAI.
 
     Builds an explicitly unconfigured Settings (no .env, no dotenv fallback)
@@ -81,7 +83,9 @@ def test_health_does_not_require_an_api_key(monkeypatch) -> None:
     assert response.json()["checks"]["llm_configured"] is False
 
 
-def test_health_reports_store_ready_for_a_writable_location(tmp_path, monkeypatch) -> None:
+def test_health_reports_store_ready_for_a_writable_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """chroma_dir/checkpoint_dir must actually verify usability, not just existence."""
     monkeypatch.setattr(health, "get_settings", lambda: _all_checks_pass(tmp_path))
 
@@ -91,7 +95,9 @@ def test_health_reports_store_ready_for_a_writable_location(tmp_path, monkeypatc
     assert checks["checkpoint_dir"] is True
 
 
-def test_health_reports_store_not_ready_for_an_uncreatable_location(monkeypatch) -> None:
+def test_health_reports_store_not_ready_for_an_uncreatable_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A location whose parent also doesn't exist can't be created, so must be False."""
     settings = Settings(
         _env_file=None,
@@ -106,7 +112,9 @@ def test_health_reports_store_not_ready_for_an_uncreatable_location(monkeypatch)
     assert checks["checkpoint_dir"] is False
 
 
-def test_health_is_not_ok_when_a_store_check_fails(tmp_path, monkeypatch) -> None:
+def test_health_is_not_ok_when_a_store_check_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The defect this asserts against: a 200 saying "ok" over failing checks.
 
     Reproduced before the fix -- the route returned a hardcoded `"ok"` while
@@ -134,7 +142,9 @@ def test_health_is_not_ok_when_a_store_check_fails(tmp_path, monkeypatch) -> Non
     assert body["status"] == "degraded"
 
 
-def test_health_is_not_ok_when_the_api_key_is_missing(tmp_path, monkeypatch) -> None:
+def test_health_is_not_ok_when_the_api_key_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The same rule for the configuration check, not just the store checks.
 
     A missing key means the agent cannot do its job. Both stores are ready

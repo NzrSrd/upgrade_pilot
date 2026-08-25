@@ -7,7 +7,9 @@ from pydantic_settings import SettingsConfigDict
 from upgradepilot.config import Settings
 
 
-def test_comma_separated_env_values_parse_into_collections(monkeypatch) -> None:
+def test_comma_separated_env_values_parse_into_collections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Complex-typed env values are JSON-decoded unless NoDecode is set."""
     monkeypatch.setenv("UP_ALLOWED_LOCAL_ROOTS", "/tmp/a,/tmp/b")
     monkeypatch.setenv("UP_ALLOWED_URL_SCHEMES", "https,git")
@@ -159,7 +161,7 @@ def test_a_real_base_url_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings(_env_file=None).llm_base_url == "https://openrouter.ai/api/v1"
 
 
-def test_explicit_kwargs_override_the_environment(monkeypatch) -> None:
+def test_explicit_kwargs_override_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Relied on by every test that builds a Settings by hand."""
     monkeypatch.setenv("UP_MAX_REPO_FILES", "7")
     assert Settings(_env_file=None).max_repo_files == 7

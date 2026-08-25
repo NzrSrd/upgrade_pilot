@@ -43,7 +43,12 @@ def a_breaking_change() -> BreakingChange:
 def test_breaking_change_requires_a_source() -> None:
     """The core invariant: an uncited breaking change is unconstructable."""
     with pytest.raises(ValidationError) as excinfo:
-        BreakingChange(
+        # `source` is deliberately omitted: this is the test that the
+        # required field is enforced at runtime by pydantic. The pydantic
+        # mypy plugin now enforces the same requirement statically, so this
+        # is a real, expected `call-arg` -- ignored rather than "fixed" by
+        # adding the very argument the test exists to prove is required.
+        BreakingChange(  # type: ignore[call-arg]
             id="bc-1",
             title="@validator removed",
             description="renamed",
@@ -116,7 +121,7 @@ def test_risk_factor_accepts_mixed_evidence_kinds() -> None:
 
 
 def test_evidence_ref_discriminates_on_kind() -> None:
-    adapter = TypeAdapter(EvidenceRef)
+    adapter: TypeAdapter[EvidenceRef] = TypeAdapter(EvidenceRef)
 
     repo = adapter.validate_python({"kind": "repo", "file": "a.py", "line": 3})
     doc = adapter.validate_python({"kind": "doc", "source_id": "s", "chunk_id": "c"})

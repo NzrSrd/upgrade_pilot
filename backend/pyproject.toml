@@ -41,6 +41,14 @@ dev = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# `py.typed` is the PEP 561 marker: without it listed here, `setuptools`
+# does not include the file in the built wheel even though it sits inside
+# the package directory, and consumers of an installed `upgradepilot` would
+# see mypy's `import-untyped` for every import despite the package being
+# fully strict-typed.
+upgradepilot = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # `norecursedirs` REPLACES pytest's built-in default wholesale rather than
@@ -124,6 +132,16 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 "tests/repo/test_clone_live.py" = ["TID251"]
 
 [tool.mypy]
+# Without this, mypy relies solely on `BaseModel`'s PEP 681
+# `@dataclass_transform` and synthesises `Settings.__init__` from its
+# declared fields alone -- which does not know about `BaseSettings`'s own
+# private construction kwargs (`_env_file`, `_secrets_dir`, ...) that
+# `pydantic_settings/main.py` documents as real, typed `__init__` parameters
+# at runtime. Every test in `test_settings.py` constructs `Settings(_env_file=None)`
+# to keep `.env` out of the test process, and without the plugin each such
+# call is a false `call-arg` error (verified: 46 of them, all resolved by
+# adding this one line -- not by 46 per-call `# type: ignore`s).
+plugins = ["pydantic.mypy"]
 # Must match `requires-python` above. The pin is not cosmetic: at
 # `--python-version 3.12` mypy *rejects* `rglob(..., recurse_symlinks=False)`
 # as an unexpected keyword argument and accepts it at 3.14, so a stale pin
@@ -134,6 +152,23 @@ strict = true
 # left `__init__.py`, `config.py` and all four files under `api/` unchecked
 # -- `config.py` being the one everything imports -- so `strict = true` was
 # doing less than it appeared to. Widening cost nothing: the six previously
-# excluded files pass strict as they stand. `tests` is deliberately not
-# listed; see the note in spec §11.
-files = ["src/upgradepilot"]
+# excluded files pass strict as they stand. `tests` is now included too --
+# see the `exclude` note directly below for the one carve-out.
+files = ["src/upgradepilot", "tests"]
+# The fixture tree is deliberately Pydantic-v1 (`Optional[str]` with no
+# default, `class Config:`, `@validator`) and contains a deliberately
+# unparseable file. Its 13 strict errors are the POINT of the fixture, and
+# "fixing" them turns tests/unit/test_fixture_repo.py red.
+#
+# Known limitation, verified rather than assumed: this `exclude` is bypassed
+# when a path is named explicitly on the command line -- exactly like
+# ruff's `extend-exclude` before `force-exclude` was added -- and mypy has
+# NO `force-exclude` equivalent to close it.
+#   mypy --exclude 'tests/fixtures/sample_repo' tests/fixtures/sample_repo/src/app/util.py
+#     -> Found 3 errors in 1 file (checked 1 source file)     # excluded, still checked
+#   mypy --exclude 'tests/fixtures/sample_repo' tests/fixtures
+#     -> Success: no issues found in 2 source files           # crawl respects it
+# So a bare `mypy` (the CI invocation and this project's gate) is protected;
+# an editor's check-this-file action or a pre-commit hook passing changed
+# filenames is not.
+exclude = ["^tests/fixtures/sample_repo/"]

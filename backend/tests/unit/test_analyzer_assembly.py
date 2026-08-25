@@ -24,7 +24,7 @@ from upgradepilot.services.analysis.analyzer import analyze_repository
 from upgradepilot.services.repo.workspace import Workspace
 
 
-def _analysis(tmp_path: Path, **overrides: object) -> RepoAnalysis:
+def _analysis(tmp_path: Path, **overrides: int) -> RepoAnalysis:
     workspace = Workspace(build_sample_repo(tmp_path))
     spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
     return analyze_repository(workspace, spec, **overrides)

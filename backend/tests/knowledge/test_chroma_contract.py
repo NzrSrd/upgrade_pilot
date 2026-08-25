@@ -11,9 +11,14 @@
 """
 
 import hashlib
+from pathlib import Path
+from typing import Literal
 
 import chromadb
-from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
+import numpy as np
+import numpy.typing as npt
+from chromadb.api import ClientAPI
+from chromadb.api.types import Documents, EmbeddingFunction, Embeddings, Metadata, Where
 
 DIM = 16
 
@@ -25,10 +30,10 @@ class DeterministicEmbedding(EmbeddingFunction[Documents]):
         pass
 
     def __call__(self, input: Documents) -> Embeddings:
-        vectors = []
+        vectors: list[npt.NDArray[np.int32 | np.float32]] = []
         for text in input:
             digest = hashlib.sha256(text.lower().encode()).digest()
-            vectors.append([digest[i] / 255.0 for i in range(DIM)])
+            vectors.append(np.array([digest[i] / 255.0 for i in range(DIM)], dtype=np.float32))
         return vectors
 
     @staticmethod
@@ -41,7 +46,29 @@ def fake_embedding_function() -> DeterministicEmbedding:
     return DeterministicEmbedding()
 
 
-DOCS = [
+def _contains(field: str, symbol: str) -> Where:
+    """Build a `{field: {"$contains": symbol}}` where-clause typed to chromadb's `Where` alias.
+
+    A plain nested dict literal (`{"$contains": symbol}`) infers as
+    `dict[str, str]`, which does not structurally match any member of
+    `Where`'s value union -- `dict` is invariant, so even a dict literal
+    typed with the exact right `Literal` key still needs the exact right
+    value-type union alongside it. Verified: the plain-literal and the
+    exact-Literal-key-only forms both fail; only matching the full member
+    type below satisfies it.
+    """
+    condition: dict[Literal["$contains", "$not_contains"], str | int | float | bool] = {
+        "$contains": symbol
+    }
+    return {field: condition}
+
+
+def _in(field: str, values: list[str]) -> Where:
+    condition: dict[Literal["$in", "$nin"], list[str | int | float | bool]] = {"$in": list(values)}
+    return {field: condition}
+
+
+DOCS: list[tuple[str, str, Metadata]] = [
     (
         "pydantic-v2#validator",
         "@validator was replaced by @field_validator in Pydantic v2.",
@@ -75,9 +102,10 @@ DOCS = [
 ]
 
 
-def _seed(client) -> None:
+def _seed(client: ClientAPI) -> None:
     collection = client.get_or_create_collection(
-        "migrations", embedding_function=fake_embedding_function()
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
     )
     collection.add(
         ids=[d[0] for d in DOCS],
@@ -86,19 +114,30 @@ def _seed(client) -> None:
     )
 
 
-def test_persistent_client_survives_restart(tmp_path):
+def test_persistent_client_survives_restart(tmp_path: Path) -> None:
     path = str(tmp_path / "chroma")
     _seed(chromadb.PersistentClient(path=path))
 
     reopened = chromadb.PersistentClient(path=path)
-    collection = reopened.get_collection("migrations", embedding_function=fake_embedding_function())
+    # chromadb's own default embedding function is typed `EmbeddingFunction[Documents]` too
+    # (see `chromadb/api/types.py`'s `DefaultEmbeddingFunction`, assigned to this exact
+    # parameter upstream with the same `# type: ignore`) -- `ClientAPI.get_collection`'s
+    # declared parameter type is the contravariant `EmbeddingFunction[Embeddable]`, which no
+    # `Documents`-only embedding function can satisfy structurally, only in practice.
+    collection = reopened.get_collection(
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+    )
     assert collection.count() == 3
 
 
-def test_scalar_metadata_filter_narrows_results(tmp_path):
+def test_scalar_metadata_filter_narrows_results(tmp_path: Path) -> None:
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     _seed(client)
-    collection = client.get_collection("migrations", embedding_function=fake_embedding_function())
+    collection = client.get_collection(
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+    )
 
     result = collection.query(
         query_texts=["validator renamed"],
@@ -112,20 +151,25 @@ def test_scalar_metadata_filter_narrows_results(tmp_path):
     assert "sqlalchemy-2#select" not in returned_ids
 
 
-def test_source_metadata_round_trips(tmp_path):
+def test_source_metadata_round_trips(tmp_path: Path) -> None:
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     _seed(client)
-    collection = client.get_collection("migrations", embedding_function=fake_embedding_function())
+    collection = client.get_collection(
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+    )
 
     result = collection.get(ids=["pydantic-v2#validator"])
-    metadata = result["metadatas"][0]
+    metadatas = result["metadatas"]
+    assert metadatas is not None
+    metadata = metadatas[0]
 
     assert metadata["source_type"] == "migration_guide"
     assert metadata["to_version_major"] == 2
     assert metadata["affected_symbols"] == ["validator", "root_validator"]
 
 
-def test_list_valued_metadata_is_accepted_and_round_trips(tmp_path):
+def test_list_valued_metadata_is_accepted_and_round_trips(tmp_path: Path) -> None:
     """chromadb 1.5.9 stores list metadata and returns a real list.
 
     The brief assumed this was rejected. It is not - which is why symbol
@@ -133,15 +177,20 @@ def test_list_valued_metadata_is_accepted_and_round_trips(tmp_path):
     """
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     _seed(client)
-    collection = client.get_collection("migrations", embedding_function=fake_embedding_function())
+    collection = client.get_collection(
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+    )
 
-    metadata = collection.get(ids=["pydantic-v2#validator"])["metadatas"][0]
+    metadatas = collection.get(ids=["pydantic-v2#validator"])["metadatas"]
+    assert metadatas is not None
+    metadata = metadatas[0]
 
     assert isinstance(metadata["affected_symbols"], list)
     assert metadata["affected_symbols"] == ["validator", "root_validator"]
 
 
-def test_symbol_filter_matches_whole_elements_not_substrings(tmp_path):
+def test_symbol_filter_matches_whole_elements_not_substrings(tmp_path: Path) -> None:
     """$contains is exact-element. This is the guard against false evidence.
 
     If it ever became substring-based, a filter for `Config` would match a
@@ -150,7 +199,8 @@ def test_symbol_filter_matches_whole_elements_not_substrings(tmp_path):
     """
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     collection = client.get_or_create_collection(
-        "migrations", embedding_function=fake_embedding_function()
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
     )
     collection.add(
         ids=["exact", "longer"],
@@ -162,7 +212,7 @@ def test_symbol_filter_matches_whole_elements_not_substrings(tmp_path):
     )
 
     def ids_for(symbol: str) -> list[str]:
-        return collection.get(where={"affected_symbols": {"$contains": symbol}})["ids"]
+        return collection.get(where=_contains("affected_symbols", symbol))["ids"]
 
     assert ids_for("validator") == ["exact"]
     assert ids_for("ConfigDict") == ["longer"]
@@ -170,17 +220,20 @@ def test_symbol_filter_matches_whole_elements_not_substrings(tmp_path):
     assert ids_for("Config") == [], "Config must not match ConfigDict"
 
 
-def test_multiple_symbols_filter_with_or_of_contains(tmp_path):
+def test_multiple_symbols_filter_with_or_of_contains(tmp_path: Path) -> None:
     """The AST finds several symbols at once; this is how they are queried."""
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     _seed(client)
-    collection = client.get_collection("migrations", embedding_function=fake_embedding_function())
+    collection = client.get_collection(
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+    )
 
     result = collection.get(
         where={
             "$or": [
-                {"affected_symbols": {"$contains": "validator"}},
-                {"affected_symbols": {"$contains": "Config"}},
+                _contains("affected_symbols", "validator"),
+                _contains("affected_symbols", "Config"),
             ]
         }
     )
@@ -188,7 +241,7 @@ def test_multiple_symbols_filter_with_or_of_contains(tmp_path):
     assert sorted(result["ids"]) == ["pydantic-v2#config", "pydantic-v2#validator"]
 
 
-def test_in_operator_does_not_work_on_list_metadata(tmp_path):
+def test_in_operator_does_not_work_on_list_metadata(tmp_path: Path) -> None:
     """Documents why $contains is used and $in is not.
 
     $in against a list-valued field returns nothing rather than erroring, so
@@ -197,8 +250,11 @@ def test_in_operator_does_not_work_on_list_metadata(tmp_path):
     """
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     _seed(client)
-    collection = client.get_collection("migrations", embedding_function=fake_embedding_function())
+    collection = client.get_collection(
+        "migrations",
+        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+    )
 
-    result = collection.get(where={"affected_symbols": {"$in": ["validator"]}})
+    result = collection.get(where=_in("affected_symbols", ["validator"]))
 
     assert result["ids"] == []

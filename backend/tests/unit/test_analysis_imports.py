@@ -25,7 +25,7 @@ def _map(source: str) -> AliasMap:
         ("import os.path", "os", "os.path", "os"),
     ],
 )
-def test_every_import_spelling_resolves(source, local, origin, root) -> None:
+def test_every_import_spelling_resolves(source: str, local: str, origin: str, root: str) -> None:
     aliases = _map(source)
     assert aliases.origin_of(local) == origin
     assert aliases.root_of(local) == root
