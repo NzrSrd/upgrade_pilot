@@ -50,3 +50,19 @@ Rules to follow when working in this repository. For *what* we are building and 
 
 26. The agent trace shows observable events — node boundaries, queries issued, sources retrieved and selected, decisions, validation outcomes. It does not show internal prompts or private reasoning.
 27. `AppError.message` is user-facing and comprehensible. `AppError.detail` is technical and logged, correlated by `thread_id`.
+
+## UI Design Reference
+
+The canonical UI references are the six screenshots in `docs/ui/screenshots/`,
+indexed and captioned in `docs/ui/DESIGN.md`.
+
+The design specification is `docs/ui/DESIGN.md`; the component hierarchy is
+`docs/ui/COMPONENTS.md`.
+
+When implementing or modifying the frontend:
+1. Read `docs/ui/DESIGN.md` first.
+2. Inspect the reference screenshot when visual hierarchy or layout is unclear.
+3. Preserve the three-column developer-console structure unless explicitly instructed otherwise.
+4. Do not replace the design with a generic chatbot layout.
+5. Match the visual hierarchy, spacing, density, and interaction patterns before adding new UI patterns.
+6. Keep the HITL experience as the primary interaction when the LangGraph is interrupted.
