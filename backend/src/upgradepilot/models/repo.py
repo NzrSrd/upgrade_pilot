@@ -1,7 +1,6 @@
 """Repository analysis outputs. Pure data; no I/O."""
 
 import math
-from datetime import datetime
 from typing import Annotated, Self
 
 from pydantic import AwareDatetime, Field, StringConstraints, computed_field, model_validator
@@ -202,12 +201,12 @@ class AffectedFile(HonestModel):
     @classmethod
     def from_sites(
         cls,
-        path: str,
+        path: RepoRelativePath,
         sites: list[UsageSite],
         *,
         is_test: bool = False,
         commit_count: int | None = None,
-        last_modified: datetime | None = None,
+        last_modified: AwareDatetime | None = None,
     ) -> Self:
         return cls(
             path=path,
