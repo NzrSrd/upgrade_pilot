@@ -96,6 +96,8 @@ def test_the_kinds_cover_exactly_what_rule_26_permits() -> None:
         "query_issued",
         "sources_retrieved",
         "sources_selected",
+        "retrieval_evaluated",
+        "agent_decision",
         "decision_required",
         "decision_applied",
         "validation_outcome",

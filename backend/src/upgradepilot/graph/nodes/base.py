@@ -1,11 +1,10 @@
-"""Node bodies for the skeleton graph, and the wrapper every node wears.
+"""The wrapper every node wears, and the stubs not yet replaced.
 
-**These bodies are stubs.** Each real one arrives with the phase that owns it
--- `analyze_repo` and `inspect_dependency` have working services behind them
-already (Phase 2), `agentic_rag` is Phase 5, `assess_risk` Phase 6,
-`generate_plan` and `validate_plan` Phase 8. What is real here is everything
-around them: the state channels, the trace, the usage records and the error
-handling, which is the part no later phase would think to re-test.
+**What is left here is a stub and a wrapper.** Real bodies live beside this
+module, one file per layer -- `evidence.py` for `analyze_repo`,
+`inspect_dependency` and `agentic_rag`. `assess_risk` is still the skeleton's
+placeholder below and is replaced in Phase 6, alongside `generate_plan` and
+`validate_plan` in Phase 8.
 
 The wrapper is the point of this module. CLAUDE.md rule 20 -- a caught
 exception produces an `AppError` in state *and* a trace event, always -- is
@@ -27,7 +26,14 @@ from upgradepilot.models.trace import trace_event
 from upgradepilot.services.llm.tracked import TrackedLLM
 
 StateUpdate = dict[str, Any]
-NodeBody = Callable[[MigrationState], Awaitable[StateUpdate]]
+type NodeBody[StateT] = Callable[[StateT], Awaitable[StateUpdate]]
+"""A node body over some graph's state.
+
+Generic over the state because the RAG subgraph's nodes wear the same
+`traced` wrapper as the parent's. Rule 20 is not a rule about `MigrationState`
+-- it is a rule about nodes, and a subgraph node that swallowed an exception
+would swallow it just as thoroughly.
+"""
 
 
 class StubNarrative(BaseModel):
@@ -42,12 +48,14 @@ class StubNarrative(BaseModel):
     summary: str
 
 
-def traced(name: str, body: NodeBody) -> NodeBody:
+def traced[StateT](name: str, body: NodeBody[StateT]) -> NodeBody[StateT]:
     """Wrap a node body with its trace boundary and rule 20's error handling.
 
     Three guarantees for every node in the graph, whatever its body does:
 
-    - a `node_started` event before, and a `node_completed` event after;
+    - a `node_started` event before, and a `node_completed` event after --
+      the latter carrying whatever the body returned under the reserved
+      `summary` key, or a generic line when it returned none;
     - a domain failure becomes an `AppError` carrying its own `ErrorCode`;
     - an *unexpected* exception becomes `AppError(INTERNAL)` naming the
       exception type. It is not reported as a domain error, because a bug in
@@ -60,7 +68,7 @@ def traced(name: str, body: NodeBody) -> NodeBody:
     already gathered and paid for.
     """
 
-    async def run(state: MigrationState) -> StateUpdate:
+    async def run(state: StateT) -> StateUpdate:
         events = [trace_event(TraceEventKind.NODE_STARTED, node=name, summary=f"{name} started")]
         try:
             update = await body(state)
@@ -107,10 +115,16 @@ def traced(name: str, body: NodeBody) -> NodeBody:
                 ],
             }
 
+        # `summary` is a reserved key, not a channel: a body returns it to say
+        # what it did, and it becomes the `node_completed` event's text. The
+        # activity timeline renders exactly these events, so without it every
+        # step reads "assess_risk finished" -- technically true and useless to
+        # someone trying to see what the run established. Popped before the
+        # update is returned, so it never reaches LangGraph as an unknown
+        # channel.
+        summary = str(update.pop("summary", "") or "").strip() or f"{name} finished"
         trace: list[Any] = [*events, *update.pop("agent_trace", [])]
-        trace.append(
-            trace_event(TraceEventKind.NODE_COMPLETED, node=name, summary=f"{name} finished")
-        )
+        trace.append(trace_event(TraceEventKind.NODE_COMPLETED, node=name, summary=summary))
         return {**update, "agent_trace": trace}
 
     return run
@@ -121,7 +135,7 @@ def stub_node(_state: MigrationState) -> StateUpdate:
     return {}
 
 
-def make_stub(name: str) -> NodeBody:
+def make_stub(name: str) -> NodeBody[MigrationState]:
     async def body(state: MigrationState) -> StateUpdate:
         return stub_node(state)
 
@@ -129,7 +143,7 @@ def make_stub(name: str) -> NodeBody:
     return body
 
 
-def make_assess_risk(llm: TrackedLLM) -> NodeBody:
+def make_assess_risk(llm: TrackedLLM) -> NodeBody[MigrationState]:
     """The one skeleton node that calls a model.
 
     Placed at `assess_risk` because that is where §8.1 puts narrative

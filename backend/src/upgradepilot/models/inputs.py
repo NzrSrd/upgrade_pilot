@@ -83,6 +83,41 @@ class DependencySpec(HonestModel):
         """
         return self.canonical_name.replace("-", "_")
 
+    @property
+    def target_major(self) -> int | None:
+        """The leading integer of `target_version`, or `None` when it has none.
+
+        This is the scalar Chroma narrows on (`to_version_major`), so getting
+        it wrong is not a cosmetic error: a query filtered to the wrong major
+        returns documents about a different release, and every citation built
+        from them resolves to a real document that describes the wrong
+        upgrade.
+
+        A plain property rather than a `@computed_field`: it is an internal
+        retrieval detail, and adding it to the serialised shape would put it
+        in the API contract Phase 9 publishes, where nothing needs it.
+
+        Only the leading component is read, and only its leading digits, so
+        ordinary release spellings work (`2.9.0`, `2.0b1`, `2`). Anything
+        else -- a target of `latest`, or a date-based scheme -- yields `None`,
+        and `plan_retrieval` then omits the filter rather than guessing a
+        major. An omitted filter retrieves more broadly, which is recoverable;
+        a guessed one retrieves confidently from the wrong release, which is
+        not.
+
+        Mirrors `CorpusDocument._major_must_agree_with_the_version_string`,
+        which parses the corpus side of the same comparison. The two must
+        agree on what "the major" means or the filter silently matches
+        nothing.
+        """
+        leading = self.target_version.split(".", 1)[0]
+        digits = ""
+        for character in leading:
+            if not character.isdigit():
+                break
+            digits += character
+        return int(digits) if digits else None
+
 
 class UserConstraints(HonestModel):
     """Migration constraints. Defaults are permissive so an omitted

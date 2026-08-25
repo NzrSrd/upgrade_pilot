@@ -112,7 +112,58 @@ class TraceEventKind(StrEnum):
     QUERY_ISSUED = "query_issued"
     SOURCES_RETRIEVED = "sources_retrieved"
     SOURCES_SELECTED = "sources_selected"
+    RETRIEVAL_EVALUATED = "retrieval_evaluated"
+    """One round of the retrieval loop graded: what the model concluded and
+    what the deterministic gate concluded. Added in Phase 5 rather than
+    folded into `validation_outcome`, because a reader following a loop that
+    ran three rounds needs to see the override happening -- "the model said
+    sufficient, the gate disagreed" is the single most informative line the
+    trace can carry about a retrieval loop, and it is invisible if the two
+    verdicts are reported as one."""
+
+    AGENT_DECISION = "agent_decision"
+    """A decision the agent took on its own, with its reason.
+
+    Distinct from `decision_required` / `decision_applied`, which are about
+    the *human* review interrupt. This kind is for the choices that never
+    reach a human: skipping retrieval because the repository uses nothing to
+    retrieve about, or resolving a strategy question by the stated
+    constraints. Recording them is what keeps a skip from reading as a
+    silent no-op -- an absent step and a deliberately-omitted one look
+    identical in a timeline that only shows what ran."""
+
     DECISION_REQUIRED = "decision_required"
     DECISION_APPLIED = "decision_applied"
     VALIDATION_OUTCOME = "validation_outcome"
     ERROR_RECORDED = "error_recorded"
+
+
+class QueryOrigin(StrEnum):
+    """Who wrote a retrieval query.
+
+    The distinction is reported rather than smoothed over. A query the model
+    composed and a query this system fell back to are different facts about
+    the run: the second one means the model returned nothing usable, which is
+    a condition an operator should be able to see in the trace rather than
+    infer from a suspiciously generic query text.
+    """
+
+    MODEL = "model"
+    FALLBACK = "fallback"
+
+
+class RagStopReason(StrEnum):
+    """Why the retrieval loop stopped.
+
+    Spec 7.3 bounds the loop three ways and skips it entirely a fourth, and
+    the four outcomes are not interchangeable: `SUFFICIENT` says the evidence
+    answered the question, `ITERATION_LIMIT` says we ran out of budget while
+    still short, `NOT_NECESSARY` says there was nothing to ask about, and
+    `KB_UNAVAILABLE` says we could not ask at all. Collapsing any two of them
+    would let a run that found nothing read like a run that needed nothing.
+    """
+
+    SUFFICIENT = "sufficient"
+    ITERATION_LIMIT = "iteration_limit"
+    NOT_NECESSARY = "not_necessary"
+    KB_UNAVAILABLE = "kb_unavailable"
