@@ -804,3 +804,34 @@ def test_version_discrepancy_strips_the_callers_stated_version() -> None:
 
     assert analysis.version_discrepancy(stated="  1.10.13\n") is None
     assert analysis.version_discrepancy(stated="  1.9.0  ") == ("1.9.0", "1.10.13")
+
+
+def test_a_naive_timestamp_is_rejected_on_commit_record() -> None:
+    """`CommitRecord.timestamp` is `AwareDatetime`, not `datetime`.
+
+    This test exists because every OTHER datetime in this suite is
+    constructed with `tzinfo=UTC`, so reverting the annotation to a plain
+    `datetime` left the whole suite green -- the exact shape of defect this
+    project keeps finding: the tests assert the result on inputs where the
+    constraint under test is never exercised. A naive timestamp is a real
+    hazard here rather than a style preference, because churn windows are
+    compared against `datetime.now(UTC)` and a naive value raises
+    `TypeError` at comparison time, deep inside the analyzer, rather than at
+    the boundary where the bad value entered.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        CommitRecord(sha="a" * 40, timestamp=datetime(2026, 8, 20))  # noqa: DTZ001
+    assert "timestamp" in str(excinfo.value)
+
+
+def test_a_naive_timestamp_is_rejected_on_affected_file_last_modified() -> None:
+    """Same guard, second field: `AffectedFile.last_modified` is the other
+    `AwareDatetime` in this module, and it is `| None`, so a reader could
+    reasonably assume the optionality is the only constraint on it."""
+    with pytest.raises(ValidationError) as excinfo:
+        AffectedFile(
+            path="src/app/models.py",
+            usage_sites=(site("BaseModel", Confidence.HIGH),),
+            last_modified=datetime(2026, 8, 1),  # noqa: DTZ001
+        )
+    assert "last_modified" in str(excinfo.value)
