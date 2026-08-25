@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { ViewStatus } from "./api/types";
 import { AppShell } from "./components/AppShell";
+import { ConfigurationForm } from "./components/ConfigurationForm";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { TopBar } from "./components/TopBar";
 import { WorkflowTimeline } from "./components/WorkflowTimeline";
@@ -15,7 +16,7 @@ export default function App() {
   const [threadId, setThreadId] = useState<string | null>(null);
   const { snapshot, error, reconnecting } = useRunPolling(threadId);
   const { health } = useHealth();
-  const { runs } = useSessionRuns();
+  const { runs, remember } = useSessionRuns();
 
   const status: ViewStatus = threadId === null ? "idle" : (snapshot?.status ?? "queued");
   const view = viewFor(status);
@@ -51,9 +52,19 @@ export default function App() {
             {error.message}
           </p>
         )}
-        <Panel title={view}>
-          <EmptyState>This view arrives in a later task.</EmptyState>
-        </Panel>
+        {view === "configuration" && (
+          <ConfigurationForm
+            onStarted={(run) => {
+              remember(run);
+              setThreadId(run.threadId);
+            }}
+          />
+        )}
+        {view !== "configuration" && (
+          <Panel title={view}>
+            <EmptyState>This view arrives in a later task.</EmptyState>
+          </Panel>
+        )}
       </div>
     </AppShell>
   );
