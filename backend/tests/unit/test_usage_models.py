@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from upgradepilot.api.schemas import UsageView
 from upgradepilot.models.enums import CostBasis, LLMCallKind
 from upgradepilot.models.usage import LLMCall, UsageSummary
 
@@ -261,3 +262,71 @@ def test_the_breakdowns_sum_to_the_totals() -> None:
     assert sum(e.input_tokens for e in summary.by_node) == summary.input_tokens
     assert sum(e.output_tokens for e in summary.by_model) == summary.output_tokens
     assert sum(e.calls for e in summary.by_node) == summary.calls
+
+
+# -- UsageView.by_model: the projection a client can actually see ----------
+#
+# There is no configuration endpoint (CLAUDE.md rule 14), so `by_model` is
+# the only way a client learns which model produced the tokens it is
+# looking at, during a run and not just in the final report.
+
+
+def test_usage_view_projects_by_model_as_name_total_pairs() -> None:
+    """Two different models project into `by_model`, each with its own
+    summed total tokens -- the same tuple-of-pairs shape `by_node` uses."""
+    summary = UsageSummary.from_calls(
+        [
+            a_call("a", model="gpt-4.1-mini", input_tokens=100, output_tokens=20),
+            a_call("b", model="gpt-4.1-mini", input_tokens=50, output_tokens=10),
+            a_call(
+                "c",
+                model="text-embedding-3-small",
+                kind=LLMCallKind.EMBEDDING,
+                input_tokens=7,
+                output_tokens=0,
+            ),
+        ]
+    )
+
+    view = UsageView.of(summary)
+
+    assert dict(view.by_model) == {"gpt-4.1-mini": 180, "text-embedding-3-small": 7}
+
+
+def test_usage_view_by_model_is_empty_tuple_not_none_with_no_calls() -> None:
+    """Absent and empty are different claims. A client checks a length, not
+    a nullability, and `None` would force every consumer to branch first."""
+    view = UsageView.of(UsageSummary.from_calls([]))
+
+    assert view.by_model == ()
+
+
+def test_usage_view_by_model_survives_json_dump() -> None:
+    """The case that matters: the whole point of the field is reaching a
+    client, and a client only ever sees the JSON-mode dump."""
+    summary = UsageSummary.from_calls(
+        [a_call("a", model="gpt-4.1-mini", input_tokens=100, output_tokens=20)]
+    )
+
+    dumped = UsageView.of(summary).model_dump(mode="json")
+
+    assert dumped["by_model"] == [["gpt-4.1-mini", 120]]
+
+
+def test_usage_view_by_model_and_by_node_are_independent_projections() -> None:
+    """One model called from two nodes, and one node calling two models --
+    the two breakdowns must not be read off each other."""
+    summary = UsageSummary.from_calls(
+        [
+            a_call(
+                "a", model="gpt-4.1-mini", node="agentic_rag", input_tokens=100, output_tokens=0
+            ),
+            a_call("b", model="gpt-4.1-mini", node="assess_risk", input_tokens=50, output_tokens=0),
+            a_call("c", model="gpt-4.1", node="agentic_rag", input_tokens=10, output_tokens=0),
+        ]
+    )
+
+    view = UsageView.of(summary)
+
+    assert dict(view.by_model) == {"gpt-4.1-mini": 150, "gpt-4.1": 10}
+    assert dict(view.by_node) == {"agentic_rag": 110, "assess_risk": 50}

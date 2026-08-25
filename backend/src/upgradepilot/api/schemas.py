@@ -144,6 +144,14 @@ class UsageView(BaseModel):
     """`(node, total tokens)` pairs. "Where did the tokens go" is the second
     question a developer asks (spec 9.4)."""
 
+    by_model: tuple[tuple[str, int], ...]
+    """`(model, total tokens)` pairs. READINESS.md 2.5 dropped the model and
+    temperature dropdowns because configuration lives in environment variables
+    (CLAUDE.md rule 14) and there is no configuration endpoint -- so the model
+    actually in use can only be read off calls that happened, not guessed at
+    or hardcoded (DESIGN.md's Telemetry section, "Model in use, from
+    `UsageSummary.by_model`")."""
+
     @classmethod
     def of(cls, usage: UsageSummary) -> "UsageView":
         return cls(
@@ -155,6 +163,7 @@ class UsageView(BaseModel):
             pricing_complete=usage.pricing_complete,
             estimated_cost_usd=usage.estimated_cost_usd,
             by_node=tuple((entry.node, entry.total_tokens) for entry in usage.by_node),
+            by_model=tuple((entry.model, entry.total_tokens) for entry in usage.by_model),
         )
 
 
