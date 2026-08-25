@@ -9,10 +9,14 @@ docstring for the false positive a substring match would cause.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
+from upgradepilot.models.errors import UpgradePilotError
 from upgradepilot.models.repo import LanguageShare
 
 if TYPE_CHECKING:
@@ -110,8 +114,55 @@ def language_shares(workspace: Workspace) -> tuple[LanguageShare, ...]:
     if total == 0:
         return ()
 
-    shares = [
-        LanguageShare(language=language, share=count / total, file_count=count)
-        for language, count in counts.items()
-    ]
-    return tuple(sorted(shares, key=lambda share: (-share.share, share.language)))
+    try:
+        shares = [
+            LanguageShare(language=language, share=count / total, file_count=count)
+            for language, count in counts.items()
+        ]
+    except ValidationError as exc:
+        # Reachable only by breaking the raw-quotient rule above -- rounding
+        # a lone file's share down to 0.0 violates `gt=0.0`. See
+        # `_require_shares_total_one` for why that becomes a recorded error
+        # rather than a bare pydantic failure.
+        raise UpgradePilotError(
+            "This repository's language mix could not be computed reliably.",
+            detail=f"LanguageShare rejected a computed share: {exc}",
+        ) from exc
+
+    return _require_shares_total_one(
+        tuple(sorted(shares, key=lambda share: (-share.share, share.language)))
+    )
+
+
+def _require_shares_total_one(shares: tuple[LanguageShare, ...]) -> tuple[LanguageShare, ...]:
+    """`shares` unchanged, or a recorded error if they do not partition 1.0.
+
+    No repository can reach the error today: the shares are raw `count /
+    total` quotients over at most a handful of languages, so `fsum` is 1.0 to
+    well inside `abs_tol`. This guards a future EDIT, and what it changes is
+    the failure MODE rather than whether there is a failure.
+
+    Rounding the quotients -- which `language_shares`' docstring argues
+    against and which nothing used to catch -- makes three equally common
+    languages total 0.99. Without this check that surfaces as
+    `RepoAnalysis`'s own validator raising "language shares must total 1.0"
+    at assembly time, an unhandled `ValueError` from a model constructor
+    several steps away from the arithmetic that caused it. `UpgradePilotError`
+    is what CLAUDE.md rule 20 means by a recorded outcome instead: a
+    comprehensible user-facing `message`, the arithmetic in `detail`, and
+    Phase 4's node turning it into an `AppError` rather than a stack trace.
+
+    Deliberately not a repair: renormalising a rounded set would satisfy
+    `RepoAnalysis` while reporting shares no count in the repository
+    supports.
+    """
+    total_share = math.fsum(share.share for share in shares)
+    if not math.isclose(total_share, 1.0, abs_tol=1e-6):
+        raise UpgradePilotError(
+            "This repository's language mix could not be computed reliably.",
+            detail=(
+                f"language shares must partition 1.0, got {total_share!r} "
+                f"over {len(shares)} languages"
+            ),
+        )
+    return shares

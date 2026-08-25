@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.repo_builder import build_sample_repo
+from upgradepilot.models.errors import UpgradePilotError
+from upgradepilot.models.repo import LanguageShare
+from upgradepilot.services.analysis import layout
 from upgradepilot.services.analysis.layout import (
+    _require_shares_total_one,
     corresponding_test_paths,
     is_test_path,
     language_shares,
@@ -95,3 +99,96 @@ def test_language_shares_are_empty_for_a_repository_with_no_recognised_files(
     (root / "data").mkdir(parents=True)
     (root / "data" / "blob.bin").write_bytes(b"\x00\x01")
     assert language_shares(Workspace(root)) == ()
+
+
+# -- F9: the "never round" invariant, and what happens if it is broken ------
+
+
+def test_three_equally_common_languages_total_exactly_one(tmp_path: Path) -> None:
+    """The invariant `layout.py` argues at length for and nothing bound.
+    Mutation L4 (`round(count / total, 2)`) survived the whole suite: the
+    sample repo's own distribution rounds to exactly 1.00 by luck
+    (0.64 + 0.18 + 0.09 + 0.09), so the existing shares-total-one test
+    cannot fail on it.
+
+    Three recognised languages with one file each is the shape that can:
+    0.333... rounds to 0.33 and three of those total 0.99, which
+    `RepoAnalysis`'s validator rejects. Equal counts also make the fixture
+    immune to which language the table happens to name first.
+    """
+    root = tmp_path / "thirds"
+    root.mkdir()
+    (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "b.md").write_text("# b\n", encoding="utf-8")
+    (root / "c.ts").write_text("export const c = 1\n", encoding="utf-8")
+
+    shares = language_shares(Workspace(root))
+    assert len(shares) == 3
+    assert {s.file_count for s in shares} == {1}
+    assert math.fsum(s.share for s in shares) == 1.0
+
+
+def test_shares_that_do_not_partition_one_are_a_recorded_error(tmp_path: Path) -> None:
+    """No input can reach this today -- raw quotients always partition 1.0 --
+    so it guards a future edit rather than a repository. What it changes is
+    the FAILURE MODE: rounding used to surface as `RepoAnalysis`'s validator
+    raising "language shares must total 1.0, got 0.99" at assembly time, far
+    from the function that produced them, or as a bare pydantic
+    `ValidationError` on `share=0.0`. Both are technical exceptions with no
+    user-facing message. An `UpgradePilotError` is what CLAUDE.md rule 20
+    means by a recorded outcome: Phase 4's node turns it into an `AppError`
+    with a comprehensible `message` and the arithmetic in `detail`.
+    """
+    rounded = tuple(
+        LanguageShare(language=language, share=0.33, file_count=1)
+        for language in ("Python", "Markdown", "TypeScript")
+    )
+    with pytest.raises(UpgradePilotError) as caught:
+        _require_shares_total_one(rounded)
+    assert "language" in caught.value.message.lower()
+    assert caught.value.detail is not None
+    assert "0.99" in caught.value.detail
+
+
+def test_shares_that_do_partition_one_pass_through_unchanged() -> None:
+    """The negative direction. Without it, a guard that rejected everything
+    would satisfy the test above -- and would take every ordinary repository
+    down with it."""
+    exact = tuple(
+        LanguageShare(language=language, share=0.5, file_count=1)
+        for language in ("Python", "Markdown")
+    )
+    assert _require_shares_total_one(exact) == exact
+
+
+def test_language_shares_routes_its_result_through_the_invariant_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A structural assertion, deliberately, and the reason is worth stating:
+    no repository input can make the guard fire, so its INVOCATION cannot be
+    bound by any black-box test. Verified by mutation -- deleting the call
+    and returning the sorted tuple directly leaves all 727 tests green, which
+    is precisely the "the test asserts a result some other mechanism already
+    forces" pattern this branch keeps producing.
+
+    So this binds the wiring instead: `language_shares` must hand its result
+    to the guard and return what the guard returns. Under a future rounding
+    edit that is the difference between an `UpgradePilotError` naming the
+    arithmetic and `RepoAnalysis`'s validator raising several steps away.
+    """
+    seen: list[tuple[LanguageShare, ...]] = []
+    real = layout._require_shares_total_one
+
+    def spy(shares: tuple[LanguageShare, ...]) -> tuple[LanguageShare, ...]:
+        seen.append(shares)
+        return real(shares)
+
+    monkeypatch.setattr(layout, "_require_shares_total_one", spy)
+
+    root = tmp_path / "wired"
+    root.mkdir()
+    (root / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "b.md").write_text("# b\n", encoding="utf-8")
+
+    result = language_shares(Workspace(root))
+    assert seen == [result]
