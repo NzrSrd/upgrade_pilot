@@ -11,7 +11,7 @@ import pytest
 
 from tests.fixtures.repo_builder import build_sample_repo
 from upgradepilot.services.analysis.candidates import ParsedModule, select_candidates
-from upgradepilot.services.analysis.models_index import build_model_index
+from upgradepilot.services.analysis.models_index import build_model_index, colliding_dotted_modules
 from upgradepilot.services.repo.workspace import Workspace
 
 
@@ -280,6 +280,48 @@ def test_two_files_sharing_one_dotted_module_are_both_indexed() -> None:
         ("app/models.py", "Invoice", 4),
         ("src/app/models.py", "Invoice", 4),
     ]
+
+
+# -- Final fix round 2, item 3: detect (never resolve) the collision --------
+
+
+def test_colliding_dotted_modules_names_both_paths() -> None:
+    """`_dotted_module` strips a leading `src/`, so `src/app/models.py` and
+    `app/models.py` both map to `app.models`. Detection only, per
+    `build_model_index`'s own comment on `dotted_targets`: which of the two
+    a transitive base or a first-party import actually names is genuinely
+    unresolvable statically, so the honest response is to name the
+    collision rather than silently attribute in favour of one.
+    """
+    both = tuple(
+        ParsedModule(file=path, dotted_module="app.models", source="", tree=ast.parse(""))
+        for path in ("src/app/models.py", "app/models.py")
+    )
+    assert colliding_dotted_modules(both) == (
+        ("app.models", ("app/models.py", "src/app/models.py")),
+    )
+
+
+def test_colliding_dotted_modules_is_empty_when_every_dotted_module_is_unique() -> None:
+    """The negative direction: an ordinary tree with no two candidate
+    modules sharing a dotted name reports no collision."""
+    modules = (
+        _module("a.py", "x = 1\n"),
+        _module("sub/b.py", "x = 1\n"),
+    )
+    assert colliding_dotted_modules(modules) == ()
+
+
+def test_colliding_dotted_modules_groups_three_or_more_files_together() -> None:
+    """A three-way collision is reported as one group naming all three
+    files, not as separate pairs."""
+    three = tuple(
+        ParsedModule(file=path, dotted_module="app.models", source="", tree=ast.parse(""))
+        for path in ("c/models.py", "a/models.py", "b/models.py")
+    )
+    assert colliding_dotted_modules(three) == (
+        ("app.models", ("a/models.py", "b/models.py", "c/models.py")),
+    )
 
 
 # -- X8/X2: a shared prefix is neither a shared package nor a shared class --

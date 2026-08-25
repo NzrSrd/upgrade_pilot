@@ -13,6 +13,7 @@ depending on which came first.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 
 from pydantic import Field
 
@@ -137,6 +138,40 @@ def _dotted_base_path(aliases: AliasMap, base: ast.expr) -> str | None:
         return None
     trailing.reverse()
     return ".".join([origin, *trailing]) if trailing else origin
+
+
+def colliding_dotted_modules(
+    modules: tuple[ParsedModule, ...],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Every `dotted_module` shared by two or more `modules`, paired with
+    the files that share it.
+
+    Final fix round 2, item 3 -- the third variant of F2. `dotted_targets`
+    below is keyed on the dotted name because an import names a module,
+    never a file, and that key is genuinely ambiguous when two candidate
+    modules answer to the same dotted name: a transitive base resolving to
+    `app.models.Invoice` cannot say which of `src/app/models.py` and
+    `app/models.py` it actually names. This function does not resolve
+    that -- it only detects it, with a `Counter` over `dotted_module`, so
+    `analyze_repository` can report the collision as a confidence reducer
+    rather than silently attributing in favour of one. It changes nothing
+    about `build_model_index`'s indexing logic below; whether to index
+    both, index neither, or cap the confidence of an ambiguous attribution
+    is a Phase 3 design decision (see `PLANNING.md`'s carry-in).
+
+    Each entry is `(dotted_module, files)`, with `files` sorted; entries are
+    sorted by `dotted_module`, so the result -- and the reducer text built
+    from it -- is deterministic across runs.
+    """
+    counts = Counter(module.dotted_module for module in modules)
+    colliding_names = sorted(dotted for dotted, count in counts.items() if count > 1)
+    if not colliding_names:
+        return ()
+    by_dotted: dict[str, list[str]] = {name: [] for name in colliding_names}
+    for module in modules:
+        if module.dotted_module in by_dotted:
+            by_dotted[module.dotted_module].append(module.file)
+    return tuple((name, tuple(sorted(by_dotted[name]))) for name in colliding_names)
 
 
 def build_model_index(modules: tuple[ParsedModule, ...], *, import_root: str) -> ModelIndex:

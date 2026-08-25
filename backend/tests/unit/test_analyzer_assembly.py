@@ -402,6 +402,42 @@ def test_a_file_colliding_on_dotted_module_gets_no_borrowed_model_definition(
                 assert site.symbol in site.snippet, site
 
 
+# -- Final fix round 2, item 3: report the dotted_module collision itself --
+
+
+def test_a_dotted_module_collision_produces_a_confidence_reducer_naming_both_paths(
+    tmp_path: Path,
+) -> None:
+    """`_dotted_module` strips a leading `src/`, so a root-level
+    `app/models.py` and the fixture's `src/app/models.py` both resolve to
+    `app.models`. `build_model_index`'s `dotted_targets` set cannot say
+    which of the two a transitive base or a first-party import actually
+    names -- see finding 3 of the second fix round -- so the honest
+    response is a confidence reducer naming both paths, not a silent
+    attribution in favour of one.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "app").mkdir()
+    (root / "app" / "models.py").write_text(
+        "from pydantic import BaseModel\n\n\nclass Ticket(BaseModel):\n    id: int\n",
+        encoding="utf-8",
+    )
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    reducer = next((r for r in analysis.confidence_reducers if "app.models" in r), None)
+    assert reducer is not None, analysis.confidence_reducers
+    assert "src/app/models.py" in reducer, reducer
+    assert reducer.count("models.py") == 2, reducer
+
+
+def test_no_dotted_module_collision_means_no_collision_reducer(tmp_path: Path) -> None:
+    """The negative direction, in the same shape as
+    `test_no_gitmodules_means_no_submodule_reducer` above."""
+    analysis = _analysis(tmp_path)
+    assert not any("app.models" in r for r in analysis.confidence_reducers)
+
+
 # -- F3: an unrepresentable filename degrades, it does not crash (rule 20) --
 
 

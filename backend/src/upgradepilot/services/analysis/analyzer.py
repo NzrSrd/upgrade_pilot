@@ -20,7 +20,7 @@ from upgradepilot.services.analysis.churn import ChurnIndex
 from upgradepilot.services.analysis.imports import AliasMap
 from upgradepilot.services.analysis.layout import is_test_path, language_shares
 from upgradepilot.services.analysis.manifests import scan_manifests
-from upgradepilot.services.analysis.models_index import build_model_index
+from upgradepilot.services.analysis.models_index import build_model_index, colliding_dotted_modules
 from upgradepilot.services.analysis.usage import detect_usage
 from upgradepilot.services.analysis.versions import resolve_version
 from upgradepilot.services.repo.workspace import Workspace
@@ -233,6 +233,32 @@ def analyze_repository(
             f"disproven. Modules that use only the deepest links of that "
             f"chain may not have been examined, and usage in them may be "
             f"missing from this report."
+        )
+
+    # Final fix round 2, item 3: two candidate modules sharing one
+    # `dotted_module` (`src/app/models.py` and `app/models.py` both give
+    # `app.models`) make `build_model_index`'s `dotted_targets` genuinely
+    # ambiguous -- an import or a transitive base naming `app.models.X`
+    # cannot say which of the two files it means. Detected here, not
+    # resolved: the ambiguity is not something a static rule can settle
+    # (see `models_index.colliding_dotted_modules` and `build_model_index`'s
+    # own comment on `dotted_targets`), so the honest response is to name
+    # the collision rather than silently attribute in favour of one file.
+    # Whether to index both, index neither, or cap the confidence of an
+    # ambiguous attribution is a Phase 3 design decision -- see
+    # `PLANNING.md`'s carry-in -- and this reducer is what makes the
+    # problem visible until that decision is made.
+    collisions = colliding_dotted_modules(candidates.modules)
+    if collisions:
+        groups_text = "; ".join(f"{dotted!r} ({', '.join(files)})" for dotted, files in collisions)
+        confidence_reducers.append(
+            "The following dotted module names (computed by stripping a "
+            "leading `src/`) are shared by more than one file in this "
+            "repository, so an import or a first-party base class naming "
+            "one of them cannot be attributed to a single file with "
+            f"certainty: {groups_text}. Model attribution within these "
+            "files may be wrong even where the file, line and snippet "
+            "cited are correct."
         )
 
     # RULING 17: `resolve_version` returns None -- not raises -- when the
