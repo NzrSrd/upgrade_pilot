@@ -22,9 +22,16 @@ from upgradepilot.services.repo.workspace import Workspace
         "src/app/test_thing.py",
         "src/app/thing_test.py",
         "test/test_a.py",
+        "tests/models.py",
     ],
 )
 def test_test_paths_are_recognised(path: str) -> None:
+    """`tests/models.py` is the case only the directory-segment branch can
+    classify: it sits inside a `tests/` directory but its filename matches
+    neither the `test_` prefix nor the `_test.py` suffix convention. Every
+    other case above already satisfies the filename check on its own, so
+    without this one the directory branch could be deleted entirely and the
+    suite would not notice (Ruling 53)."""
     assert is_test_path(path) is True
 
 
@@ -54,6 +61,16 @@ def test_a_source_file_finds_its_conventional_test() -> None:
 
 def test_a_source_file_with_no_test_finds_nothing() -> None:
     assert corresponding_test_paths("src/app/util.py", ("tests/test_models.py",)) == ()
+
+
+def test_a_near_miss_filename_is_not_mistaken_for_the_conventional_test() -> None:
+    """`tests/test_models_extra.py` contains "models" as a substring of its
+    stem, but it is not `test_models.py` or `models_test.py` -- the only two
+    filenames the convention recognises. Swapping the exact-filename check
+    for a substring check passes every other test here and still returns
+    this near miss, which is exactly the false positive that would let an
+    unrelated test file stand in for real coverage (Ruling 54)."""
+    assert corresponding_test_paths("src/app/models.py", ("tests/test_models_extra.py",)) == ()
 
 
 def test_language_shares_total_one_and_are_sorted_by_descending_share(tmp_path: Path) -> None:

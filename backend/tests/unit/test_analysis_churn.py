@@ -5,9 +5,12 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from tests.fixtures.repo_builder import build_sample_repo
 from upgradepilot.models.repo import CommitRecord
-from upgradepilot.services.analysis.churn import ChurnIndex
+from upgradepilot.services.analysis.churn import ChurnEntry, ChurnIndex
 from upgradepilot.services.repo.workspace import Workspace
 
 
@@ -76,6 +79,18 @@ def test_no_records_means_history_was_not_available() -> None:
     index = ChurnIndex.from_records(())
     assert index.available is False
     assert index.for_path("anything.py") is None
+
+
+def test_a_churn_entry_cannot_be_constructed_with_zero_commits() -> None:
+    """`ChurnEntry.commit_count` is `Field(ge=1)`: an entry exists only
+    because at least one commit touched the path, so a zero-count entry
+    would be a record with no evidence behind it (CLAUDE.md rule 1)."""
+    with pytest.raises(ValidationError):
+        ChurnEntry(
+            path="src/app/models.py",
+            commit_count=0,
+            last_modified=datetime(2026, 8, 1, tzinfo=UTC),
+        )
 
 
 def test_churn_over_the_sample_repo_sees_the_second_commit(tmp_path: Path) -> None:
