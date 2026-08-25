@@ -214,3 +214,78 @@ def test_bare_declaration_alongside_real_version_returns_real_version() -> None:
     assert detected is not None
     assert detected.value == "1.10.13"
     assert detected.confidence is VersionConfidence.EXACT
+
+
+# -- F4: a declaration carrying nothing must not outrank one that does ------
+
+
+def test_a_bare_declaration_never_outranks_one_that_carries_a_specifier() -> None:
+    """`pydantic` bare in `requirements.txt` (kind 3) alongside
+    `pydantic>=1.10,<2` in `pyproject.toml` (kind 4). Both are RANGE, so the
+    confidence tier ties and kind order alone decided -- handing `min()` the
+    declaration that says nothing, and making `resolve_version` return None
+    while the same `RepoAnalysis` carried `declared_specifier='>=1.10,<2'`.
+    The product contradicted itself inside one object.
+
+    `_rank`'s first term is now "does this declaration actually carry a
+    value", ahead of both confidence and kind: a statement about the version
+    always beats the absence of one, whatever file it came from.
+    """
+    detected = resolve_version(
+        (
+            _declaration(
+                ManifestKind.REQUIREMENTS,
+                version=None,
+                specifier=None,
+                confidence=VersionConfidence.RANGE,
+                path="requirements.txt",
+            ),
+            _declaration(
+                ManifestKind.PYPROJECT,
+                version=None,
+                specifier=">=1.10,<2",
+                confidence=VersionConfidence.RANGE,
+                path="pyproject.toml",
+            ),
+        ),
+        canonical_name="pydantic",
+    )
+    assert detected is not None
+    assert detected.value == ">=1.10,<2"
+    assert detected.source_manifest.path == "pyproject.toml"
+
+
+def test_an_exact_pin_outranks_a_range_of_the_same_kind_whatever_the_path() -> None:
+    """Binds `_rank`'s confidence tier, which nothing did before: the review
+    called it provably inert on the grounds that lockfiles are always EXACT
+    and already rank ahead by kind. That argument covers lock-versus-human
+    only. Two `requirements*.txt` files are the case it misses -- kind ties,
+    so the tier is what decides, and the path tie-break below it would
+    otherwise pick the RANGE one.
+
+    `requirements-a.txt` sorts BEFORE `requirements-b.txt`, so the EXACT
+    declaration is deliberately the alphabetically later of the two: without
+    the tier, the path tie-break selects `-a` and this test fails.
+    """
+    detected = resolve_version(
+        (
+            _declaration(
+                ManifestKind.REQUIREMENTS,
+                specifier=">=1.10,<2",
+                confidence=VersionConfidence.RANGE,
+                path="requirements-a.txt",
+            ),
+            _declaration(
+                ManifestKind.REQUIREMENTS,
+                version="1.10.13",
+                specifier="==1.10.13",
+                confidence=VersionConfidence.EXACT,
+                path="requirements-b.txt",
+            ),
+        ),
+        canonical_name="pydantic",
+    )
+    assert detected is not None
+    assert detected.value == "1.10.13"
+    assert detected.source_manifest.path == "requirements-b.txt"
+    assert detected.confidence is VersionConfidence.EXACT

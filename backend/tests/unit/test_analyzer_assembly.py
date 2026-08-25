@@ -444,3 +444,29 @@ def test_an_ordinary_tree_gets_no_uncitable_reducer(tmp_path: Path) -> None:
     `test_no_gitmodules_means_no_submodule_reducer` above."""
     analysis = _analysis(tmp_path)
     assert not any("cited" in r for r in analysis.confidence_reducers)
+
+
+# -- F4: the analysis must not contradict itself about the current version --
+
+
+def test_a_bare_requirement_does_not_hide_a_specifier_declared_elsewhere(
+    tmp_path: Path,
+) -> None:
+    """The fixture declares `pydantic>=1.10,<2` in `pyproject.toml`. Make
+    `requirements.txt` declare it bare, and `_rank` used to prefer the bare
+    one on kind order alone -- so `detected_version` was None and a reducer
+    said the version "could not be determined", inside the same
+    `RepoAnalysis` whose `pyproject.toml` manifest carried
+    `declared_specifier='>=1.10,<2'`. One object, two contradictory claims.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "requirements.txt").write_text("pydantic\n", encoding="utf-8")
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    pyproject = next(m for m in analysis.manifests if m.path == "pyproject.toml")
+    assert pyproject.declared_specifier == ">=1.10,<2"
+    assert analysis.detected_version is not None
+    assert analysis.detected_version.value == ">=1.10,<2"
+    assert analysis.detected_version.source_manifest.path == "pyproject.toml"
+    assert not any("could not be determined" in r for r in analysis.confidence_reducers)
