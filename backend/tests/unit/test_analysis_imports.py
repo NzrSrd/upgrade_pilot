@@ -76,6 +76,55 @@ def test_star_imports_are_recorded_but_bind_no_name() -> None:
     assert aliases.has_star_import_from("pydantic") is True
 
 
+def test_has_star_import_from_is_false_for_a_root_that_was_not_starred() -> None:
+    """A hardcoded `return True` (ignoring `root` entirely) would pass every
+    test above -- none of them asserts a negative. This is that negative
+    case: the same `from pydantic import *` fixture must not answer True for
+    an unrelated root.
+    """
+    aliases = _map("from pydantic import *")
+    assert aliases.has_star_import_from("typing") is False
+
+
+def test_has_star_import_from_matches_the_first_dotted_segment_only() -> None:
+    """`pydantic_settings` is a distinct top-level package from `pydantic` --
+    sharing a string prefix must not make `from pydantic_settings import *`
+    register as a star import of `pydantic`. A substring or prefix match
+    would false-positive here; only an exact first-segment match may pass.
+    """
+    aliases = _map("from pydantic_settings import *")
+    assert aliases.has_star_import_from("pydantic") is False
+    assert aliases.has_star_import_from("pydantic_settings") is True
+
+
+def test_relative_star_import_is_recorded_as_both_relative_and_star() -> None:
+    """`from . import *` is two true facts at once, not one or the other:
+    it is relative (the origin cannot be resolved without knowing where this
+    file sits in the package tree) AND it is a star import (the bound names
+    cannot be enumerated without importing the target). A Task 9 confidence
+    reducer keyed on `is_star` alone must still see this shape.
+
+    `star_module` stays None -- resolving the relative import to populate it
+    would fabricate a dotted path the source never states, and
+    `has_star_import_from` correctly keeps answering False: which module was
+    starred is genuinely unknown here.
+    """
+    aliases = _map("from . import *")
+    entry = next(e for e in aliases.entries if e.local == "*")
+    assert entry.is_relative is True
+    assert entry.is_star is True
+    assert entry.star_module is None
+    assert aliases.has_star_import_from("pydantic") is False
+
+
+def test_is_module_distinguishes_import_from_from_import() -> None:
+    """`import pydantic` binds a module (`pydantic.BaseModel` is an
+    attribute access on it); `from pydantic import BaseModel` binds a name
+    directly. Task 7 dispatches on this, so it must actually be set."""
+    assert _map("import pydantic").entries[0].is_module is True
+    assert _map("from pydantic import BaseModel").entries[0].is_module is False
+
+
 def test_a_later_import_shadows_an_earlier_one() -> None:
     """Real files rebind names, usually in a `try/except ImportError` block.
     Python's own semantics are last-wins at module level; anything else

@@ -5,6 +5,11 @@ any other -- Python's own scoping would shadow it, and modelling that
 correctly needs a scope tree this phase does not build. The consequence is
 over-binding in a rare case, which can only produce a finding at the import's
 own line, and that line is real.
+
+`from __future__ import annotations` is recorded like any other from-import
+(binding `annotations` -> `__future__.annotations`) rather than special-cased
+away. This is harmless: `__future__` can never be a dependency root a caller
+would query `has_star_import_from` or `root_of` for.
 """
 
 from __future__ import annotations
@@ -75,6 +80,23 @@ class AliasMap(HonestModel):
                     # an absolute dotted path needs to know where this file
                     # sits in the package tree, which this module deliberately
                     # does not take as an argument. Recorded, never guessed.
+                    #
+                    # This check runs BEFORE the star check below, so
+                    # `from . import *` lands here too -- and it is checked
+                    # for `alias.name == "*"` regardless, because a relative
+                    # star import is BOTH things at once, not one or the
+                    # other: it is relative (the origin cannot be resolved
+                    # without knowing where this file sits in the package
+                    # tree) AND it is a star import (the bound names cannot
+                    # be enumerated without importing the target). Recording
+                    # only `is_relative` would hide it from a confidence
+                    # reducer that Task 9 keys on `is_star`; a caller must
+                    # see both facts to see the full picture. `star_module`
+                    # stays None even so -- resolving the relative import to
+                    # populate it would fabricate a dotted path the source
+                    # never states (CLAUDE.md rule 1), and `has_star_import_
+                    # from` correctly keeps returning False for it: we
+                    # genuinely do not know which module was starred.
                     for alias in node.names:
                         local = alias.asname or alias.name
                         entries.append(
@@ -85,6 +107,7 @@ class AliasMap(HonestModel):
                                 column=node.col_offset,
                                 is_module=False,
                                 is_relative=True,
+                                is_star=alias.name == "*",
                             )
                         )
                     continue
