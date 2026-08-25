@@ -117,12 +117,21 @@ def test_relative_star_import_is_recorded_as_both_relative_and_star() -> None:
     assert aliases.has_star_import_from("pydantic") is False
 
 
-def test_is_module_distinguishes_import_from_from_import() -> None:
-    """`import pydantic` binds a module (`pydantic.BaseModel` is an
-    attribute access on it); `from pydantic import BaseModel` binds a name
-    directly. Task 7 dispatches on this, so it must actually be set."""
+def test_is_module_records_the_statement_form_not_whether_the_name_is_a_module() -> None:
+    """`is_module` says which statement bound the name, NOT whether the name
+    turns out to denote a module -- and the two genuinely differ: `from .
+    import models` binds a module and records False.
+
+    Its field docstring used to claim "Task 7 needs the distinction", which
+    was false (nothing reads it), and the ledger's orphan audit recorded it
+    as consumed by `usage.py`, which was also false. This test pins the
+    meaning the corrected docstring states, so a future consumer that reads
+    it as a module-ness flag is contradicted by a test rather than by prose:
+    the third assertion below is the one that fails under that reading.
+    """
     assert _map("import pydantic").entries[0].is_module is True
     assert _map("from pydantic import BaseModel").entries[0].is_module is False
+    assert _map("from . import models").entries[0].is_module is False
 
 
 def test_a_later_import_shadows_an_earlier_one() -> None:

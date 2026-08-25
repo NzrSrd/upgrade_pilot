@@ -31,9 +31,26 @@ class AliasEntry(HonestModel):
     line: int = Field(ge=1)
     column: int = Field(ge=0)
     is_module: bool
-    """True for `import x`, False for `from x import y`. Task 7 needs the
-    distinction: `pydantic.BaseModel` is an attribute access on a module,
-    while a bare `BaseModel` is a name."""
+    """Which STATEMENT FORM bound this name: True for `import x`, False for
+    `from x import y`. Not "the bound name denotes a module" -- `from .
+    import models` binds a module and records False, because the form is
+    what is being recorded, not what the name turns out to be.
+
+    Read by no production code today, and the earlier claim here that "Task
+    7 needs the distinction" was false: `usage.py`'s `_receiver_is_model`
+    deliberately does not consult it, because a module receiver is normally
+    excluded by the SHAPE of its origin instead (see that docstring).
+    Recorded like `is_relative` -- an honest note of what the parser saw --
+    rather than deleted, for one specific reason: `_receiver_is_model` has a
+    known residue where the shape argument does not hold (a package whose
+    `__init__.py` defines a class named exactly like one of its submodules),
+    and the fix for it needs precisely this field, reached through a new
+    `AliasMap` accessor rather than through `origin_of`, which returns a
+    string and loses which entry won. Deleting it now would be churn against
+    a recorded follow-up.
+
+    Do not consume it as a proxy for module-ness without first handling the
+    relative-import case above."""
     is_relative: bool = False
     is_star: bool = False
     star_module: str | None = None

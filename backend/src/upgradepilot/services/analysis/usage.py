@@ -447,12 +447,26 @@ class _UsageVisitor(ast.NodeVisitor):
         that might not be, and MEDIUM is what the report presents as a
         likely break. The plan's Deviation 1 records the reasoning.
 
-        A module receiver (`json.dict()`) is excluded by construction, not by
-        a special case: `AliasMap.origin_of("json")` resolves to `"json"`
-        for `import json`, and `"json"` never equals `f"{dotted_module}.
-        {name}"` for any indexed class (that string always has an internal
-        dot), so `is_model_class` returns False without needing to know
-        `is_module` at all.
+        A module receiver (`json.dict()`) is normally excluded by the SHAPE
+        of its origin rather than by a special case:
+        `AliasMap.origin_of("json")` resolves to `"json"` for `import json`,
+        and `"json"` never equals `f"{dotted_module}.{name}"` for any
+        indexed class (that string always has an internal dot), so
+        `is_model_class` returns False without this function needing to know
+        whether the name was bound by an `import x` statement.
+
+        "Normally", stated honestly, because the shape argument has one
+        residue -- verified by execution, not reasoned about: `import a.b`
+        binds `a` with origin `"a.b"`, and if the package `a`'s `__init__.py`
+        happens to define `class b(BaseModel)` then `a.b` IS an indexed
+        class's dotted path, so `a.dict()` grades MEDIUM on a receiver that
+        is a module. It needs a class named exactly like a sibling submodule,
+        so it is contrived rather than realistic, and the cost is a confidence
+        grade rather than a wrong citation -- the file, line and symbol
+        reported are still the real ones. Carried to Phase 3 in
+        `PLANNING.md`: the fix consumes `AliasEntry.is_module` through a new
+        `AliasMap` accessor, and choosing to add that rule reopens Ruling
+        1279's deliberate decision not to special-case a module receiver.
         """
         if not isinstance(receiver, ast.Name):
             return False
