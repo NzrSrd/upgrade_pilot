@@ -161,3 +161,65 @@ def test_a_file_that_is_not_utf8_is_skipped_with_a_decode_reason(tmp_path: Path)
     skipped = {s.path: s.reason for s in scan.skipped}
     assert "src/app/latin.py" in skipped
     assert "decode" in skipped["src/app/latin.py"].lower()
+
+
+# -- Phase B's own skip path (PLANNING.md's "EARLY Phase 3 work") -----------
+
+
+def test_a_file_reachable_only_through_phase_b_is_skipped_not_raised(
+    tmp_path: Path,
+) -> None:
+    """Phase B parses files phase A never looked inside, so it owns its own
+    unparseable case -- and that case is an honesty channel, not a grading
+    one.
+
+    `EXPECTED_UNPARSEABLE` proves the same thing for phase A only. Phase B
+    reaches a strictly different set of files: those that never name the
+    dependency and are pulled in solely because they mention a discovered
+    model class. If `expand_candidates` let a `SyntaxError` escape, the whole
+    analysis would die on a file the user never asked about; if it dropped
+    the file silently, `skipped_ratio` would under-count, `analysis_coverage`
+    would report better coverage than was achieved, and the confidence
+    ceiling that rides on it would never engage. Either way the report claims
+    more than it looked at.
+
+    The fixture file below names `Customer` and never names `pydantic`, so
+    phase A cannot see it -- asserted, not assumed, because a phase-A hit
+    would make this test pass while testing nothing about phase B.
+    """
+    root = build_sample_repo(tmp_path)
+    orphan = root / "src" / "app" / "unparseable_consumer.py"
+    orphan.write_text("def use(c: Customer) ->\n", encoding="utf-8")
+
+    workspace = Workspace(root)
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    assert "src/app/unparseable_consumer.py" not in {s.path for s in phase_a.skipped}, (
+        "phase A reached it -- this test is not exercising phase B"
+    )
+    assert "src/app/unparseable_consumer.py" not in {m.file for m in phase_a.modules}
+
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer"}))
+
+    skipped = {s.path: s.reason for s in expanded.skipped}
+    assert "src/app/unparseable_consumer.py" in skipped, expanded.skipped
+    assert "syntax" in skipped["src/app/unparseable_consumer.py"].lower()
+    assert "src/app/unparseable_consumer.py" not in {m.file for m in expanded.modules}
+
+
+def test_phase_b_keeps_phase_a_skips_alongside_its_own(tmp_path: Path) -> None:
+    """The companion direction. Phase B rebuilds the skipped tuple from
+    phase A's, so a bug that replaced rather than extended it would drop
+    `broken.py` -- lowering `skipped_ratio` and, again, claiming coverage
+    that was never achieved."""
+    root = build_sample_repo(tmp_path)
+    (root / "src" / "app" / "unparseable_consumer.py").write_text(
+        "def use(c: Customer) ->\n", encoding="utf-8"
+    )
+
+    workspace = Workspace(root)
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer"}))
+
+    assert {s.path for s in expanded.skipped} == {s.path for s in phase_a.skipped} | {
+        "src/app/unparseable_consumer.py"
+    }

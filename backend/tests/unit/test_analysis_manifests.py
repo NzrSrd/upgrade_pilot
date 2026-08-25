@@ -6,7 +6,9 @@ import pytest
 
 from tests.fixtures.repo_builder import build_sample_repo
 from upgradepilot.models.enums import ManifestKind, VersionConfidence
+from upgradepilot.models.inputs import DependencySpec
 from upgradepilot.models.repo import Manifest
+from upgradepilot.services.analysis.analyzer import analyze_repository
 from upgradepilot.services.analysis.manifests import (
     classify_manifest,
     parse_declaration,
@@ -324,3 +326,59 @@ def test_scan_manifests_does_not_mark_a_merely_irrelevant_manifest_as_unreadable
     assert scan.unreadable == ()
     assert scan.declarations == ()
     assert tuple(m.path for m in scan.manifests) == ("pyproject.toml", "requirements.txt")
+
+
+def test_scan_manifests_records_a_manifest_that_does_not_decode_as_unreadable(
+    tmp_path: Path,
+) -> None:
+    """The sibling branch to the corrupt-TOML case above, and a genuinely
+    different one: this manifest never becomes text at all.
+
+    `_parse` is reached only once `workspace.read_text` has returned a
+    string. A manifest whose bytes are not UTF-8 -- a `pyproject.toml`
+    saved as latin-1, the ordinary way this happens -- raises
+    `UnicodeDecodeError` out of `read_text` and never reaches the TOML
+    decoder, so the `_Unparseable` branch the test above pins cannot
+    speak for it. Without its own branch the exception would either
+    escape and kill the analysis, or be swallowed into "no declaration
+    here", which is the specific false claim `unreadable` exists to
+    prevent: a repository that pins pydantic reading as one that does not
+    mention it.
+
+    `unreadable` feeds `analyze_repository`'s confidence reducer, so a
+    silent failure here does not merely lose a declaration -- it removes
+    the reader's only signal that anything was lost.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "pyproject.toml").write_bytes(
+        "[project]\nname = 'caf\N{LATIN SMALL LETTER E WITH ACUTE}'\n".encode("latin-1")
+    )
+
+    scan = scan_manifests(Workspace(root), canonical_name="pydantic")
+
+    assert scan.unreadable == ("pyproject.toml",)
+    assert "pyproject.toml" in {m.path for m in scan.manifests}, (
+        "an unreadable manifest must still be listed -- otherwise it vanishes entirely"
+    )
+    assert {d.manifest.path for d in scan.declarations} == {"requirements.txt"}
+
+
+def test_an_unreadable_manifest_becomes_a_confidence_reducer(tmp_path: Path) -> None:
+    """End of the same channel: the undecodable manifest reaches the report.
+
+    `test_scan_manifests_records_a_manifest_that_does_not_decode_as_unreadable`
+    proves `scan.unreadable` is populated; this proves the analyzer spends
+    it. The two together are what stop an unread manifest from being a fact
+    known to the scanner and invisible to the reader.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "pyproject.toml").write_bytes(
+        "[project]\nname = 'caf\N{LATIN SMALL LETTER E WITH ACUTE}'\n".encode("latin-1")
+    )
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+
+    analysis = analyze_repository(Workspace(root), spec)
+
+    assert any("pyproject.toml" in reducer for reducer in analysis.confidence_reducers), (
+        analysis.confidence_reducers
+    )
