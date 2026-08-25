@@ -28,8 +28,6 @@ a repository holding two of them resolve identically on every run rather
 than by dict iteration order.
 """
 
-_HUMAN_AUTHORED = frozenset({ManifestKind.PYPROJECT, ManifestKind.REQUIREMENTS})
-
 
 def _rank(declaration: Declaration) -> tuple[int, int, str]:
     """Sort key: confidence tier, then kind, then path.
@@ -44,8 +42,12 @@ def _rank(declaration: Declaration) -> tuple[int, int, str]:
 
 def resolve_version(
     declarations: tuple[Declaration, ...], *, canonical_name: str
-) -> DetectedVersion:
+) -> DetectedVersion | None:
     """Pick the most precise true statement about the installed version.
+
+    Returns None when the best declaration specifies neither a version nor a
+    specifier (e.g., dependencies = ["pydantic"] in pyproject.toml with no
+    version constraint). Task 9 will record this as a confidence reducer.
 
     Raises DependencyNotFoundError when nothing declares it -- spec 7.1's
     "never a guess". The caller (analyzer.py) does not catch it: a run for a
@@ -69,16 +71,12 @@ def resolve_version(
     best = min(declarations, key=_rank)
     role = (
         DependencyRole.DIRECT
-        if any(d.manifest.kind in _HUMAN_AUTHORED for d in declarations)
+        if any(not d.is_lockfile for d in declarations)
         else DependencyRole.TRANSITIVE_ONLY
     )
     value = best.version if best.version is not None else best.specifier
-    if value is None:  # pragma: no cover -- a Declaration always carries one
-        raise DependencyNotFoundError(
-            f"{canonical_name!r} is declared in {best.manifest.path} with neither a "
-            f"version nor a specifier.",
-            detail=f"manifest={best.manifest.path} kind={best.manifest.kind.value}",
-        )
+    if value is None:
+        return None
 
     return DetectedVersion(
         value=value,

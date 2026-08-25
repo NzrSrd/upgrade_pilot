@@ -20,9 +20,12 @@ def _declaration(
     specifier=None,
     confidence=VersionConfidence.EXACT,
     is_lockfile=False,
+    path: str | None = None,
 ) -> Declaration:
+    if path is None:
+        path = f"{kind.value}-manifest"
     return Declaration(
-        manifest=Manifest(path=f"{kind.value}-manifest", kind=kind, declared_specifier=specifier),
+        manifest=Manifest(path=path, kind=kind, declared_specifier=specifier),
         raw_name="pydantic",
         version=version,
         specifier=specifier,
@@ -136,3 +139,68 @@ def test_two_lockfiles_disagreeing_resolve_deterministically() -> None:
     )
     assert forward.value == backward.value
     assert forward.source_manifest.kind is backward.source_manifest.kind
+
+
+def test_same_kind_different_paths_resolve_by_path() -> None:
+    """Two manifests of the same kind with same confidence tier but differing
+    in path must resolve deterministically by alphabetical path order. This
+    test exercises the path tie-break in _rank()."""
+    forward = resolve_version(
+        (
+            _declaration(
+                ManifestKind.REQUIREMENTS,
+                version="1.10.13",
+                path="requirements-a.txt",
+            ),
+            _declaration(
+                ManifestKind.REQUIREMENTS,
+                version="1.9.0",
+                path="requirements-b.txt",
+            ),
+        ),
+        canonical_name="pydantic",
+    )
+    backward = resolve_version(
+        (
+            _declaration(
+                ManifestKind.REQUIREMENTS,
+                version="1.9.0",
+                path="requirements-b.txt",
+            ),
+            _declaration(
+                ManifestKind.REQUIREMENTS,
+                version="1.10.13",
+                path="requirements-a.txt",
+            ),
+        ),
+        canonical_name="pydantic",
+    )
+    # Both orders must select the same manifest (by path) and thus same version
+    assert forward.source_manifest.path == "requirements-a.txt"
+    assert backward.source_manifest.path == "requirements-a.txt"
+    assert forward.value == "1.10.13"
+    assert backward.value == "1.10.13"
+
+
+def test_bare_declaration_returns_none() -> None:
+    """A dependency declared by name with no version or specifier (common in
+    pyproject.toml: dependencies = ["pydantic"]) returns None rather than
+    raising. Task 9 will record this as a confidence reducer."""
+    result = resolve_version(
+        (_declaration(ManifestKind.PYPROJECT, version=None, specifier=None),),
+        canonical_name="pydantic",
+    )
+    assert result is None
+
+
+def test_bare_declaration_alongside_real_version_returns_real_version() -> None:
+    """A bare declaration does not override one that specifies a version."""
+    detected = resolve_version(
+        (
+            _declaration(ManifestKind.PYPROJECT, version=None, specifier=None),
+            _declaration(ManifestKind.REQUIREMENTS, version="1.10.13", specifier="==1.10.13"),
+        ),
+        canonical_name="pydantic",
+    )
+    assert detected.value == "1.10.13"
+    assert detected.confidence is VersionConfidence.EXACT
