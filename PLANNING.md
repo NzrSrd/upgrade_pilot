@@ -217,7 +217,7 @@ unilaterally, because the code matches the spec and this is a spec decision.
       `$contains` join while a migration guide naming none can never be reached by
       that join at all.
 - [ ] Corpus authored one breaking change per document — real Pydantic v1→v2 primary sources, plus a small number of authored ADRs and upgrade reports representing internal engineering guidance
-- [ ] Ingestion: parse frontmatter, chunk, embed, persist — scalar metadata for the coarse fields, `affected_symbols` as a real list
+- [ ] Ingestion: parse frontmatter, chunk, embed, persist — scalar metadata for the coarse fields, `affected_symbols` as a real list. *Chunking done* (`services/knowledge/chunking.py`, `tests/knowledge/test_chunking.py`, 8 tests): boundaries fall between paragraphs and never inside a fenced code block, `max_chars` is a target rather than a guarantee so an over-budget paragraph is emitted whole, and `chunk_id` is `{source_id}#chunk-{ordinal}` so re-ingesting unchanged content re-mints the same citation keys. The no-text-is-lost and fence invariants were each watched failing under mutation; the fence test was **vacuous on first writing** — its fixture had no blank lines inside the block, so it passed with the fence tracking deleted — and the fixture was corrected until the mutation killed it. Embedding and persistence still outstanding.
 - [ ] `affected_symbols` stored as a **list-valued** metadata field, filtered in the database with `$contains` (exact-element) and never with `$in`
 - [ ] Retrieval with scalar metadata filters for coarse narrowing, plus the `$contains` symbol join
 - [ ] Symbol coverage annotation over retrieved candidates, and the deterministic sufficiency gate
