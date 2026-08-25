@@ -26,6 +26,27 @@ dependencies = [
     "pydantic==2.13.4",
     "pydantic-settings==2.15.0",
     "tiktoken==0.14.0",
+    # CLAUDE.md rule 12 -- the stated reason. Phase 3's corpus is authored as
+    # Markdown with YAML frontmatter (spec §7.2), and the standard library has
+    # no YAML parser. The alternative was a hand-rolled one, rejected: the
+    # frontmatter this project actually writes needs quoted scalars whose
+    # values contain `:` (`title: "@validator replaced by @field_validator"`),
+    # flow sequences (`affected_symbols: [validator, root_validator]`) and
+    # dates, which is a real parser, and a parser that mis-reads a corpus
+    # document mis-attributes a citation.
+    #
+    # Already resolved in the environment as a transitive of chromadb and
+    # langchain-core, so this pin adds no install. It is declared anyway
+    # because `corpus.py` imports it directly, and depending on someone
+    # else's transitive is exactly the kind of unstated assumption that
+    # breaks on an unrelated upgrade.
+    #
+    # `yaml.safe_load` only -- never `load`. Corpus documents are checked in
+    # rather than user-supplied, so this is defence in depth, not a boundary.
+    # The implicit-typing hazard that ships with YAML is handled where it
+    # matters instead: `CorpusDocument` refuses an unquoted `to_version: 2.0`
+    # rather than coercing the float back to a string nobody wrote.
+    "pyyaml==6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +57,10 @@ dev = [
     "httpx==0.28.1",
     "ruff==0.16.4",
     "mypy==2.3.1",
+    # PyYAML ships no inline types and no `py.typed`, so `import yaml` is an
+    # `import-untyped` error under strict mypy. Stubs only -- no runtime
+    # effect, which is why it is a dev dependency rather than a runtime one.
+    "types-PyYAML==6.0.12.20260815",
 ]
 
 [tool.setuptools.packages.find]

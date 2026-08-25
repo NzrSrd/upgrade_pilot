@@ -196,10 +196,26 @@ unilaterally, because the code matches the spec and this is a spec decision.
 - [ ] *[review, found while resolving `AliasEntry.is_module`]* `_receiver_is_model`'s "a module receiver is excluded by the shape of its origin" argument has one residue, reproduced by execution: `import a.b` binds `a` with origin `a.b`, so if package `a`'s `__init__.py` defines `class b(BaseModel)` then `a.dict()` grades MEDIUM on a receiver that is a module. Contrived — it needs a class named exactly like a sibling submodule — and the cost is a confidence grade, never a wrong citation. The fix consumes `AliasEntry.is_module` through a new `AliasMap` accessor (`origin_of` returns a string and loses which entry won), and adopting it reopens ruling 1279's deliberate decision not to special-case a module receiver. Not taken unilaterally for that reason.
 - [ ] `broken.py`'s fixture comment names the dependency ("`# pydantic: ...`"), which is structurally the same accident phase B exists to close for `service.py` — acceptable here only because `broken.py` fails loudly (a test goes red immediately) if that comment is removed, unlike `service.py`'s docstring, which failed silently. Worth a real first-party consumer fixture that reaches `broken.py` only through phase B, the way `consumer.py` does for `service.py`, if the distinction ever needs to be demonstrated rather than merely argued.
 - [ ] *[final fix round 2, finding 3]* `models_index.build_model_index`'s `dotted_targets` set is keyed on `dotted_module`, which is not injective (`src/app/models.py` and `app/models.py` both give `app.models`), so a transitive base or a first-party import naming that dotted path genuinely cannot say which of the colliding files it means. `models_index.colliding_dotted_modules` now detects the collision and `analyze_repository` reports it as a confidence reducer, but the ambiguity itself is deliberately NOT resolved by this fix — only recorded. Choosing between indexing both colliding files, indexing neither, or capping the confidence of an attribution that lands in a collision is a design decision with real trade-offs in both directions (indexing both over-reports; indexing neither under-reports; capping confidence changes the grading scheme), and belongs to Phase 3, with the reducer already in place to make the problem visible in the meantime.
+- [ ] *[final fix round 2, finding 4]* `layout.py:122-127` — F9's new `except ValidationError` arm (guarding `LanguageShare` construction inside `language_shares`) is unexecuted on any raw-quotient input: each `count / total` quotient is a correctly-rounded double and `math.fsum`'s accumulated error over any realistic language count is ~1e-16, six orders of magnitude inside `_require_shares_total_one`'s `abs_tol=1e-6`, so `gt=0.0` can never fire on a value that reaches this branch. Kept anyway for CLAUDE.md rule 20's defensive breadth, the same precedent as `candidates._parse`'s `OSError`/`ValueError` arms — if `LanguageShare`'s validation ever tightened, this arm is what turns that into a recorded `UpgradePilotError` rather than an unhandled `ValidationError` several steps from the arithmetic that caused it. Missing from this round's own carry-in block when F9 landed, even though the block was rebuilt from a fresh coverage run at the time; added here because the block is the project's record of what is known-unbound, and an omission makes it stop being that.
 
 ## Phase 3 — Knowledge base
 
-- [ ] Document metadata schema and frontmatter format
+- [x] Document metadata schema and frontmatter format — `models/knowledge.py`
+      (`CorpusDocument`, `DocumentChunk`, `RetrievedChunk`) and
+      `services/knowledge/corpus.py` (`parse_document`, `load_corpus`), proven by
+      `tests/knowledge/test_corpus_documents.py` (17 tests). The schema follows
+      spec §7.2's frontmatter verbatim; what the tests actually pin is the set of
+      *refusals*, each one a case where a lenient parser yields a document that
+      cites itself confidently and wrongly: no frontmatter, an unterminated fence,
+      a missing field, an empty body, an unknown key (a typo'd `affected_symbol`
+      is otherwise a silent no-op), frontmatter setting a parser-owned field, an
+      unquoted `to_version: 2.0` that YAML reads as a float, a `to_version_major`
+      that disagrees with `to_version`, a duplicate `source_id` across the corpus,
+      and an empty corpus directory. `affected_symbols` is required for the source
+      types that document a specific API change and optional for `adr` /
+      `upgrade_report`, because a symbol invented for a prose document is a false
+      `$contains` join while a migration guide naming none can never be reached by
+      that join at all.
 - [ ] Corpus authored one breaking change per document — real Pydantic v1→v2 primary sources, plus a small number of authored ADRs and upgrade reports representing internal engineering guidance
 - [ ] Ingestion: parse frontmatter, chunk, embed, persist — scalar metadata for the coarse fields, `affected_symbols` as a real list
 - [ ] `affected_symbols` stored as a **list-valued** metadata field, filtered in the database with `$contains` (exact-element) and never with `$in`
