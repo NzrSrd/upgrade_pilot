@@ -26,6 +26,27 @@ dependencies = [
     "pydantic==2.13.4",
     "pydantic-settings==2.15.0",
     "tiktoken==0.14.0",
+    # CLAUDE.md rule 12 -- the stated reason. Phase 3's corpus is authored as
+    # Markdown with YAML frontmatter (spec §7.2), and the standard library has
+    # no YAML parser. The alternative was a hand-rolled one, rejected: the
+    # frontmatter this project actually writes needs quoted scalars whose
+    # values contain `:` (`title: "@validator replaced by @field_validator"`),
+    # flow sequences (`affected_symbols: [validator, root_validator]`) and
+    # dates, which is a real parser, and a parser that mis-reads a corpus
+    # document mis-attributes a citation.
+    #
+    # Already resolved in the environment as a transitive of chromadb and
+    # langchain-core, so this pin adds no install. It is declared anyway
+    # because `corpus.py` imports it directly, and depending on someone
+    # else's transitive is exactly the kind of unstated assumption that
+    # breaks on an unrelated upgrade.
+    #
+    # `yaml.safe_load` only -- never `load`. Corpus documents are checked in
+    # rather than user-supplied, so this is defence in depth, not a boundary.
+    # The implicit-typing hazard that ships with YAML is handled where it
+    # matters instead: `CorpusDocument` refuses an unquoted `to_version: 2.0`
+    # rather than coercing the float back to a string nobody wrote.
+    "pyyaml==6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -36,10 +57,22 @@ dev = [
     "httpx==0.28.1",
     "ruff==0.16.4",
     "mypy==2.3.1",
+    # PyYAML ships no inline types and no `py.typed`, so `import yaml` is an
+    # `import-untyped` error under strict mypy. Stubs only -- no runtime
+    # effect, which is why it is a dev dependency rather than a runtime one.
+    "types-PyYAML==6.0.12.20260815",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# `py.typed` is the PEP 561 marker: without it listed here, `setuptools`
+# does not include the file in the built wheel even though it sits inside
+# the package directory, and consumers of an installed `upgradepilot` would
+# see mypy's `import-untyped` for every import despite the package being
+# fully strict-typed.
+upgradepilot = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -124,6 +157,16 @@ select = ["E", "F", "I", "UP", "B", "SIM", "TID"]
 "tests/repo/test_clone_live.py" = ["TID251"]
 
 [tool.mypy]
+# Without this, mypy relies solely on `BaseModel`'s PEP 681
+# `@dataclass_transform` and synthesises `Settings.__init__` from its
+# declared fields alone -- which does not know about `BaseSettings`'s own
+# private construction kwargs (`_env_file`, `_secrets_dir`, ...) that
+# `pydantic_settings/main.py` documents as real, typed `__init__` parameters
+# at runtime. Every test in `test_settings.py` constructs `Settings(_env_file=None)`
+# to keep `.env` out of the test process, and without the plugin each such
+# call is a false `call-arg` error (verified: 46 of them, all resolved by
+# adding this one line -- not by 46 per-call `# type: ignore`s).
+plugins = ["pydantic.mypy"]
 # Must match `requires-python` above. The pin is not cosmetic: at
 # `--python-version 3.12` mypy *rejects* `rglob(..., recurse_symlinks=False)`
 # as an unexpected keyword argument and accepts it at 3.14, so a stale pin
@@ -134,6 +177,23 @@ strict = true
 # left `__init__.py`, `config.py` and all four files under `api/` unchecked
 # -- `config.py` being the one everything imports -- so `strict = true` was
 # doing less than it appeared to. Widening cost nothing: the six previously
-# excluded files pass strict as they stand. `tests` is deliberately not
-# listed; see the note in spec §11.
-files = ["src/upgradepilot"]
+# excluded files pass strict as they stand. `tests` is now included too --
+# see the `exclude` note directly below for the one carve-out.
+files = ["src/upgradepilot", "tests"]
+# The fixture tree is deliberately Pydantic-v1 (`Optional[str]` with no
+# default, `class Config:`, `@validator`) and contains a deliberately
+# unparseable file. Its 13 strict errors are the POINT of the fixture, and
+# "fixing" them turns tests/unit/test_fixture_repo.py red.
+#
+# Known limitation, verified rather than assumed: this `exclude` is bypassed
+# when a path is named explicitly on the command line -- exactly like
+# ruff's `extend-exclude` before `force-exclude` was added -- and mypy has
+# NO `force-exclude` equivalent to close it.
+#   mypy --exclude 'tests/fixtures/sample_repo' tests/fixtures/sample_repo/src/app/util.py
+#     -> Found 3 errors in 1 file (checked 1 source file)     # excluded, still checked
+#   mypy --exclude 'tests/fixtures/sample_repo' tests/fixtures
+#     -> Success: no issues found in 2 source files           # crawl respects it
+# So a bare `mypy` (the CI invocation and this project's gate) is protected;
+# an editor's check-this-file action or a pre-commit hook passing changed
+# filenames is not.
+exclude = ["^tests/fixtures/sample_repo/"]

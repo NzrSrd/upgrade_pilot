@@ -19,12 +19,18 @@ SAMPLE_REPO_DIR = Path(__file__).parent / "sample_repo"
 # service.py, or changing the specifier below to >=2.0 each left this
 # fixture's whole suite green. Add a constant here only together with the
 # assertion that binds it.
-EXPECTED_PYTHON_FILES = 6  # 4 in src/app (incl. __init__), broken.py, 1 test
-EXPECTED_HIGH_CONFIDENCE_SYMBOLS = ("Config", "validator")
+#
+# `tests/analysis/test_analyzer_end_to_end.py` asserts every tuple below for
+# EQUALITY against the analyzer's real output -- not containment -- so
+# shortening one (dropping a symbol, narrowing the affected-file set) is
+# caught there rather than silently passing as a smaller documented claim.
+EXPECTED_PYTHON_FILES = 7  # was 6: consumer.py added for the low-confidence tier
+EXPECTED_HIGH_CONFIDENCE_SYMBOLS = ("BaseModel", "Config", "Optional", "validator")
 EXPECTED_MEDIUM_CONFIDENCE_SYMBOLS = ("copy", "dict", "parse_obj", "schema")
 EXPECTED_UNPARSEABLE = "src/app/broken.py"
 EXPECTED_DECLARED_SPECIFIER = ">=1.10,<2"
 EXPECTED_PINNED_VERSION = "1.10.13"
+EXPECTED_LOW_CONFIDENCE_SITE = ("src/app/consumer.py", "dict")
 
 # Mirrors the hardened invocation in `services/repo/clone.py`: system and
 # global git config are pointed at /dev/null explicitly, rather than relying

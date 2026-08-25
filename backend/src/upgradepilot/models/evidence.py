@@ -20,9 +20,10 @@ constraints. `model_construct` is a deliberate, documented exception — see
 `models/base.py` for why it is left open.
 """
 
+import posixpath
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints
+from pydantic import AfterValidator, Field, StringConstraints
 
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import RiskCategory, RiskLevel, Severity, SourceType
@@ -42,6 +43,88 @@ the source file's own indentation and stripping it would corrupt the quote.
 """
 
 
+def _require_repo_relative(value: str) -> str:
+    """Reject any path that does not name a file inside the analyzed tree.
+
+    Checked against the *text*, never the filesystem: this validator runs on
+    citations that may be constructed long after the workspace is deleted, and
+    a filesystem probe here would both fail spuriously and turn a model
+    constructor into an existence oracle.
+
+    `posixpath` explicitly, not `os.path`: repository paths are POSIX by
+    construction (`git log --name-only` emits POSIX, and `Path.as_posix()` is
+    what the analyzer calls), and `os.path` would quietly accept `a\\b` as a
+    single filename on this platform while treating it as a separator on
+    another.
+
+    The four checks are ORDERED, not merely present. The absolute-path check
+    is redundant for the OUTCOME -- every absolute path also begins with an
+    empty segment, so the third check would reject it anyway, which is why
+    replacing this `raise` with `pass` once left the whole suite green with
+    `/etc/passwd` in its rejected set. What it owns is the DIAGNOSIS:
+    running first is what makes `/etc/passwd` refused for being absolute
+    rather than for "containing an empty segment", which is true and useless
+    to whoever has to work out what was wrong with the path they supplied.
+    Bound by `test_an_absolute_path_is_rejected_by_the_check_that_names_it_
+    absolute`, which asserts the message rather than the rejection.
+    """
+    if value.startswith("/"):
+        raise ValueError(f"path must be repository-relative, not absolute: {value!r}")
+    if "\\" in value:
+        raise ValueError(f"path must use '/' separators: {value!r}")
+    segments = value.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
+        raise ValueError(f"path must not contain empty, '.' or '..' segments: {value!r}")
+    if posixpath.normpath(value) != value:
+        raise ValueError(f"path must already be normalised: {value!r}")
+    return value
+
+
+def is_repo_relative(value: str) -> bool:
+    """Whether `value` could be a `RepoRelativePath`.
+
+    The producer-side companion to the validator below, and deliberately
+    implemented BY it rather than beside it: a second copy of these rules
+    would drift, and the whole point is that a path this returns False for
+    can never reach a model constructor and raise.
+
+    `Workspace` is the caller. Its input is an untrusted third-party
+    repository, where `back\\slash.py` and (via git's `core.quotePath`) any
+    escaped filename are legal on disk and unrepresentable as a citation.
+    CLAUDE.md rule 20: such a path becomes a recorded gap, never an
+    exception in the middle of an otherwise complete analysis.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return False
+    try:
+        _require_repo_relative(stripped)
+    except ValueError:
+        return False
+    return True
+
+
+RepoRelativePath = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+    AfterValidator(_require_repo_relative),
+]
+"""A path naming a file inside the analyzed repository, relative to its root.
+
+Every file-and-line citation the report prints is resolved against a
+repository root the reader supplies. An absolute path resolves against the
+analysis machine instead, and a `..` segment resolves outside the tree that
+was analyzed -- both produce a citation that looks precise and cannot be
+checked.
+
+`NonBlankStr` alone was not enough: it accepted `/etc/passwd` and
+`../outside.py` without complaint, which `PLANNING.md` recorded as a Phase 2
+carry-in. The analyzer is the only producer of these values from Task 9
+onward, and it emits `Path.relative_to(root).as_posix()`, which satisfies
+this by construction.
+"""
+
+
 class SourceRef(HonestModel):
     """A resolvable pointer into the knowledge base."""
 
@@ -57,7 +140,7 @@ class RepoEvidence(HonestModel):
     """A specific line of the analyzed repository."""
 
     kind: Literal["repo"] = "repo"
-    file: NonBlankStr
+    file: RepoRelativePath
     line: int = Field(ge=1)
     snippet: str | None = None
 
@@ -71,7 +154,38 @@ class DocEvidence(HonestModel):
     relevance: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
-EvidenceRef = Annotated[RepoEvidence | DocEvidence, Field(discriminator="kind")]
+class ConstraintEvidence(HonestModel):
+    """A constraint the user stated, cited as the thing it actually is.
+
+    Added in Phase 6, and the reason is specific: `constraint_pressure` is one
+    of spec 8.1's seven risk factors, `RiskFactor.evidence` has
+    `min_length=1`, and a constraint is not in the repository or in the
+    corpus. The three ways out were to cite an unrelated repository line
+    (a fabricated citation, and exactly what this package exists to prevent),
+    to exempt one factor from the evidence rule (a hole the next factor walks
+    through), or to say what the evidence really is. This is the third.
+
+    It resolves, which is what makes it evidence rather than a label: `field`
+    names a real field of `UserConstraints` and `value` is that field's value
+    as the run received it, so a validator can check the citation against the
+    run's own inputs the same way a `RepoEvidence` is checked against the
+    analysis record.
+    """
+
+    kind: Literal["constraint"] = "constraint"
+    field: NonBlankStr
+    """The `UserConstraints` field name, e.g. `zero_downtime`."""
+
+    value: NonBlankStr
+    """That field's value, rendered for display. A string rather than the
+    original type because this is a citation, not a copy of the input: the
+    reader is shown "2026-09-01", and the authoritative value stays in
+    `UserConstraints` where nothing can drift from it."""
+
+
+EvidenceRef = Annotated[
+    RepoEvidence | DocEvidence | ConstraintEvidence, Field(discriminator="kind")
+]
 
 
 class BreakingChange(HonestModel):

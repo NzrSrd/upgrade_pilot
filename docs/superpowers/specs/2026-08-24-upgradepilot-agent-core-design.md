@@ -184,7 +184,11 @@ The parent's `agentic_rag` node is an **explicit wrapper** rather than a bare co
 - hard caps on file count and total bytes, enforced before analysis begins
 - temp workspaces cleaned on run completion and on startup sweep
 
-**Candidate file selection** uses a cheap byte-substring scan for the dependency name over `.py` files, then `ast.parse` only on hits. Stdlib only — no external binary, and a 5,000-file repository is never fully parsed.
+**Candidate file selection** is two-phase, not one. Phase A byte-scans every `.py` file for the dependency's import root, then `ast.parse`s only the hits — stdlib only, no external binary, and a 5,000-file repository is never fully parsed. Phase B re-scans the files phase A rejected for the model class names phase A's parse discovered, catching a consumer that imports a model from a first-party module and never names the dependency at all.
+
+Phase B exists because phase A alone is an accident waiting to happen, measured directly in this project's own fixture: `service.py` passed the one-phase byte filter only because its module docstring happened to contain the word "pydantic" — removing that one word from the docstring deleted four findings while the whole suite stayed green. No reviewer would have noticed that removal as dependency-related. A single byte-scan for the dependency's own name cannot be trusted to find every real consumer of it; a second pass keyed on the classes the first pass already found is what closes that gap.
+
+The import name phase A scans for is itself a **guess**, honestly documented as one at `backend/src/upgradepilot/models/inputs.py:71-83`: it is inferred from the distribution name, and the two differ for some distributions — `pydantic` -> `pydantic` is right, but `python-dateutil` -> `dateutil` and `PyYAML` -> `yaml` are the well-known cases where the guess is wrong. When the guess yields zero candidate files, the analyzer records this as an explicit confidence reducer — "we could not find it" — never as "this dependency is unused".
 
 **Version detection** has a precedence order and a confidence label, because a lockfile pin and a `^1.10` specifier are not the same fact:
 
@@ -193,7 +197,10 @@ The parent's `agentic_rag` node is an **explicit wrapper** rather than a bare co
 | `poetry.lock` / `uv.lock` / `Pipfile.lock` / `requirements*.txt` with `==` | `exact` |
 | `pyproject.toml` specifier (`[project.dependencies]`, `[tool.poetry.dependencies]`) | `range` |
 | `requirements*.txt` with a range | `range` |
+| declared, but with neither a pinned version nor a specifier (e.g. `dependencies = ["pydantic"]`) | no `DetectedVersion` — `resolve_version` returns `None`, recorded as a named confidence reducer, never `DependencyNotFound` |
 | absent | `DependencyNotFound` error — never a guess |
+
+The "declared but unconstrained" row is a genuinely third outcome, not a variant of the other two: the dependency IS declared, so reporting `DependencyNotFound` for it would be false, but there is no pinned or ranged value to report either. Named here because an earlier version of this table did not, and the gap was a real bug found and fixed during this work (implementation ruling 17).
 
 Two consequences the brief did not anticipate:
 
@@ -208,8 +215,12 @@ Two consequences the brief did not anticipate:
 | `@validator` / `@root_validator` decorator | high |
 | nested `class Config:` inside a model | high |
 | `Optional[T]` field with no default inside a model | high |
-| `.dict()`, `.json()`, `.parse_obj()`, `.copy()`, `.schema()` in a module that imports the dependency and defines models | medium |
-| the same calls elsewhere | low |
+| `.dict()`, `.json()`, `.parse_obj()`, `.copy()`, `.schema()` whose receiver resolves to an indexed model class | medium |
+| the same calls on any other receiver | low |
+
+A call's receiver is resolved through the module's alias map and a repository-wide `ModelIndex` — every class in the repository found to derive, directly or transitively through a first-party ancestor, from the dependency's base, built to a fixed point over all candidate modules at once so that `class Base(BaseModel)` in one file and `class Customer(Base)` in another both resolve regardless of file order. A call is medium when its receiver names an indexed class; low otherwise.
+
+This replaces an earlier, module-level rule — "in a module that imports the dependency and defines models" — which the code does not follow, for a measured reason: taken literally, it graded every one of the fixture's `service.py` tracked calls LOW, because `service.py` imports its models from a first-party module (`app.models`) rather than importing the dependency directly, and defines no models of its own. The fixture exists specifically to distinguish a genuine medium-confidence call from the low-confidence trap in `util.py`, and the module-level rule collapsed those two tiers into one. See ADR-001, Deviation 1, for what was measured.
 
 **Symbol confidence is derived from its sites.** A *symbol* is high-confidence if at least one of its usage sites is high-confidence; medium if its best site is medium; low otherwise. This matters because the sufficiency gate (§7.3) and `evidence_coverage` (§8.1) are both defined over high-confidence symbols, and a symbol commonly has sites at mixed confidence.
 
@@ -462,7 +473,9 @@ One route. View selection derives from `RunSnapshot.status`:
 | `completed`, `completed_with_warnings` | Report |
 | `failed`, `orphaned` | Error, with retry or resume-from-checkpoint |
 
-Persistent left sidebar (config summary and run metrics), main workspace, top bar with a status pill and the Agent Trace drawer trigger. Components: `ConfigurationForm`, `ActivityTimeline`, `EvidencePanel`, `HumanReviewPanel`, `ReportView`, `AgentTraceDrawer`, `RunMetrics`.
+Three regions plus a drawer. A persistent **left sidebar** carries navigation and the configuration summary; the **main workspace** carries whichever view the table above selects; a persistent **right telemetry sidebar** carries `RunMetrics` — tokens, estimated cost, LLM call count, graph execution state, retrieved sources, diagnostics. The top bar carries a status pill and the Agent Trace drawer trigger. Components: `ConfigurationForm`, `ActivityTimeline`, `EvidencePanel`, `HumanReviewPanel`, `ReportView`, `AgentTraceDrawer`, `RunMetrics`.
+
+Telemetry earns a region rather than a block inside the left sidebar because token and cost tracking is a graded capability, not a diagnostic: it has to stay visible and updating while the main workspace changes underneath it, and a sidebar shared with configuration cannot promise that. **Amended 2026-08-25** from the original two-region layout (left sidebar holding config summary *and* run metrics) to agree with `docs/ui/DESIGN.md`, which is the canonical visual reference; `CLAUDE.md`'s three-column rule and the screenshots in `docs/ui/screenshots/` already assumed this shape, so the spec was the document out of step. See `docs/ui/READINESS.md` §1.2. ADR-001 records no layout decision, so nothing there needed amending.
 
 **All server state flows through one `useRunPolling(threadId)` hook.** 1s interval while non-terminal, stops on terminal status, backs off on network error, aborts on unmount. Because each snapshot is *complete* rather than incremental, there is no client-side accumulation or merge logic — the concrete payoff of polling over SSE, and what keeps orchestration out of React.
 
@@ -498,7 +511,9 @@ CI: `pytest`, `ruff`, `mypy`, `vitest`, `tsc --noEmit`.
 
 **mypy scope.** Strict over the whole of `src/upgradepilot`. This clause previously sanctioned "strict over `models/` and `services/`", which left `__init__.py`, `config.py` and all four files under `api/` unchecked — `config.py` being the module everything else imports — so `strict = true` was doing visibly less than it appeared to. Widening it cost nothing: all six previously-excluded files pass strict as they stand.
 
-`tests` is **not** in scope, and that is a measured decision rather than the old omission carried forward: adding it reports 130 errors across 13 files. Most are ordinary test-code looseness (22 unannotated functions, plus `arg-type` and `call-overload` noise from calling LangGraph and Chroma with literal dicts where the stubs want `RunnableConfig`), but 8 of them are in `tests/fixtures/sample_repo/` — the deliberately Pydantic-v1, deliberately-unparseable fixture tree, whose contents must never be "fixed". Bringing `tests` under mypy therefore requires excluding that fixture first, and is its own piece of work rather than a config edit.
+`tests` **is now in scope** — this reverses what an earlier version of this section said. `files` in `backend/pyproject.toml` is `["src/upgradepilot", "tests"]`, with one carve-out: `exclude = ["^tests/fixtures/sample_repo/"]`, because that fixture tree is deliberately Pydantic-v1 (`Optional[str]` with no default, `class Config:`, `@validator`) and contains a deliberately unparseable file — its 13 strict errors are the point of the fixture, and "fixing" them would turn `test_fixture_repo.py` red. Bringing the rest of `tests` under mypy surfaced 158 errors across the branch at the start of that work; adding `plugins = ["pydantic.mypy"]` alone resolved 46 of them — all false `call-arg` errors from `BaseSettings`'s private construction kwargs (`_env_file`, `_secrets_dir`, ...), which strict mode does not know about without the plugin. The bare CI gate (`mypy`, no path argument) now reports `Success: no issues found in 66 source files`.
+
+Known limitation, worth keeping visible because a reader will otherwise rediscover it the hard way: mypy's `exclude` is **bypassed** when a path is named explicitly on the command line — the same gap `force-exclude` closes for ruff — and mypy has no `force-exclude` equivalent. A bare `mypy` (the CI invocation and this project's gate) is protected; an editor's check-this-file action or a pre-commit hook passing changed filenames is not. The reproduction is kept in the comment beside the `exclude` key in `backend/pyproject.toml`.
 
 ---
 

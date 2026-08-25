@@ -1,9 +1,9 @@
 """Repository analysis outputs. Pure data; no I/O."""
 
-from datetime import datetime
+import math
 from typing import Annotated, Self
 
-from pydantic import Field, StringConstraints, computed_field, model_validator
+from pydantic import AwareDatetime, Field, StringConstraints, computed_field, model_validator
 
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import (
@@ -13,7 +13,7 @@ from upgradepilot.models.enums import (
     UsageKind,
     VersionConfidence,
 )
-from upgradepilot.models.evidence import NonBlankStr
+from upgradepilot.models.evidence import NonBlankStr, RepoRelativePath
 
 _CONFIDENCE_ORDER: dict[Confidence, int] = {
     Confidence.LOW: 0,
@@ -28,7 +28,7 @@ whitespace is considered; stripping first closes that gap."""
 
 
 class Manifest(HonestModel):
-    path: NonBlankStr
+    path: RepoRelativePath
     kind: ManifestKind
     declared_specifier: str | None = None
 
@@ -42,7 +42,7 @@ class DetectedVersion(HonestModel):
 
 
 class UsageSite(HonestModel):
-    file: NonBlankStr
+    file: RepoRelativePath
     line: int = Field(ge=1)
     column: int = Field(ge=0)
     symbol: NonBlankStr
@@ -56,14 +56,14 @@ class UsageSite(HonestModel):
 
 
 class SkippedFile(HonestModel):
-    path: NonBlankStr
+    path: RepoRelativePath
     reason: NonBlankStr
 
 
 class SymbolStat(HonestModel):
     symbol: NonBlankStr
     count: int = Field(ge=1)
-    files: tuple[NonBlankStr, ...] = Field(min_length=1)
+    files: tuple[RepoRelativePath, ...] = Field(min_length=1)
     confidence: Confidence
 
     @model_validator(mode="after")
@@ -141,11 +141,27 @@ class SymbolInventory(HonestModel):
 
 
 class AffectedFile(HonestModel):
-    path: NonBlankStr
+    path: RepoRelativePath
     usage_sites: tuple[UsageSite, ...] = Field(min_length=1)
     is_test: bool = False
-    commit_count: int = Field(default=0, ge=0)
-    last_modified: datetime | None = None
+    commit_count: int | None = Field(default=None, ge=0)
+    """Commits touching this file within the history window, or None.
+
+    The three states are genuinely different and Phase 6's `churn_on_affected`
+    factor reads all three:
+
+      None  git history was not available -- the workspace has no `.git`, or
+            the repository has no commits yet. Churn is UNKNOWN, and a factor
+            computed from it must lower confidence rather than report calm.
+      0     history WAS read and this file was not touched in the window.
+            A real, low-churn signal.
+      n>0   touched n times in the window.
+
+    The default is None, not 0: a caller that omits it has supplied no
+    history, and defaulting to 0 would let "we did not look" print as
+    "this file is stable".
+    """
+    last_modified: AwareDatetime | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -185,12 +201,12 @@ class AffectedFile(HonestModel):
     @classmethod
     def from_sites(
         cls,
-        path: str,
+        path: RepoRelativePath,
         sites: list[UsageSite],
         *,
         is_test: bool = False,
-        commit_count: int = 0,
-        last_modified: datetime | None = None,
+        commit_count: int | None = None,
+        last_modified: AwareDatetime | None = None,
     ) -> Self:
         return cls(
             path=path,
@@ -203,8 +219,21 @@ class AffectedFile(HonestModel):
 
 class CommitRecord(HonestModel):
     sha: ShaStr
-    timestamp: datetime
-    files: tuple[str, ...] = ()
+    timestamp: AwareDatetime
+    files: tuple[RepoRelativePath, ...] = ()
+
+
+class LanguageShare(HonestModel):
+    """One language's share of the repository's recognised source files.
+
+    Defined here in `models/`, not in `services/analysis/layout.py` where it is
+    produced: `RepoAnalysis.languages` is typed as a tuple of these, and
+    `models/` must never import `services/` (CLAUDE.md rule 16).
+    """
+
+    language: NonBlankStr
+    share: float = Field(gt=0.0, le=1.0)
+    file_count: int = Field(ge=1)
 
 
 class RepoAnalysis(HonestModel):
@@ -214,23 +243,7 @@ class RepoAnalysis(HonestModel):
     `CommitRecord.sha` was already `ShaStr`; these two name the same kind of
     thing and must be validated the same way."""
 
-    # The only stored mapping in this package. Bounded rather than
-    # redesigned: keys are non-blank language names and values are shares in
-    # [0.0, 1.0]. Deliberately NOT required to sum to 1.0 -- the analyzer
-    # that populates this does not exist yet (Phase 2), and whether it
-    # reports byte shares over all files, over recognised files only, or
-    # something else decides whether that sum is 1.0. Bounds plus non-blank
-    # keys is what can be defended today; a stricter contract would be
-    # invented against imagined behaviour.
-    #
-    # Residual, documented: `frozen=True` stops assignment but a `dict` is
-    # still mutable in place, so unlike every collection field here this one
-    # can be edited after construction. Left as a `dict` because fixing it
-    # properly means a shape change (a tuple of records), which is a Phase 2
-    # decision to make alongside the analyzer.
-    languages: dict[NonBlankStr, Annotated[float, Field(ge=0.0, le=1.0)]] = Field(
-        default_factory=dict
-    )
+    languages: tuple[LanguageShare, ...] = ()
     manifests: tuple[Manifest, ...] = ()
     detected_version: DetectedVersion | None
     total_python_files: int = Field(ge=0)
@@ -239,7 +252,49 @@ class RepoAnalysis(HonestModel):
     affected_files: tuple[AffectedFile, ...] = ()
     symbol_inventory: SymbolInventory
     commit_records: tuple[CommitRecord, ...] = ()
-    test_paths: tuple[str, ...] = ()
+    test_paths: tuple[RepoRelativePath, ...] = ()
+    confidence_reducers: tuple[NonBlankStr, ...] = ()
+    """Reasons this analysis is less complete than its counts suggest.
+
+    Each entry is one user-facing sentence, consumed by Phase 6's confidence
+    ceilings (spec 8.1) and printed in the report.
+
+    Deliberately NOT `skipped_files`: that tuple is divided by
+    `total_python_files` to produce `skipped_ratio`, so a `.gitmodules` entry
+    there would corrupt the analysis_coverage factor and could trip
+    `_analyzed_and_skipped_fit_within_total`. These are a different kind of
+    fact -- "something outside the Python files we counted was not analysed" --
+    and they need their own channel.
+    """
+
+    @model_validator(mode="after")
+    def _language_shares_are_unique_and_total_one(self) -> Self:
+        """Two constraints the `dict` could not express.
+
+        Uniqueness: a duplicate language made the old dict silently drop one
+        entry; as a tuple it would instead be double-counted by any consumer
+        that sums.
+
+        Sum: the shares are computed over files with a RECOGNISED extension,
+        so they partition that set and must total 1.0. The old field
+        deliberately declined to require this, because the analyzer that
+        populates it did not exist and the denominator was undecided. It
+        exists now (`services/analysis/layout.py`) and the denominator is
+        recognised files, so the constraint is checkable rather than invented.
+
+        `math.fsum`, not `sum`: the shares are floats summed over up to a few
+        dozen languages, and `fsum` avoids the rounding error a plain running
+        sum would accumulate before it is compared against 1.0.
+        """
+        names = [entry.language for entry in self.languages]
+        if len(names) != len(set(names)):
+            duplicated = sorted({n for n in names if names.count(n) > 1})
+            raise ValueError(f"duplicate languages: {duplicated}")
+        if self.languages:
+            total = math.fsum(entry.share for entry in self.languages)
+            if not math.isclose(total, 1.0, abs_tol=1e-6):
+                raise ValueError(f"language shares must total 1.0, got {total}")
+        return self
 
     @model_validator(mode="after")
     def _analyzed_and_skipped_fit_within_total(self) -> Self:
@@ -267,6 +322,48 @@ class RepoAnalysis(HonestModel):
         if self.total_python_files == 0:
             return 0.0
         return len(self.skipped_files) / self.total_python_files
+
+    def citable_paths(self) -> frozenset[str]:
+        """Every repository path this analysis is entitled to name.
+
+        **The workspace is gone by the time anything needs this.**
+        `analyze_repo` opens and closes it inside its own node, because a run
+        pauses at `human_review` and may be resumed days later by a different
+        process -- a workspace handle cannot survive that, and a remote clone
+        re-opened on resume is a different checkout of a branch that may have
+        moved. So spec 8.4's checks 2 and 3, written as "the file exists in
+        the workspace", resolve against this record instead.
+
+        That is a deliberate strengthening rather than a weakening. "Exists on
+        disk" would accept any path in the repository, including one no part
+        of this analysis ever looked at; this set is the paths the analysis
+        actually read, so a citation outside it is one nothing here produced.
+        The paths are `Path.relative_to(root).as_posix()` by construction, and
+        they were verified to exist at the moment they were recorded.
+        """
+        return frozenset(
+            {file.path for file in self.affected_files}
+            | {manifest.path for manifest in self.manifests}
+            | {skipped.path for skipped in self.skipped_files}
+            | set(self.test_paths)
+        )
+
+    def citable_lines(self) -> frozenset[tuple[str, int]]:
+        """Every `(file, line)` pair a `RepoEvidence` may name.
+
+        Usage sites carry real, parsed line numbers. A manifest and an
+        unparseable file do not -- an unparseable file has no lines by
+        definition -- so both are citable at line 1 only, which points at the
+        file rather than claiming a location inside it. `analysis_coverage`
+        says so in its own detail text, and check 2 accepts it here so that
+        the factor's own citations validate.
+        """
+        pairs = {
+            (site.file, site.line) for file in self.affected_files for site in file.usage_sites
+        }
+        pairs |= {(manifest.path, 1) for manifest in self.manifests}
+        pairs |= {(skipped.path, 1) for skipped in self.skipped_files}
+        return frozenset(pairs)
 
     def version_discrepancy(self, stated: str) -> tuple[str, str] | None:
         """Return (stated, detected) when they disagree, else None.

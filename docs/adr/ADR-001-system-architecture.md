@@ -77,6 +77,26 @@ All model access passes through a single `TrackedLLM` service, so there is exact
 
 `RunStatus` is computed from the checkpoint plus an in-process run registry. A stored status field drifts from reality on crash. The derivation includes an `ORPHANED` state for the case where the server restarted mid-run: the checkpoint survived, the task did not. Reporting `ORPHANED` with a resume affordance is better than a spinner that never resolves.
 
+### D11. The analyzer grades a tracked method call by receiver resolution, not by module-level imports
+
+Spec §7.1's original rule graded `.dict()`, `.json()`, `.parse_obj()`, `.copy()`, `.schema()` as medium confidence "in a module that imports the dependency and defines models". Taken literally, that rule graded all four of the fixture's `service.py` tracked calls LOW: `service.py` imports its models from a first-party module (`app.models`) rather than importing the dependency directly, and defines no models of its own. The fixture exists specifically to distinguish a genuine medium-confidence call from the low-confidence trap in `util.py` (a plain class with its own unrelated `.dict()` method), and the module-level rule collapsed those two tiers into one — the exact distinction the fixture was built to preserve.
+
+The code instead builds a repository-wide `ModelIndex` (`services/analysis/models_index.py`) in a first pass, over every candidate module at once, to a **fixed point**: `class Base(BaseModel)` in one file and `class Customer(Base)` in another is the ordinary shape of a real project, and a single pass over an arbitrary file order finds one class or the other depending on which came first, not both. A second pass (`usage.py`) then grades each tracked call by what its receiver resolves to — through the module's alias map and the index — medium when the receiver names an indexed model class, low otherwise.
+
+**Measured, not merely decided:** `test_medium_confidence_symbols_equal_the_documented_set` (`tests/analysis/test_analyzer_end_to_end.py`) asserts `EXPECTED_MEDIUM_CONFIDENCE_SYMBOLS == ("copy", "dict", "parse_obj", "schema")` for equality against the analyzer's real output over the fixture, and `test_util_py_is_never_reported` asserts `util.py`'s absence from the output separately. Under the module-level rule as written, the first assertion would fail (those four calls would grade LOW, not MEDIUM).
+
+### D12. Candidate file selection is two-phase, not one
+
+Phase A byte-scans every `.py` file for the dependency's import root and `ast.parse`s only the hits. Phase B then byte-scans the files phase A rejected for the model class names phase A's parse discovered, catching a consumer that imports a model from a first-party module and never names the dependency itself.
+
+Phase B and the index rebuild **alternate to a fixed point**, not once each. The rebuild over the expanded module set is what discovers a model defined in a module phase B admitted, and those newly discovered names are exactly what the next expansion has to search for. Running each stage once truncated every inheritance chain longer than one link: `Link0(BaseModel)` in one module, `Link1(Link0)` in a second, and a third module using only `Link1` was never searched for -- landing in neither `analyzed_files` nor `skipped_files` (the `analyzed + skipped <= total` validator is `<=`) and drawing no confidence reducer, so the report claimed a completeness it did not have. The loop terminates on its own for the same reason the `ModelIndex` fixed point does -- `expand_candidates` only considers files not already handled, a finite set that strictly shrinks whenever a pass adds anything -- and is additionally capped at `MAX_EXPANSION_PASSES` to bound cost against untrusted input. Hitting the cap emits a confidence reducer rather than truncating silently.
+
+**Measured, not merely decided:** `test_a_three_link_model_chain_reaches_its_consumer` and `test_a_chain_deeper_than_the_expansion_cap_says_so_rather_than_truncating` (`tests/unit/test_analyzer_assembly.py`) both fail against the single-expansion version.
+
+**Measured, not merely decided:** in this project's own fixture, `service.py` passed the one-phase byte filter only because its module docstring happened to contain the word "pydantic" — a word with no import-time meaning. Deleting that one word from the docstring removed four findings from the analyzer's output while the entire test suite stayed green: a silent failure, which is the exact category CLAUDE.md's rule 1 exists to prevent. `test_phase_b_is_what_finds_service_py_not_its_docstring` (`tests/unit/test_analysis_candidates.py`) performs that exact rewrite and asserts the file is still found — it fails if phase B is removed, and fails for the right reason. `test_phase_b_finds_a_consumer_that_never_names_the_dependency` covers the more general case (`consumer.py`, which never mentions "pydantic" anywhere).
+
+**Honest residue, recorded rather than hidden:** `broken.py`, the fixture's deliberately unparseable file, is reachable only because a comment inside it names the dependency (`# pydantic: this file is deliberately unparseable ...`) — structurally the same accident as `service.py`'s docstring. This is judged acceptable where `service.py`'s was not, and the reason is the failure mode rather than the mechanism: deleting that comment turns `test_the_unparseable_file_becomes_a_skipped_record_not_an_exception` red immediately, because `broken.py` would then be invisible to both phases and its `SkippedFile` record would disappear from the suite's expectations. A fixture dependency that fails loudly on removal is tolerable; a production one that fails silently, as `service.py`'s did before phase B existed, is not.
+
 ## Security considerations
 
 - Accepting a URL *or* a filesystem path is an arbitrary-read surface. Mitigations: URL scheme allowlist, credentials-in-URL rejected, local paths confined to `ALLOWED_LOCAL_ROOTS`, symlinks escaping the root skipped, hard file-count and byte caps enforced before analysis.
@@ -139,7 +159,7 @@ All model access passes through a single `TrackedLLM` service, so there is exact
 | Checkpointer round-trip | Proven by `backend/tests/graph/test_langgraph_contract.py`. `test_interrupt_exposes_payload_and_pauses` shows `ainvoke` returns an `__interrupt__` payload and the graph pauses with `state.next == ("review",)`. `test_resume_continues_same_thread_and_applies_decision` shows `Command(resume=...)` on the same `thread_id` continues execution and applies the resumed decision, leaving `state.next == ()`. `test_state_survives_a_new_saver_instance` shows the checkpoint is durable: a *new* `AsyncSqliteSaver.from_conn_string` opened over the same sqlite file after the first `async with` block has closed still reports `state.next == ("review",)` and can resume correctly — the data outlives the connection that wrote it, not merely the in-memory graph object. This is disk durability across a closed connection; it is not a process restart, since the test runs in one process. *Source: read of `backend/tests/graph/test_langgraph_contract.py`; confirmed passing via `pytest -rs` this session (19 passed, 2 skipped).* |
 | Thread isolation | Proven by `test_threads_are_isolated` in the same file: two threads (`t1`, `t2`) on one compiled graph advance independently — `t1` is driven through interrupt and resume to completion while `t2` is only invoked once and is still paused (`state.next == ("review",)`) with its own independent `trace`. No state from one thread appears in the other. *Source: read of `backend/tests/graph/test_langgraph_contract.py`; confirmed passing via `pytest -rs` this session.* |
 | ChromaDB | Proven by `backend/tests/knowledge/test_chroma_contract.py` and directly reproduced this session: (1) a `PersistentClient` opened fresh over an existing directory sees data seeded by an earlier client instance (`test_persistent_client_survives_restart`) — durability beyond the writing client's lifetime, not the same client object re-reading its own memory. Note this is a new client in the same process, not a process restart. (2) List-valued metadata (`affected_symbols`) is **accepted** and round-trips as a real Python `list`, not rejected and not flattened to a string (`test_list_valued_metadata_is_accepted_and_round_trips`). (3) `$contains` against list-valued metadata is **exact-element**, not substring: a filter for `Config` does not match a document tagged `["ConfigDict"]`, and a filter for `valid` does not match `["validator"]` (`test_symbol_filter_matches_whole_elements_not_substrings`). (4) `$in` against list-valued metadata returns `[]` rather than erroring or matching (`test_in_operator_does_not_work_on_list_metadata`) — it must never be used for this purpose. (5) A single-clause `$and`/`$or` raises `ValueError`, reproduced directly this session: `ValueError: Expected where value for $and or $or to be a list with at least two where expressions, got [{'a': 1}] in get.` (6) Collection names must be 3–512 characters from `[a-zA-Z0-9._-]`, reproduced directly this session: a 2-character name raises `InvalidArgumentError`, a 3-character name succeeds, a 513-character name raises the same error, and a 512-character name succeeds. *Source: read of `backend/tests/knowledge/test_chroma_contract.py` (items 1–4) plus ad hoc scripts run against the pinned `chromadb==1.5.9` this session (items 5–6).* |
-| Embeddings | **Reachability verified against OpenRouter**, 2026-08-25; token accounting still deferred to Phase 3. `POST https://openrouter.ai/api/v1/embeddings` with `{"model": "openai/text-embedding-3-small", "input": "hello"}` returns HTTP 200, `model: "text-embedding-3-small"`, a **1536-dimension** float vector, and `usage: {'prompt_tokens': 1, 'total_tokens': 1, 'cost': 2e-08}`. **The finding that matters here is a near-miss, recorded because it would have changed a plan:** OpenRouter's `/api/v1/models` catalog lists 417 models and **zero** embedding models, and reading the catalog alone supports the conclusion that Phase 3 would need OpenAI direct for its ChromaDB embedding function. That conclusion is wrong — the endpoint proxies embeddings whether or not the catalog advertises them. The catalog is not evidence about the endpoint. What is still unverified: whether `langchain-openai`'s `OpenAIEmbeddings` (as opposed to raw HTTP) works through this base URL, and how embedding tokens should be accounted in `UsageSummary`. Both are Phase 3 work. *Source: `curl` against both endpoints this session.* |
+| Embeddings | **Reachability verified against OpenRouter**, 2026-08-25; token accounting still deferred to Phase 3. `POST https://openrouter.ai/api/v1/embeddings` with `{"model": "openai/text-embedding-3-small", "input": "hello"}` returns HTTP 200, `model: "text-embedding-3-small"`, a **1536-dimension** float vector, and `usage: {'prompt_tokens': 1, 'total_tokens': 1, 'cost': 2e-08}`. **The finding that matters here is a near-miss, recorded because it would have changed a plan:** OpenRouter's `/api/v1/models` catalog lists 417 models and **zero** embedding models, and reading the catalog alone supports the conclusion that Phase 3 would need OpenAI direct for its ChromaDB embedding function. That conclusion is wrong — the endpoint proxies embeddings whether or not the catalog advertises them. The catalog is not evidence about the endpoint. **Both of the questions this row left open are now closed, in Phase 3 (2026-08-25).** (a) The client-library path works through the configured base URL — not `langchain-openai`'s `OpenAIEmbeddings` in the end, but the `openai` client directly, which is what `services/knowledge/embeddings.py` ships; the indirection `langchain-openai` adds buys nothing for an embedding call and hides `response.usage`. Measured through the shipping code against OpenRouter with `openai/text-embedding-3-small`: **1536 dimensions**, 15 tokens for a one-sentence input, and the whole 19-document corpus (30 chunks) embedding in a single request for **6191 tokens** — so a full ingest is one request and a negligible cost, which is worth knowing because it means rebuild-on-every-ingest is affordable and `ingest.py` relies on that. Proven by `tests/knowledge/test_embeddings_live.py` (3 tests, `@pytest.mark.live`), run this session. (b) Token accounting: `OpenAIEmbedding` records an `EmbeddingCall(model, texts, tokens)` per request from the provider's own `usage`, never an estimate — a gateway omitting `usage` contributes zero rather than a guess, so Phase 4 can still tell 'measured zero' from 'never reported'. Aggregating those into `UsageSummary` stays Phase 4, alongside the same work for chat calls; what could not be deferred is the *capture*, since a token count not recorded at the call is gone. Same scope caveat as the rows above: OpenRouter, not OpenAI direct. *Source: `curl` against both endpoints this session.* |
 
 ### Finding not anticipated by the design: pre-interrupt side effects are billed twice
 
@@ -156,5 +176,142 @@ request, and no file write before its `interrupt()` call. Strategy
 enumeration and interrupt-payload construction belong to `assess_risk`;
 `human_review` only calls `interrupt()` and validates the returned
 decision. Locked by `backend/tests/graph/test_langgraph_contract.py`.
+
+### Finding not anticipated by the design: unregistered types silently degrade to dicts
+
+Found in Phase 4 while wiring the checkpointer. LangGraph 1.2.11 logs
+"Deserializing unregistered type ... This will be blocked in a future version"
+for every type it has not been told about — which is all of
+`upgradepilot.models`.
+
+"Blocked" undersells the behaviour, and that is the finding. Measured directly
+against the pinned version with strict msgpack: deserialization does **not**
+raise. It returns a plain `dict`. So a resumed run would carry dictionaries
+wherever it expects Pydantic models, and D4's honesty invariants — the ones
+this design deliberately encodes in types rather than in prompts — would
+simply be absent from it: `BreakingChange.source` no longer required,
+`RiskFactor.evidence`'s `min_length=1` no longer enforced, `LLMCall`'s
+agreement between cost and basis no longer checked. Nothing raises at the
+point of loss, and the first symptom appears somewhere else entirely.
+
+**Rule adopted:** the checkpointer is always constructed through
+`graph.checkpointer.open_checkpointer`, whose serializer registers an
+allowlist **derived by walking `upgradepilot.models`** — models and enums
+both, since an unregistered `StrEnum` degrades to a bare string and
+`call.cost_basis is CostBasis.UNKNOWN` quietly stops being true. Derived
+rather than hand-listed because a hand-list is what a model added in a later
+phase gets forgotten from, and forgetting has no symptom until a resume.
+
+One trap worth recording, because it cost a passing test that proved nothing:
+`JsonPlusSerializer().with_msgpack_allowlist(types)` is a **silent no-op**.
+The default allowlist is the sentinel `True` (permissive), and the method
+returns `self` unchanged rather than narrowing it. The allowlist must be
+passed to the constructor. *Source: `backend/tests/graph/test_checkpoint_serde.py`
+and direct experiments run this session against the pinned
+`langgraph 1.2.11`.*
+
+### Finding not anticipated by the design: a loop bound written by a node body stops advancing when that body fails
+
+Found in Phase 6 and again, independently, in Phase 8 — which is why it is
+recorded as a rule rather than as two incidents.
+
+`traced` discards a failed node body's update. That is correct: a half-built
+update is not trustworthy, and rule 20's contract is an `AppError` plus a
+trace event, not a partial write. The consequence nobody anticipated is that
+**any counter a node body writes stops advancing the moment that body raises
+an unexpected exception** — and both of this system's loops were bounded on
+exactly such a counter.
+
+The RAG loop bounded on `iteration`, written by `plan_retrieval`. The plan
+repair loop bounded on `plan_attempts`, written by `generate_plan`. In both
+cases an exception in the body left the counter where it was and the router
+sent the run round again, forever: the run never completes, the API never
+returns, and the only symptom is a checkpoint file growing on disk. Measured
+both times, with a scripted model that ran out of responses standing in for
+the bug.
+
+**Rule adopted:** a loop bound is derived from `agent_trace`, never from a
+channel a node body writes. `traced` emits a `node_started` event for every
+node execution, before the body runs and regardless of what it does, so
+counting those advances unconditionally. See
+`graph/rag/state.rounds_started` and `graph/build.attempts_started`.
+
+### Finding not anticipated by the design: `traced` swallowed LangGraph's control flow
+
+Found in Phase 7, the first time a node called `interrupt()`.
+
+`interrupt()` pauses a run by *raising* `GraphInterrupt`. Rule 20's catch-all
+converted it into `AppError(INTERNAL)`: the graph recorded "an internal error
+occurred while running human_review", carried on to the end, and produced a
+complete report for a question nobody was ever asked. Nothing looked wrong
+except one extra error in a channel nothing was reading yet.
+
+**Rule adopted:** `traced` re-raises `langgraph.errors.GraphBubbleUp` before
+its own handlers. `GraphBubbleUp` rather than `GraphInterrupt` specifically,
+because `ParentCommand` and `GraphDelegate` are control flow too, and a
+handler naming only the one we happened to hit would swallow the next one
+silently. A paused run is not a failed one.
+
+### Finding not anticipated by the design: `StateSnapshot.next` cannot answer "is this run finished?"
+
+Found in Phase 9 while building spec §9.2's status ladder, whose second rung
+is worded "checkpoint next == ()". Measured against the pinned LangGraph,
+`next == ()` is true at **two** different moments, and the ladder cannot tell
+them apart:
+
+| moment | `next` | `tasks[*].interrupts` |
+|---|---|---|
+| input written, first node not yet scheduled | `()` | none |
+| paused on a first `interrupt()` | `('human_review',)` | one |
+| paused on a **re-asked** question | `()` | one |
+| finished | `()` | none |
+
+Two separate wrong answers follow. A ladder testing `next == ()` for
+completion tells a client polling a second after `start` that the run is
+`COMPLETED` — empty trace, no report — and the client stops polling. A ladder
+testing `next` for "awaiting a human" reports a re-asked question as finished,
+so the question is never answered and a partial report is presented as final.
+
+**Rules adopted.** "Awaiting a human" is read from `tasks[*].interrupts`
+(`graph/inspect.is_awaiting_human`), which is correct in every row above.
+"Finished" is read from `final_report`, which `finalize` sets and nothing else
+does, and which `traced` guarantees every path reaches. *Source:
+`backend/probes/probe_interrupt.py` and
+`tests/graph/test_human_in_the_loop.py::test_a_re_asked_question_still_reads_as_awaiting_a_human`,
+which pins the measurement so that a LangGraph change fixing `next` turns a
+test red rather than leaving a stale workaround in place.*
+
+### Amendment to D7: the interrupt predicate is an ordering, not a weighting
+
+D7 says the human-in-the-loop fires on a predicate. Phase 7 implemented it and
+found that the *recommendation* beside the question needs the same
+discipline. The first version scored strategies by summing weighted penalties,
+and it recommended the **highest**-effort strategy to a user who had asked to
+minimise effort, because the lowest-risk option's risk saving outweighed its
+effort cost at whatever weights happened to be written down. Every candidate
+fix was a matter of choosing a bigger number, which is the signal that the
+model was wrong rather than the numbers.
+
+**Rule adopted:** a stated preference reorders the comparison rather than
+reweighting it. `services/strategy/catalog.ranking_priority` puts the axes the
+user spoke about first and compares lexicographically, so there is nothing
+left to tune and no weight that can invert a stated preference.
+
+### Amendment to D5: the workspace does not survive the interrupt
+
+D5 abstracts repository access behind `Workspace`. Phase 5 wired it into the
+graph and the lifetime question became concrete: a run pauses at
+`human_review` and may be resumed days later, quite possibly by a different
+process after a restart, and a remote clone re-opened on resume is a
+*different* checkout of a branch that may have moved.
+
+**Rule adopted:** `analyze_repo` opens and closes the workspace inside its own
+node, and every file, line and version fact the report prints is captured into
+state there. No later node reads the repository. The consequence is that spec
+§8.4's checks 2 and 3 — worded "the file exists in the workspace" — resolve
+against `RepoAnalysis.citable_paths()` / `.citable_lines()` instead. That is a
+strengthening rather than a compromise: "exists on disk" would accept any path
+in the repository including one nothing here ever read, while the analysis
+record is exactly the set of locations this system is entitled to name.
 
 Findings that contradict this ADR must be raised and the ADR amended before implementation proceeds, per development rule 14.

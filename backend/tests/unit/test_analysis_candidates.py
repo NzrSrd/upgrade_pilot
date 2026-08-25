@@ -1,0 +1,225 @@
+"""Tests for two-phase candidate selection and parsing.
+
+See `candidates.py`'s module docstring for why two phases are needed at
+all -- the plan's Deviation 2. `test_phase_b_is_what_finds_service_py_not_
+its_docstring` below is THE regression test for that deviation.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from tests.fixtures.repo_builder import (
+    EXPECTED_PYTHON_FILES,
+    EXPECTED_UNPARSEABLE,
+    build_sample_repo,
+)
+from upgradepilot.services.analysis.candidates import (
+    _dotted_module,
+    expand_candidates,
+    select_candidates,
+)
+from upgradepilot.services.repo.workspace import Workspace
+
+
+def test_phase_a_selects_files_naming_the_import_root(tmp_path: Path) -> None:
+    scan = select_candidates(Workspace(build_sample_repo(tmp_path)), import_root="pydantic")
+    assert "src/app/models.py" in {m.file for m in scan.modules}
+
+
+def test_phase_a_counts_every_python_file_not_only_the_candidates(tmp_path: Path) -> None:
+    """`total_python_files` is the denominator of `skipped_ratio`, which feeds
+    the analysis_coverage risk factor. Counting only candidates would make
+    coverage look complete on a repository where one file in fifty was even
+    looked at."""
+    scan = select_candidates(Workspace(build_sample_repo(tmp_path)), import_root="pydantic")
+    assert scan.total_python_files == EXPECTED_PYTHON_FILES
+    assert len(scan.modules) < scan.total_python_files
+
+
+def test_the_unparseable_file_becomes_a_skipped_record_not_an_exception(tmp_path: Path) -> None:
+    scan = select_candidates(Workspace(build_sample_repo(tmp_path)), import_root="pydantic")
+    assert EXPECTED_UNPARSEABLE not in {m.file for m in scan.modules}
+    skipped = {s.path: s.reason for s in scan.skipped}
+    assert EXPECTED_UNPARSEABLE in skipped
+    assert "syntax" in skipped[EXPECTED_UNPARSEABLE].lower()
+
+
+def test_phase_b_finds_a_consumer_that_never_names_the_dependency(tmp_path: Path) -> None:
+    """`src/app/consumer.py` contains no occurrence of "pydantic" anywhere.
+    It is reachable only through phase B, which searches for the model class
+    names phase A discovered."""
+    workspace = Workspace(build_sample_repo(tmp_path))
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    assert "src/app/consumer.py" not in {m.file for m in phase_a.modules}
+
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer", "Invoice"}))
+    assert "src/app/consumer.py" in {m.file for m in expanded.modules}
+
+
+def test_phase_b_is_what_finds_service_py_not_its_docstring(tmp_path: Path) -> None:
+    """THE regression test for Deviation 2.
+
+    `src/app/service.py` is a phase-A hit today only because its module
+    docstring contains the word "pydantic". Rewrite the docstring without it
+    -- a change no reviewer would question -- and under a one-phase filter
+    the file silently leaves the analysis, taking four medium-confidence
+    findings with it, with every existing test still green.
+
+    This test performs that rewrite and asserts the file is STILL found. It
+    fails if `expand_candidates` is removed, and it fails for the right
+    reason.
+    """
+    root = build_sample_repo(tmp_path)
+    service = root / "src" / "app" / "service.py"
+    original = service.read_text(encoding="utf-8")
+    assert "pydantic" in original, "the accident this test exists to remove is gone"
+    service.write_text(original.replace("pydantic in scope", "models in scope"), encoding="utf-8")
+    assert "pydantic" not in service.read_text(encoding="utf-8")
+
+    workspace = Workspace(root)
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    assert "src/app/service.py" not in {m.file for m in phase_a.modules}, (
+        "phase A should no longer find it -- if it does, this test is not testing phase B"
+    )
+
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer", "Invoice"}))
+    assert "src/app/service.py" in {m.file for m in expanded.modules}
+
+
+def test_expand_candidates_with_no_model_names_adds_nothing(tmp_path: Path) -> None:
+    """A repository where the dependency defines no models the user
+    subclasses. Phase B must be a no-op, not a full-repository parse."""
+    workspace = Workspace(build_sample_repo(tmp_path))
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset())
+    assert {m.file for m in expanded.modules} == {m.file for m in phase_a.modules}
+
+
+def test_expand_candidates_with_model_names_adds_a_file_phase_a_missed(tmp_path: Path) -> None:
+    """Companion to the no-op case above: proves `expand_candidates` cannot
+    pass both tests by simply ignoring `model_names` and always returning
+    phase A unchanged. Together the pair discriminates "phase B is wired to
+    `model_names`" from "phase B is a no-op regardless of its argument"."""
+    workspace = Workspace(build_sample_repo(tmp_path))
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer"}))
+    assert {m.file for m in expanded.modules} > {m.file for m in phase_a.modules}
+
+
+def test_a_file_is_never_parsed_twice(tmp_path: Path) -> None:
+    """`expand_candidates` returns phase A's modules plus phase B's. If it
+    re-scanned the hits it would duplicate them, and `analyzed_files` -- a
+    numerator the report prints -- would exceed `total_python_files` and trip
+    RepoAnalysis's own validator."""
+    workspace = Workspace(build_sample_repo(tmp_path))
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer"}))
+    files = [m.file for m in expanded.modules]
+    assert len(files) == len(set(files))
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("src/app/models.py", "app.models"),
+        ("src/app/__init__.py", "app"),
+        ("app/models.py", "app.models"),
+        ("__init__.py", "__init__"),
+    ],
+)
+def test_dotted_module(path: str, expected: str) -> None:
+    """`_dotted_module` is private, but it has branches no public-API test
+    reaches: `src/app/__init__.py` is empty in the fixture and never
+    selected as a candidate, so nothing exercises `.__init__`-stripping or
+    the no-`src/`-prefix case through `select_candidates`/`expand_candidates`
+    alone.
+
+    This matters beyond tidiness: Task 6's `is_model_class(dotted)` compares
+    against exactly this string, and a package `__init__.py` that
+    re-exports models is an ordinary layout. If `.__init__` stopped being
+    stripped, `app.__init__.Customer` would silently never match
+    `app.Customer` -- medium grades would degrade to missed, with nothing
+    flagging it.
+
+    The last case (`__init__.py` with no directory at all) is asserted at
+    its actual, somewhat degenerate value (`"__init__"`, not `""` or
+    `"__init__"` stripped further): `"__init__".removesuffix(".__init__")`
+    does not match because the *whole* string is shorter than the suffix
+    being stripped (which itself starts with a dot). A repository with a
+    Python file directly at its root and no package directory around it is
+    not a layout this heuristic was designed for, and this is recorded here
+    rather than quietly assumed away.
+    """
+    assert _dotted_module(path) == expected
+
+
+def test_a_file_that_is_not_utf8_is_skipped_with_a_decode_reason(tmp_path: Path) -> None:
+    root = build_sample_repo(tmp_path)
+    (root / "src" / "app" / "latin.py").write_bytes(b"# pydantic\nx = '\xff\xfe'\n")
+    scan = select_candidates(Workspace(root), import_root="pydantic")
+    skipped = {s.path: s.reason for s in scan.skipped}
+    assert "src/app/latin.py" in skipped
+    assert "decode" in skipped["src/app/latin.py"].lower()
+
+
+# -- Phase B's own skip path (PLANNING.md's "EARLY Phase 3 work") -----------
+
+
+def test_a_file_reachable_only_through_phase_b_is_skipped_not_raised(
+    tmp_path: Path,
+) -> None:
+    """Phase B parses files phase A never looked inside, so it owns its own
+    unparseable case -- and that case is an honesty channel, not a grading
+    one.
+
+    `EXPECTED_UNPARSEABLE` proves the same thing for phase A only. Phase B
+    reaches a strictly different set of files: those that never name the
+    dependency and are pulled in solely because they mention a discovered
+    model class. If `expand_candidates` let a `SyntaxError` escape, the whole
+    analysis would die on a file the user never asked about; if it dropped
+    the file silently, `skipped_ratio` would under-count, `analysis_coverage`
+    would report better coverage than was achieved, and the confidence
+    ceiling that rides on it would never engage. Either way the report claims
+    more than it looked at.
+
+    The fixture file below names `Customer` and never names `pydantic`, so
+    phase A cannot see it -- asserted, not assumed, because a phase-A hit
+    would make this test pass while testing nothing about phase B.
+    """
+    root = build_sample_repo(tmp_path)
+    orphan = root / "src" / "app" / "unparseable_consumer.py"
+    orphan.write_text("def use(c: Customer) ->\n", encoding="utf-8")
+
+    workspace = Workspace(root)
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    assert "src/app/unparseable_consumer.py" not in {s.path for s in phase_a.skipped}, (
+        "phase A reached it -- this test is not exercising phase B"
+    )
+    assert "src/app/unparseable_consumer.py" not in {m.file for m in phase_a.modules}
+
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer"}))
+
+    skipped = {s.path: s.reason for s in expanded.skipped}
+    assert "src/app/unparseable_consumer.py" in skipped, expanded.skipped
+    assert "syntax" in skipped["src/app/unparseable_consumer.py"].lower()
+    assert "src/app/unparseable_consumer.py" not in {m.file for m in expanded.modules}
+
+
+def test_phase_b_keeps_phase_a_skips_alongside_its_own(tmp_path: Path) -> None:
+    """The companion direction. Phase B rebuilds the skipped tuple from
+    phase A's, so a bug that replaced rather than extended it would drop
+    `broken.py` -- lowering `skipped_ratio` and, again, claiming coverage
+    that was never achieved."""
+    root = build_sample_repo(tmp_path)
+    (root / "src" / "app" / "unparseable_consumer.py").write_text(
+        "def use(c: Customer) ->\n", encoding="utf-8"
+    )
+
+    workspace = Workspace(root)
+    phase_a = select_candidates(workspace, import_root="pydantic")
+    expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer"}))
+
+    assert {s.path for s in expanded.skipped} == {s.path for s in phase_a.skipped} | {
+        "src/app/unparseable_consumer.py"
+    }

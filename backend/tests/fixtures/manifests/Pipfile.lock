@@ -1,0 +1,10 @@
+{
+  "_meta": {"hash": {"sha256": "0"}, "requires": {"python_version": "3.11"}},
+  "default": {
+    "pydantic": {"hashes": ["sha256:0"], "index": "pypi", "version": "==1.10.13"},
+    "requests": {"hashes": ["sha256:0"], "version": "==2.31.0"}
+  },
+  "develop": {
+    "pytest": {"hashes": ["sha256:0"], "version": "==8.0.0"}
+  }
+}

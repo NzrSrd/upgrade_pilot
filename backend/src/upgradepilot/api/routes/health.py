@@ -2,10 +2,10 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+from fastapi import APIRouter, Request
 
 from upgradepilot import __version__
+from upgradepilot.api.schemas import HealthChecks, HealthResponse
 from upgradepilot.config import get_settings
 
 router = APIRouter()
@@ -18,19 +18,11 @@ one did not -- the process is answering, but something it needs is not in
 place. There is deliberately no third value for "one specific subsystem is
 down": `checks` already carries that, and a status vocabulary that tries to
 rank failures would be asserting a severity ordering nothing here measures.
+
+`HealthChecks` and `HealthResponse` live in `api/schemas.py` with every other
+response model, so the OpenAPI document -- and the frontend types generated
+from it -- has one place errors and responses are defined.
 """
-
-
-class HealthChecks(BaseModel):
-    chroma_dir: bool
-    checkpoint_dir: bool
-    llm_configured: bool
-
-
-class HealthResponse(BaseModel):
-    status: HealthStatus
-    version: str
-    checks: HealthChecks
 
 
 def _store_ready(directory: Path) -> bool:
@@ -58,7 +50,7 @@ def _derive_status(checks: HealthChecks) -> HealthStatus:
 
 
 @router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
+def health(request: Request) -> HealthResponse:
     """Liveness, local-store readiness, and model-provider configuration.
 
     `status` is derived from `checks` by `_derive_status` and is never
@@ -81,7 +73,12 @@ def health() -> HealthResponse:
     missing key means the agent cannot do its job, so reporting `"ok"`
     without one would be the same class of false claim in a smaller font.
     """
-    settings = get_settings()
+    # The application's own settings, not `get_settings()`. They are usually
+    # the same object, and when they are not -- a test app, a second app in
+    # one process -- the cached global describes a configuration this
+    # application is not running under, so the endpoint would report a key as
+    # present while every run failed for the lack of it. Measured: it did.
+    settings = getattr(request.app.state, "settings", None) or get_settings()
     checks = HealthChecks(
         chroma_dir=_store_ready(settings.chroma_dir),
         checkpoint_dir=_store_ready(settings.checkpoint_db.parent),

@@ -1,6 +1,7 @@
 import json
 import subprocess
 import types
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -15,6 +16,7 @@ from upgradepilot.models.errors import (
 from upgradepilot.services.repo import clone as clone_module
 from upgradepilot.services.repo.clone import clone_repository
 from upgradepilot.services.repo.local import open_local_repository
+from upgradepilot.services.repo.workspace import HARDENED_GIT_ENV
 
 FILE_SCHEME = frozenset({"file"})
 
@@ -223,7 +225,9 @@ def test_non_positive_depth_is_clamped_to_one(origin: Path, tmp_path: Path, dept
         workspace.cleanup()
 
 
-def _make_fake_subprocess_module(run):
+def _make_fake_subprocess_module(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+) -> types.SimpleNamespace:
     """A stand-in for the `subprocess` module, scoped to `clone.py` only.
 
     `clone.py` calls `subprocess.run(...)` and catches
@@ -363,7 +367,13 @@ def test_a_global_insteadof_rule_cannot_redirect_the_clone(
     (fake_home / ".gitconfig").write_text(
         '[url "https://REWRITTEN.invalid/"]\n\tinsteadOf = file://\n'
     )
-    patched_env = dict(clone_module.HARDENED_GIT_ENV)
+    # `HARDENED_GIT_ENV` is defined in `workspace.py` and merely imported
+    # into `clone.py`; under `--no-implicit-reexport` (part of `strict`)
+    # that indirection is not a legal import path, so the value is read
+    # from where it is actually defined. The patch below still targets
+    # `clone_module` because that is the module whose global namespace
+    # `clone_repository` actually looks the name up in at call time.
+    patched_env = dict(HARDENED_GIT_ENV)
     patched_env["HOME"] = str(fake_home)
     monkeypatch.setattr(clone_module, "HARDENED_GIT_ENV", patched_env)
 

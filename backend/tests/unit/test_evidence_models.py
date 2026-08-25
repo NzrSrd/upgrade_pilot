@@ -43,7 +43,12 @@ def a_breaking_change() -> BreakingChange:
 def test_breaking_change_requires_a_source() -> None:
     """The core invariant: an uncited breaking change is unconstructable."""
     with pytest.raises(ValidationError) as excinfo:
-        BreakingChange(
+        # `source` is deliberately omitted: this is the test that the
+        # required field is enforced at runtime by pydantic. The pydantic
+        # mypy plugin now enforces the same requirement statically, so this
+        # is a real, expected `call-arg` -- ignored rather than "fixed" by
+        # adding the very argument the test exists to prove is required.
+        BreakingChange(  # type: ignore[call-arg]
             id="bc-1",
             title="@validator removed",
             description="renamed",
@@ -90,7 +95,7 @@ def test_risk_factor_requires_evidence() -> None:
         RiskFactor(
             id="rf-1",
             name="breaking_change_exposure",
-            category=RiskCategory.BREAKING_CHANGE,
+            category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
             level=RiskLevel.HIGH,
             weight=0.4,
             detail="three high-confidence sites collide with documented changes",
@@ -103,7 +108,7 @@ def test_risk_factor_accepts_mixed_evidence_kinds() -> None:
     factor = RiskFactor(
         id="rf-1",
         name="breaking_change_exposure",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level=RiskLevel.HIGH,
         weight=0.4,
         detail="collides with a documented change",
@@ -116,7 +121,7 @@ def test_risk_factor_accepts_mixed_evidence_kinds() -> None:
 
 
 def test_evidence_ref_discriminates_on_kind() -> None:
-    adapter = TypeAdapter(EvidenceRef)
+    adapter: TypeAdapter[EvidenceRef] = TypeAdapter(EvidenceRef)
 
     repo = adapter.validate_python({"kind": "repo", "file": "a.py", "line": 3})
     doc = adapter.validate_python({"kind": "doc", "source_id": "s", "chunk_id": "c"})
@@ -151,7 +156,7 @@ def test_risk_factor_evidence_cannot_be_emptied_after_construction() -> None:
     factor = RiskFactor(
         id="rf-1",
         name="breaking_change_exposure",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level=RiskLevel.HIGH,
         weight=0.5,
         detail="@validator is removed in v2",
@@ -241,7 +246,7 @@ def test_risk_factor_weight_is_bounded(weight: float) -> None:
         RiskFactor(
             id="rf-1",
             name="breaking_change_exposure",
-            category=RiskCategory.BREAKING_CHANGE,
+            category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
             level=RiskLevel.HIGH,
             weight=weight,
             detail="collides with a documented change",
@@ -256,7 +261,7 @@ def test_risk_factor_weight_accepts_both_endpoints(weight: float) -> None:
     factor = RiskFactor(
         id="rf-1",
         name="breaking_change_exposure",
-        category=RiskCategory.BREAKING_CHANGE,
+        category=RiskCategory.BREAKING_CHANGE_EXPOSURE,
         level=RiskLevel.HIGH,
         weight=weight,
         detail="collides with a documented change",
@@ -278,3 +283,98 @@ def test_doc_evidence_relevance_may_be_absent() -> None:
     """None is a legitimate "not scored", distinct from a score of 0.0."""
     assert DocEvidence(source_id="s", chunk_id="c").relevance is None
     assert DocEvidence(source_id="s", chunk_id="c", relevance=0.0).relevance == 0.0
+
+
+_REJECTED = (
+    "/etc/passwd",  # absolute
+    "../outside/secrets.py",  # parent escape
+    "src/../../outside.py",  # parent escape, interior
+    "./src/app.py",  # curdir prefix
+    ".",  # curdir itself
+    "src\\app\\models.py",  # windows separator
+    "   ",  # blank (already covered by NonBlankStr, kept as a guard)
+)
+_ACCEPTED = (
+    "src/app/models.py",
+    "models.py",
+    "a/b/c/d/e.py",
+    "src/app/.hidden.py",  # a leading dot on a *segment* is a real filename
+)
+
+
+@pytest.mark.parametrize("path", _REJECTED)
+def test_repo_evidence_rejects_non_repo_relative_paths(path: str) -> None:
+    """Every citation this product prints resolves against a repository root.
+
+    An absolute path in a citation points at the analysis machine's disk, not
+    at the user's repository, and a `..` segment points outside the tree that
+    was analyzed at all. Either one is a citation the reader cannot check --
+    CLAUDE.md rule 1's exact failure.
+    """
+    with pytest.raises(ValidationError):
+        RepoEvidence(file=path, line=1)
+
+
+@pytest.mark.parametrize("path", _ACCEPTED)
+def test_repo_evidence_accepts_ordinary_repo_relative_paths(path: str) -> None:
+    """The negative test above is worthless unless the positive direction is
+    shown to still pass: a validator that rejected everything would satisfy it."""
+    assert RepoEvidence(file=path, line=1).file == path
+
+
+# Copied verbatim from spec 8.1's factor table. If the spec changes, this
+# tuple changes with it in the same commit -- it is a transcription of the
+# authority, not an independent opinion.
+_SPEC_8_1_FACTORS = (
+    "breaking_change_exposure",
+    "blast_radius",
+    "test_coverage_of_affected",
+    "churn_on_affected",
+    "analysis_coverage",
+    "evidence_coverage",
+    "constraint_pressure",
+)
+
+
+def test_risk_categories_match_the_spec_factor_table_exactly() -> None:
+    """Both directions, deliberately.
+
+    Phase 6 builds one RiskFactor per member of this enum and the report
+    prints the value as the factor's name. A member the spec does not define
+    is a factor with no documented threshold table; a spec factor with no
+    member is a factor that silently never gets computed. `==` on sorted
+    tuples catches both; `all(x in y)` catches only one.
+    """
+    assert tuple(sorted(c.value for c in RiskCategory)) == tuple(sorted(_SPEC_8_1_FACTORS))
+
+
+# -- F8: the absolute-path rejection, and why `/etc/passwd` did not bind it -
+
+
+def test_an_absolute_path_is_rejected_by_the_check_that_names_it_absolute() -> None:
+    """Mutation A27 replaced the absolute-path `raise` with `pass` and left
+    the whole suite green -- including `/etc/passwd` in `_REJECTED` above.
+    The reason is the branch's own recurring pattern: EVERY absolute path
+    also fails the empty-segment check, because `"/etc/passwd".split("/")`
+    begins with `""`. The rejection outcome cannot bind that branch, because
+    the branch is redundant for the outcome.
+
+    What it is not redundant for is the DIAGNOSIS. Delete it and
+    `/etc/passwd` is refused for containing an empty segment -- true, and
+    useless to whoever has to work out what was wrong with the path they
+    supplied. This asserts the message, which is the only observable the
+    check actually owns, and it is why the check must stay ORDERED ahead of
+    the segment check rather than merely present.
+    """
+    with pytest.raises(ValidationError) as caught:
+        RepoEvidence(file="/etc/passwd", line=1)
+    assert "absolute" in str(caught.value)
+
+
+def test_a_relative_path_with_an_empty_segment_is_not_called_absolute() -> None:
+    """The negative direction. Without it, a validator that reported every
+    rejection as "absolute" would satisfy the test above."""
+    with pytest.raises(ValidationError) as caught:
+        RepoEvidence(file="src//app.py", line=1)
+    assert "absolute" not in str(caught.value)
+    assert "empty" in str(caught.value)
