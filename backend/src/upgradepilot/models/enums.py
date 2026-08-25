@@ -94,3 +94,25 @@ class CostBasis(StrEnum):
     PROVIDER_REPORTED = "provider_reported"
     PRICE_TABLE = "price_table"
     UNKNOWN = "unknown"
+
+
+class TraceEventKind(StrEnum):
+    """What the agent trace is allowed to report.
+
+    CLAUDE.md rule 26 draws the line: the trace shows *observable* events --
+    node boundaries, queries issued, sources retrieved and selected,
+    decisions, validation outcomes -- and never internal prompts or private
+    reasoning. Enumerating the kinds is what makes that rule checkable:
+    adding one is a deliberate decision about what the product exposes rather
+    than an incidental addition somewhere in a node.
+    """
+
+    NODE_STARTED = "node_started"
+    NODE_COMPLETED = "node_completed"
+    QUERY_ISSUED = "query_issued"
+    SOURCES_RETRIEVED = "sources_retrieved"
+    SOURCES_SELECTED = "sources_selected"
+    DECISION_REQUIRED = "decision_required"
+    DECISION_APPLIED = "decision_applied"
+    VALIDATION_OUTCOME = "validation_outcome"
+    ERROR_RECORDED = "error_recorded"
