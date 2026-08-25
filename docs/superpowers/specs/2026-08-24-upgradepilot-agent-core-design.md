@@ -473,7 +473,9 @@ One route. View selection derives from `RunSnapshot.status`:
 | `completed`, `completed_with_warnings` | Report |
 | `failed`, `orphaned` | Error, with retry or resume-from-checkpoint |
 
-Persistent left sidebar (config summary and run metrics), main workspace, top bar with a status pill and the Agent Trace drawer trigger. Components: `ConfigurationForm`, `ActivityTimeline`, `EvidencePanel`, `HumanReviewPanel`, `ReportView`, `AgentTraceDrawer`, `RunMetrics`.
+Three regions plus a drawer. A persistent **left sidebar** carries navigation and the configuration summary; the **main workspace** carries whichever view the table above selects; a persistent **right telemetry sidebar** carries `RunMetrics` — tokens, estimated cost, LLM call count, graph execution state, retrieved sources, diagnostics. The top bar carries a status pill and the Agent Trace drawer trigger. Components: `ConfigurationForm`, `ActivityTimeline`, `EvidencePanel`, `HumanReviewPanel`, `ReportView`, `AgentTraceDrawer`, `RunMetrics`.
+
+Telemetry earns a region rather than a block inside the left sidebar because token and cost tracking is a graded capability, not a diagnostic: it has to stay visible and updating while the main workspace changes underneath it, and a sidebar shared with configuration cannot promise that. **Amended 2026-08-25** from the original two-region layout (left sidebar holding config summary *and* run metrics) to agree with `docs/ui/DESIGN.md`, which is the canonical visual reference; `CLAUDE.md`'s three-column rule and the screenshots in `docs/ui/screenshots/` already assumed this shape, so the spec was the document out of step. See `docs/ui/READINESS.md` §1.2. ADR-001 records no layout decision, so nothing there needed amending.
 
 **All server state flows through one `useRunPolling(threadId)` hook.** 1s interval while non-terminal, stops on terminal status, backs off on network error, aborts on unmount. Because each snapshot is *complete* rather than incremental, there is no client-side accumulation or merge logic — the concrete payoff of polling over SSE, and what keeps orchestration out of React.
 
