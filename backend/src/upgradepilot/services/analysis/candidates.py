@@ -11,6 +11,35 @@ Two phases, because one is not enough -- see the plan's Deviation 2.
 carries an `ast.Module`, which Pydantic cannot validate and which would need
 `arbitrary_types_allowed` -- a setting that would then apply to every field.
 Frozen and slotted gives the immutability that matters here without that.
+
+Which of `_parse`'s except branches are proven by a test, and which are not
+(same ledger `services/repo/workspace.py` keeps for `HARDENED_GIT_ENV`):
+
+- `UnicodeDecodeError`: proven --
+  `test_a_file_that_is_not_utf8_is_skipped_with_a_decode_reason`.
+- `SyntaxError`: proven --
+  `test_the_unparseable_file_becomes_a_skipped_record_not_an_exception`,
+  against the fixture's `broken.py.txt`.
+- `OSError`: not proven. Reaching it hermetically needs a file that exists
+  during `iter_files`'s walk but cannot be read moments later -- a
+  permission bit flipped mid-run, or a TOCTOU deletion -- which is not
+  something a fixture can force without weakening the sandbox or racing the
+  filesystem. Kept anyway: a read genuinely can fail this way in
+  production, and CLAUDE.md rule 20 requires the outcome be recorded rather
+  than the exception left to propagate, regardless of whether a test can
+  force the path.
+- `ValueError`: not proven. `ast.parse` raises this (not `SyntaxError`) for
+  a source containing a NUL byte, but a fixture with a NUL byte has to get
+  past `Workspace.read_text`'s UTF-8 decode first -- a NUL is valid UTF-8,
+  so it does, and reaching `ast.parse` with a genuinely NUL-containing
+  string is straightforward in principle; not yet exercised here regardless.
+- `RecursionError`: not proven. Forcing it needs a source nested deeply
+  enough to exceed the interpreter's recursion limit, which is expensive to
+  construct and whose exact threshold is interpreter-version-dependent --
+  a fixture tuned to trip on this machine risks passing to no purpose, or
+  failing to trip at all, on another. Kept as defence in depth: the
+  branch's cost of being wrong (an uncaught `RecursionError` breaking rule
+  20) is worse than its cost of being untested.
 """
 
 from __future__ import annotations

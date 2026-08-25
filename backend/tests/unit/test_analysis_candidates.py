@@ -7,12 +7,18 @@ its_docstring` below is THE regression test for that deviation.
 
 from pathlib import Path
 
+import pytest
+
 from tests.fixtures.repo_builder import (
     EXPECTED_PYTHON_FILES,
     EXPECTED_UNPARSEABLE,
     build_sample_repo,
 )
-from upgradepilot.services.analysis.candidates import expand_candidates, select_candidates
+from upgradepilot.services.analysis.candidates import (
+    _dotted_module,
+    expand_candidates,
+    select_candidates,
+)
 from upgradepilot.services.repo.workspace import Workspace
 
 
@@ -111,6 +117,41 @@ def test_a_file_is_never_parsed_twice(tmp_path: Path) -> None:
     expanded = expand_candidates(workspace, phase_a, model_names=frozenset({"Customer"}))
     files = [m.file for m in expanded.modules]
     assert len(files) == len(set(files))
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("src/app/models.py", "app.models"),
+        ("src/app/__init__.py", "app"),
+        ("app/models.py", "app.models"),
+        ("__init__.py", "__init__"),
+    ],
+)
+def test_dotted_module(path: str, expected: str) -> None:
+    """`_dotted_module` is private, but it has branches no public-API test
+    reaches: `src/app/__init__.py` is empty in the fixture and never
+    selected as a candidate, so nothing exercises `.__init__`-stripping or
+    the no-`src/`-prefix case through `select_candidates`/`expand_candidates`
+    alone.
+
+    This matters beyond tidiness: Task 6's `is_model_class(dotted)` compares
+    against exactly this string, and a package `__init__.py` that
+    re-exports models is an ordinary layout. If `.__init__` stopped being
+    stripped, `app.__init__.Customer` would silently never match
+    `app.Customer` -- medium grades would degrade to missed, with nothing
+    flagging it.
+
+    The last case (`__init__.py` with no directory at all) is asserted at
+    its actual, somewhat degenerate value (`"__init__"`, not `""` or
+    `"__init__"` stripped further): `"__init__".removesuffix(".__init__")`
+    does not match because the *whole* string is shorter than the suffix
+    being stripped (which itself starts with a dot). A repository with a
+    Python file directly at its root and no package directory around it is
+    not a layout this heuristic was designed for, and this is recorded here
+    rather than quietly assumed away.
+    """
+    assert _dotted_module(path) == expected
 
 
 def test_a_file_that_is_not_utf8_is_skipped_with_a_decode_reason(tmp_path: Path) -> None:
