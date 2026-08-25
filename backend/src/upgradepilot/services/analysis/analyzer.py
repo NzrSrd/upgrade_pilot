@@ -189,7 +189,15 @@ def analyze_repository(
     # Placed second, immediately after submodules: both are repository-wide
     # "code exists that this report did not read", which is the broadest
     # scope in the fixed order below.
-    uncitable = workspace.uncitable_files()
+    #
+    # Final fix round 2, item 4: `.py`, not every file. `uncitable_files()`
+    # with no suffix filter walks the whole tree, so a non-Python file this
+    # analysis never opens -- `notes\backup.md` -- produced a reducer
+    # claiming a gap that does not exist: nothing here ever reads a
+    # Markdown file's contents in the first place. Restricted to the
+    # suffix candidate scanning and the model index actually read, so the
+    # reducer only ever names a file whose exclusion is a real gap.
+    uncitable = workspace.uncitable_files(".py")
     if uncitable:
         confidence_reducers.append(
             f"{len(uncitable)} file(s) in this repository were not analysed "

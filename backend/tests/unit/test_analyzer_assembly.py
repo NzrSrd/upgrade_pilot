@@ -482,6 +482,24 @@ def test_an_ordinary_tree_gets_no_uncitable_reducer(tmp_path: Path) -> None:
     assert not any("cited" in r for r in analysis.confidence_reducers)
 
 
+def test_an_uncitable_non_python_file_gets_no_reducer(tmp_path: Path) -> None:
+    """Final fix round 2, finding 4/item 4: `workspace.uncitable_files()`
+    with no suffix filter walks every file, not the ones any analysis phase
+    actually reads. `notes\\backup.md` is a Markdown file no phase would
+    ever have opened -- the analyzer never reads `.md` content -- so a
+    reducer claiming its contents are "invisible to this report" describes
+    a gap that does not exist. Restricted to `.py`, the suffix the
+    candidate scan and the model index actually read, this file must not
+    produce a reducer at all.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "notes\\backup.md").write_text("irrelevant notes\n", encoding="utf-8")
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    assert not any("cited" in r for r in analysis.confidence_reducers), analysis.confidence_reducers
+
+
 # -- F4: the analysis must not contradict itself about the current version --
 
 
