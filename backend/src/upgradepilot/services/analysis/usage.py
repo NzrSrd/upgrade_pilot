@@ -42,6 +42,31 @@ equivalent spellings (`Optional[T]`, `Union[T, None]`, `T | None`) the
 source actually uses -- see the parametrized spelling test."""
 
 
+def _source_lines(source: str) -> list[str]:
+    """`source` split the way CPython's tokenizer counts lines, so that
+    `lines[node.lineno - 1]` is the line `ast` means.
+
+    NOT `str.splitlines()`. That method breaks on eight characters the
+    tokenizer does not treat as line breaks -- vertical tab `\\v`, form feed
+    `\\f`, the three file/group/record separators `\\x1c\\x1d\\x1e`, NEL
+    `\\x85`, and `U+2028`/`U+2029` (all eight verified against the pinned
+    3.14.5 interpreter). Any one of them inside a string literal makes
+    `splitlines()` produce one more entry than `ast` counted, and every
+    citation after that point quotes the wrong line while still reporting the
+    right number: a claim that looks precise and cannot be checked, which is
+    the exact failure CLAUDE.md rule 1 exists to prevent.
+
+    `\\r\\n` and a lone `\\r` ARE line breaks to the tokenizer (verified the
+    same way), so they are normalised to `\\n` first rather than left for
+    `split` to keep as trailing carriage returns inside a quoted snippet.
+
+    Do not "simplify" this back to `splitlines()`, and do not use
+    `splitlines()` anywhere else that an index is derived from an `ast` line
+    number.
+    """
+    return source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
 def _iter_args(args: ast.arguments) -> Iterable[ast.arg]:
     """Every parameter that can carry an annotation, in a stable order.
     Order does not matter for correctness (each binds a distinct name into
@@ -122,7 +147,7 @@ class _UsageVisitor(ast.NodeVisitor):
         self._aliases = aliases
         self._import_root = import_root
         self._index = index
-        self._lines = module.source.splitlines()
+        self._lines = _source_lines(module.source)
         # Keyed by (name, line): the *line* disambiguates a nested class that
         # happens to share a name with a top-level indexed one from the
         # indexed class itself -- `ModelIndex` only ever indexes top-level

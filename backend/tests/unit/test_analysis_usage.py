@@ -535,3 +535,58 @@ def test_every_site_points_inside_the_file_it_names() -> None:
 def test_sites_are_returned_in_source_order() -> None:
     sites = _sites(MODELS)
     assert [s.line for s in sites] == sorted(s.line for s in sites)
+
+
+# -- F1: line indexing must agree with `ast`'s own line numbering ------------
+
+_SPLITLINES_ONLY_BREAKS = ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", " ", " "]
+"""The eight characters `str.splitlines` treats as line breaks and CPython's
+tokenizer does not. Verified on the pinned 3.14.5 interpreter: each of these
+inside a string literal parses fine, `ast` keeps counting the physical line it
+sits on as ONE line, and `splitlines()` splits it into two -- so every index
+after it is off by one."""
+
+
+@pytest.mark.parametrize("separator", _SPLITLINES_ONLY_BREAKS)
+def test_a_character_only_splitlines_calls_a_break_does_not_shift_the_snippet(
+    separator: str,
+) -> None:
+    """CLAUDE.md rule 1. `line` comes from `ast`; `snippet` is read out of the
+    source by that same number. If the two disagree about what a line is, the
+    citation quotes a line the reader did not ask about while still naming the
+    right number -- an unverifiable claim that looks precise.
+    """
+    source = (
+        "from pydantic import BaseModel\n"
+        f'X = "a{separator}b"\n'
+        "\n"
+        "\n"
+        "class Invoice(BaseModel):\n"
+        "    y: int\n"
+    )
+    site = _one(_sites(source), UsageKind.MODEL_DEFINITION)
+    assert site.line == 5
+    assert site.snippet == "class Invoice(BaseModel):"
+
+
+def test_a_crlf_source_does_not_leave_a_carriage_return_in_the_snippet() -> None:
+    """The other half of the fix: `split("\\n")` alone would keep the `\\r` of
+    every CRLF line ending in the quoted snippet. `ast` counts `\\r\\n` and a
+    lone `\\r` as line breaks (verified on 3.14.5), so both are normalised to
+    `\\n` before splitting.
+    """
+    source = "from pydantic import BaseModel\r\n\r\nclass Invoice(BaseModel):\r\n    y: int\r\n"
+    site = _one(_sites(source), UsageKind.MODEL_DEFINITION)
+    assert site.line == 3
+    assert site.snippet == "class Invoice(BaseModel):"
+
+
+def test_a_lone_carriage_return_is_a_line_break_here_too() -> None:
+    """A file whose only line endings are lone `\\r` (classic Mac). `ast`
+    counts them as breaks; `splitlines()` happens to agree, so this one is
+    NOT a de-sync -- it pins that the normalisation added for CRLF does not
+    break the case that already worked."""
+    source = "from pydantic import BaseModel\r\rclass Invoice(BaseModel):\r    y: int\r"
+    site = _one(_sites(source), UsageKind.MODEL_DEFINITION)
+    assert site.line == 3
+    assert site.snippet == "class Invoice(BaseModel):"
