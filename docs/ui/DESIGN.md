@@ -99,8 +99,9 @@ Execution observability, visible during a run **and after it completes**:
 
 - Token usage — input, output, total
 - Estimated cost, with its two honesty flags
-- LLM call count, and tokens by node
+- LLM call count
 - Model in use
+- Tokens by node
 - Graph execution state
 - Retrieved sources
 - Diagnostics
