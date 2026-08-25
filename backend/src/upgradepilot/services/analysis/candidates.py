@@ -82,13 +82,30 @@ class ParsedModule:
 
     NOT injective, and nothing may key on it as though it were: the leading
     `src/` strip means `src/app/models.py` and `app/models.py` both land on
-    `app.models`. Two places used to, and both produced a wrong claim -- see
-    `models_index.build_model_index` and `usage._UsageVisitor.__init__`,
-    which now select on `file` instead. What remains keyed on the dotted name
-    is `ModelIndex.is_model_class`, where it is unavoidable (an import names
-    a module, not a file) and where the cost is bounded: a wrong or
-    ambiguous guess mis-grades a call's CONFIDENCE in either direction, and
-    never affects the file, line, column or symbol that gets cited."""
+    `app.models`. Two places used to key a lookup dict directly on it
+    (`(dotted_module, name)`), and both produced a wrong claim -- see
+    `models_index.build_model_index`'s `found`/`visited` mapping and
+    `usage._UsageVisitor.__init__`, which now select on `file` instead.
+
+    Two lookups still key on the dotted name, deliberately, because an
+    import names a module, never a file -- and they do NOT cost the same
+    thing:
+
+    - `ModelIndex.is_model_class` -- a call's receiver resolves to a dotted
+      path, and `is_model_class` asks whether that path names an indexed
+      class. A wrong or ambiguous match here only mis-grades that call's
+      CONFIDENCE (medium vs low, via `_receiver_is_model`); it never
+      affects the file, line, column or symbol that gets cited.
+    - `models_index.build_model_index`'s `dotted_targets` set -- a
+      transitive base resolving to a colliding dotted path DECIDES whether
+      a class is indexed at all, which mints a new HIGH-confidence
+      `MODEL_DEFINITION` citation (and any MEDIUM `METHOD_CALL` sites
+      downstream of it). That citation's file, line and snippet are still
+      correct; the claim that the class derives from the dependency can be
+      wrong when the base actually names the OTHER file sharing this
+      dotted module. `analyze_repository` reports the collision as a
+      confidence reducer rather than resolving it -- see that function and
+      `build_model_index`'s own comment on `dotted_targets`."""
     source: str
     tree: ast.Module
 
