@@ -6,7 +6,16 @@
  * against an impossible fixture is worse than no test.
  */
 
-import type { BreakingChange, FinalReport, RunSnapshot, SourceRef, TraceEvent, UsageView } from "../api/types";
+import type {
+  BreakingChange,
+  DecisionOption,
+  FinalReport,
+  InterruptPayload,
+  RunSnapshot,
+  SourceRef,
+  TraceEvent,
+  UsageView,
+} from "../api/types";
 
 export function aSourceRef(overrides: Partial<SourceRef> = {}): SourceRef {
   return {
@@ -102,6 +111,46 @@ export function aSnapshot(overrides: Partial<RunSnapshot> = {}): RunSnapshot {
     pending_decision: null,
     final_report: null,
     errors: [],
+    ...overrides,
+  };
+}
+
+export function anOption(overrides: Partial<DecisionOption> = {}): DecisionOption {
+  return {
+    id: "staged_rollout",
+    label: "Staged rollout",
+    summary: "Migrate module by module behind a feature flag.",
+    risk_level: "medium",
+    effort: "high",
+    downtime: false,
+    consequences: ["Two code paths coexist for several weeks."],
+    supporting_evidence: [{ kind: "doc", source_id: "s-1", chunk_id: "s-1#0", relevance: 0.82 }],
+    ...overrides,
+  };
+}
+
+export function anInterrupt(overrides: Partial<InterruptPayload> = {}): InterruptPayload {
+  return {
+    question_id: "q-1",
+    kind: "strategy_choice",
+    reason: "Zero-downtime and the deadline pull in opposite directions.",
+    question: "Which migration strategy should the plan follow?",
+    evidence: [{ kind: "constraint", field: "zero_downtime", value: "true" }],
+    options: [
+      anOption({}),
+      anOption({
+        id: "direct_migration",
+        label: "Direct migration",
+        summary: "Change everything in one release.",
+        risk_level: "high",
+        effort: "low",
+        downtime: true,
+        consequences: ["A short outage during deploy."],
+      }),
+    ],
+    recommendation_id: "staged_rollout",
+    consequences_if_unanswered: "Without an answer the run stops here and produces no plan.",
+    validation_error: null,
     ...overrides,
   };
 }
