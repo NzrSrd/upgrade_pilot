@@ -146,3 +146,38 @@ class ThreadNotAwaitingInputError(UpgradePilotError):
 class InvalidDecisionError(UpgradePilotError):
     code = ErrorCode.INVALID_DECISION
     http_status = 422
+
+
+class LLMUnavailableError(UpgradePilotError):
+    """The model could not be reached, or returned nothing usable.
+
+    Carried into Phase 4 from PLANNING.md's Phase 2 deferrals. `retryable` is
+    true because every condition it covers is transient in principle -- a
+    dropped connection, a gateway 502, a response that did not match the
+    requested schema.
+
+    That last case is the one worth naming, because the code reads oddly for
+    it: a model that answers with unparseable output *is* available. It is
+    classified here anyway rather than given a code of its own, because the
+    code is machine-facing -- it selects an HTTP status and a retry policy,
+    and "retry, this may succeed next time" is exactly right. The user-facing
+    `message` says what actually happened; the technical `detail` carries the
+    parser's complaint.
+    """
+
+    code = ErrorCode.LLM_UNAVAILABLE
+    http_status = 502
+    retryable = True
+
+
+class LLMRateLimitedError(UpgradePilotError):
+    """The provider refused the call for rate reasons.
+
+    Separate from `LLMUnavailableError` because the remedy differs: waiting
+    helps here and does not help a misconfigured endpoint, and a run that
+    reports both as one condition cannot tell an operator which they have.
+    """
+
+    code = ErrorCode.LLM_RATE_LIMITED
+    http_status = 429
+    retryable = True
