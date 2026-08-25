@@ -551,6 +551,36 @@ def test_a_chain_deeper_than_the_expansion_cap_says_so_rather_than_truncating(
     assert str(MAX_EXPANSION_PASSES) in reducer
 
 
+def test_the_cap_reducer_hedges_rather_than_asserting_a_gap_at_the_boundary_depth(
+    tmp_path: Path,
+) -> None:
+    """Final fix round 2, finding 1: hitting the cap means convergence was
+    not PROVEN, not that anything was actually truncated. At a chain depth
+    of exactly `MAX_EXPANSION_PASSES` every module IS examined -- the
+    consumer's `.dict()` is found below -- so a reducer that asserts files
+    "were not examined" and usage "is missing" would be telling the user
+    about a gap that does not exist, which is the same class of defect a
+    fabricated finding is. The reducer must hedge ("may not have been
+    examined") rather than assert.
+    """
+    root = build_sample_repo(tmp_path)
+    _write_chain(root, links=MAX_EXPANSION_PASSES)
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    consumer = next((a for a in analysis.affected_files if a.path == "src/chain/consumer.py"), None)
+    assert consumer is not None, sorted(a.path for a in analysis.affected_files)
+    calls = [s for s in consumer.usage_sites if s.kind is UsageKind.METHOD_CALL]
+    assert [(s.symbol, s.confidence) for s in calls] == [("dict", Confidence.MEDIUM)]
+
+    reducer = next((r for r in analysis.confidence_reducers if "converge" in r), None)
+    assert reducer is not None, analysis.confidence_reducers
+    assert "were not examined" not in reducer, reducer
+    assert "is missing from this report" not in reducer, reducer
+    assert "may not have been examined" in reducer, reducer
+    assert "may be" in reducer, reducer
+
+
 # -- A16/M12: which manifest the unconstrained reducer names, and why -------
 
 

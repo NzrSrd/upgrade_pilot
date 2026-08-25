@@ -212,19 +212,27 @@ def analyze_repository(
         )
 
     # F5: candidate expansion did not reach a fixed point within
-    # `MAX_EXPANSION_PASSES`. Every remaining link of the inheritance chain,
-    # and every module using one, is unexamined -- the same "we could not
-    # find it" gap the no-candidates reducer above records, at the far end
-    # of a chain instead of at the root. Reported rather than silently
-    # truncated: untrusted input must not be able to make the analyzer claim
-    # a completeness it does not have.
+    # `MAX_EXPANSION_PASSES`. Hitting the cap means convergence was not
+    # PROVEN, not that anything was actually truncated: a pass that adds
+    # nothing is what sets `expansion_converged = True`, so exhausting the
+    # loop always means the LAST pass was still productive, and whether the
+    # next one would have been too is genuinely unknown. At a chain depth of
+    # exactly `MAX_EXPANSION_PASSES` every module is in fact examined and the
+    # report is complete -- asserting a gap that does not exist there is the
+    # same class of rule-1 defect as a finding that does not exist (final
+    # fix round 2, finding 1). Hedged accordingly: "may not have been
+    # examined", never "were not examined". Reported rather than silently
+    # truncated either way: untrusted input must not be able to make the
+    # analyzer claim a completeness it does not have, in either direction.
     if not expansion_converged:
         confidence_reducers.append(
             f"This repository's first-party model inheritance chain is deeper "
             f"than the {MAX_EXPANSION_PASSES} discovery passes this analysis "
-            f"makes, so candidate selection did not converge. Modules that "
-            f"use only the deepest links of that chain were not examined, and "
-            f"usage in them is missing from this report."
+            f"budgets for, so candidate selection did not converge within "
+            f"that budget: completeness beyond this depth is unproven, not "
+            f"disproven. Modules that use only the deepest links of that "
+            f"chain may not have been examined, and usage in them may be "
+            f"missing from this report."
         )
 
     # RULING 17: `resolve_version` returns None -- not raises -- when the
