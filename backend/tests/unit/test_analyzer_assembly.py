@@ -549,3 +549,145 @@ def test_a_chain_deeper_than_the_expansion_cap_says_so_rather_than_truncating(
     reducer = next((r for r in analysis.confidence_reducers if "converge" in r), None)
     assert reducer is not None, analysis.confidence_reducers
     assert str(MAX_EXPANSION_PASSES) in reducer
+
+
+# -- A16/M12: which manifest the unconstrained reducer names, and why -------
+
+
+def test_the_unconstrained_reducer_names_the_first_manifest_by_PATH_not_by_walk_order(
+    tmp_path: Path,
+) -> None:
+    """Two things nothing bound: `unconstrained[0]` (A16 mutated it to
+    `[-1]`, 675 green) and `scan.declarations`'s sort by path (M12 deleted
+    it, 675 green). Ruling 59 relies on that sort for determinism.
+
+    Binding the sort needs a fixture where PATH-STRING order and
+    `iter_files`' walk order genuinely disagree, which is why the two
+    directories are named `sub` and `sub-dir`. `iter_files` sorts `Path`
+    objects, comparing part by part, so `sub` sorts before `sub-dir`
+    ("sub" < "sub-dir") and the walk yields `sub/requirements.txt` first.
+    Sorting the POSIX strings compares character by character, where `-`
+    (0x2d) precedes `/` (0x2f), so `sub-dir/requirements.txt` comes first.
+    Verified against this interpreter, not recalled.
+
+    So: with the sort, the reducer names `sub-dir/...`; without it,
+    `sub/...`; and with `[-1]` instead of `[0]`, `sub/...` as well. Neither
+    the root `requirements.txt` nor `pyproject.toml` may mention pydantic,
+    or a third declaration would sort ahead of both and mask the difference.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "requirements.txt").write_text("requests==2.31.0\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "sample-app"\nversion = "0.1.0"\ndependencies = ["requests"]\n',
+        encoding="utf-8",
+    )
+    for directory in ("sub", "sub-dir"):
+        (root / directory).mkdir()
+        (root / directory / "requirements.txt").write_text("pydantic\n", encoding="utf-8")
+
+    workspace = Workspace(root)
+    walk_order = [
+        p.as_posix()
+        for p in workspace.iter_files("")
+        if p.name == "requirements.txt" and "/" in p.as_posix()
+    ]
+    assert walk_order == ["sub/requirements.txt", "sub-dir/requirements.txt"], walk_order
+
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(workspace, spec)
+
+    assert analysis.detected_version is None
+    reducer = next(r for r in analysis.confidence_reducers if "version constraint" in r)
+    assert "sub-dir/requirements.txt" in reducer, reducer
+    assert "sub/requirements.txt" not in reducer, reducer
+
+
+# -- A17b: the reducers' FIXED ORDER, which had zero coverage ---------------
+
+_REDUCER_DISCRIMINATORS = (
+    "submodule",
+    "cannot be cited",
+    "did not converge",
+    "version constraint",
+    "history could not be read",
+    "could not be parsed",
+    "import *",
+)
+"""One substring per reducer, in the order `analyze_repository` emits them.
+
+Each matches exactly one reducer (Ruling 58's uniqueness property, extended
+to the two added in this round). The no-candidates reducer is deliberately
+absent: it requires `candidates.modules` to be EMPTY, and four of the seven
+above require it to be non-empty, so no fixture can produce all eight.
+"""
+
+
+def test_the_confidence_reducers_are_emitted_in_their_documented_order(
+    tmp_path: Path,
+) -> None:
+    """Mutation A17b emitted `tuple(reversed(confidence_reducers))` and all
+    675 tests stayed green. Each of the six discriminators was individually
+    tested; nothing bound the SEQUENCE -- and the sequence is what the user
+    reads first, ordered deliberately from repository-wide down to a
+    per-module caveat (Ruling 57).
+
+    This fixture triggers seven reducers at once, which is the maximum that
+    can co-occur, and asserts the exact order. Every trigger is independent
+    of the others:
+
+      submodules            an empty `.gitmodules`
+      cannot be cited       `back\\slash.py`, which no citation can name
+      did not converge      an inheritance chain deeper than the pass cap
+      version constraint    both root manifests declare pydantic bare
+      history unreadable    `.git/objects` removed
+      could not be parsed   a `poetry.lock` that is not valid TOML
+      import *              a module doing `from pydantic import *`
+    """
+    root = build_sample_repo(tmp_path)
+    (root / ".gitmodules").write_text('[submodule "x"]\n', encoding="utf-8")
+    (root / "back\\slash.py").write_text("x = 1\n", encoding="utf-8")
+    _write_chain(root, links=MAX_EXPANSION_PASSES + 3)
+    (root / "requirements.txt").write_text("pydantic\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "sample-app"\nversion = "0.1.0"\ndependencies = ["pydantic"]\n',
+        encoding="utf-8",
+    )
+    (root / "poetry.lock").write_text("not [ valid = toml", encoding="utf-8")
+    (root / "src" / "app" / "star.py").write_text("from pydantic import *\n", encoding="utf-8")
+    shutil.rmtree(root / ".git" / "objects")
+
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    reducers = analyze_repository(Workspace(root), spec).confidence_reducers
+
+    matched = [
+        next(d for d in _REDUCER_DISCRIMINATORS if d in reducer)
+        for reducer in reducers
+        if any(d in reducer for d in _REDUCER_DISCRIMINATORS)
+    ]
+    assert matched == list(_REDUCER_DISCRIMINATORS), reducers
+    assert len(reducers) == len(_REDUCER_DISCRIMINATORS), reducers
+
+
+def test_each_reducer_discriminator_matches_exactly_one_reducer(tmp_path: Path) -> None:
+    """Ruling 58's uniqueness property, which the order test above depends on:
+    if two reducers shared a discriminator the sequence assertion could pass
+    on the wrong pairing. Re-checked here because this round added two
+    reducers to the six the ruling covered."""
+    root = build_sample_repo(tmp_path)
+    (root / ".gitmodules").write_text('[submodule "x"]\n', encoding="utf-8")
+    (root / "back\\slash.py").write_text("x = 1\n", encoding="utf-8")
+    _write_chain(root, links=MAX_EXPANSION_PASSES + 3)
+    (root / "requirements.txt").write_text("pydantic\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "sample-app"\nversion = "0.1.0"\ndependencies = ["pydantic"]\n',
+        encoding="utf-8",
+    )
+    (root / "poetry.lock").write_text("not [ valid = toml", encoding="utf-8")
+    (root / "src" / "app" / "star.py").write_text("from pydantic import *\n", encoding="utf-8")
+    shutil.rmtree(root / ".git" / "objects")
+
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    reducers = analyze_repository(Workspace(root), spec).confidence_reducers
+
+    for discriminator in _REDUCER_DISCRIMINATORS:
+        assert sum(discriminator in r for r in reducers) == 1, discriminator
