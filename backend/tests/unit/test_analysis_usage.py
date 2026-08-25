@@ -630,3 +630,66 @@ def test_a_same_named_class_in_a_colliding_dotted_module_is_not_reported_as_a_mo
     assert impostor_sites == (), impostor_sites
     real_sites = detect_usage(real, import_root="pydantic", index=index)
     assert _one(real_sites, UsageKind.MODEL_DEFINITION).symbol == "BaseModel"
+
+
+# -- F6: a packed parameter's annotation is not the parameter's type --------
+
+
+def _sites_against_models(source: str) -> tuple[UsageSite, ...]:
+    """`source` graded against a module that really defines `Customer` and
+    `Invoice` as pydantic models, so a MEDIUM here would be a genuine
+    resolution rather than an accident of the fixture."""
+    module = ParsedModule(file="c.py", dotted_module="c", source=source, tree=ast.parse(source))
+    models = ParsedModule(
+        file="app/models.py",
+        dotted_module="app.models",
+        source=MODELS_MODULE,
+        tree=ast.parse(MODELS_MODULE),
+    )
+    index = build_model_index((module, models), import_root="pydantic")
+    return detect_usage(module, import_root="pydantic", index=index)
+
+
+@pytest.mark.parametrize(
+    ("parameter", "receiver"),
+    [("*items: Invoice", "items"), ("**items: Invoice", "items")],
+)
+def test_a_call_on_a_packed_parameter_is_low_not_medium(parameter: str, receiver: str) -> None:
+    """`*items: Invoice` types `items` as `tuple[Invoice, ...]` and
+    `**items: Invoice` as `dict[str, Invoice]`. Neither has a `.dict()`, so
+    grading `items.dict()` MEDIUM -- "what the report presents as a likely
+    break", per usage.py's own docstring -- is a claim about a call that
+    cannot be the one described.
+
+    This is precisely the widening `_annotation_head_name` already refuses
+    for an explicit `list[Invoice]`: `*` and `**` are an implicit subscript.
+    """
+    source = (
+        f"from app.models import Invoice\n\n\ndef f({parameter}) -> None:\n    {receiver}.dict()\n"
+    )
+    method_sites = [s for s in _sites_against_models(source) if s.kind is UsageKind.METHOD_CALL]
+    assert [(s.symbol, s.confidence) for s in method_sites] == [("dict", Confidence.LOW)]
+
+
+def test_a_packed_parameter_still_shadows_an_outer_binding_of_its_name() -> None:
+    """The regression guard for the obvious wrong fix. Dropping `vararg` and
+    `kwarg` from the iteration entirely would stop them BINDING -- and also
+    stop them SHADOWING, so an inner `def g(*item)` would leave the outer
+    `item: Invoice` binding in force and `item.dict()` inside `g` would grade
+    MEDIUM against a name that no longer means a model there.
+    """
+    source = (
+        "from app.models import Invoice\n"
+        "\n"
+        "\n"
+        "def outer(item: Invoice) -> None:\n"
+        "    def inner(*item: Invoice) -> None:\n"
+        "        item.dict()\n"
+        "\n"
+        "    item.dict()\n"
+    )
+    method_sites = [s for s in _sites_against_models(source) if s.kind is UsageKind.METHOD_CALL]
+    assert [(s.line, s.confidence) for s in method_sites] == [
+        (6, Confidence.LOW),
+        (8, Confidence.MEDIUM),
+    ]

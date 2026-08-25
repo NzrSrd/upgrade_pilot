@@ -67,15 +67,37 @@ def _source_lines(source: str) -> list[str]:
     return source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
-def _iter_args(args: ast.arguments) -> Iterable[ast.arg]:
-    """Every parameter that can carry an annotation, in a stable order.
-    Order does not matter for correctness (each binds a distinct name into
-    a dict), only completeness."""
+def _iter_directly_annotated_args(args: ast.arguments) -> Iterable[ast.arg]:
+    """Every parameter whose annotation names the parameter's OWN type, in a
+    stable order. Order does not matter for correctness (each binds a
+    distinct name into a dict), only completeness.
+
+    `*args` and `**kwargs` are excluded and handled by
+    `_iter_packed_args` -- see there."""
     yield from args.posonlyargs
     yield from args.args
+    yield from args.kwonlyargs
+
+
+def _iter_packed_args(args: ast.arguments) -> Iterable[ast.arg]:
+    """`*args` and `**kwargs`, whose annotation names the ELEMENT type and
+    not the parameter's own.
+
+    `def f(*items: Invoice)` makes `items` a `tuple[Invoice, ...]`, and
+    `**kw: Invoice` makes `kw` a `dict[str, Invoice]`. Neither has a
+    `.dict()`, so recording `Invoice` as the receiver's type graded
+    `items.dict()` MEDIUM -- what the report presents as a likely break --
+    for a call that cannot be the one described. `*` and `**` are an
+    implicit subscript, and `_annotation_head_name` already refuses to guess
+    through an explicit one (`list[Invoice]`) for exactly this reason.
+
+    Yielded rather than simply dropped, because these names must still
+    SHADOW an outer binding: inside `def inner(*item: Invoice)`, `item` no
+    longer means what an enclosing `item: Invoice` made it mean, and
+    dropping them from the iteration entirely would leave the outer binding
+    in force."""
     if args.vararg is not None:
         yield args.vararg
-    yield from args.kwonlyargs
     if args.kwarg is not None:
         yield args.kwarg
 
@@ -346,7 +368,7 @@ class _UsageVisitor(ast.NodeVisitor):
 
         outer_scope = self._annotated_names
         new_scope = dict(outer_scope)
-        for arg in _iter_args(node.args):
+        for arg in _iter_directly_annotated_args(node.args):
             head = _annotation_head_name(arg.annotation) if arg.annotation is not None else None
             if head is not None:
                 new_scope[arg.arg] = head
@@ -355,6 +377,11 @@ class _UsageVisitor(ast.NodeVisitor):
                 # same name -- inside this function, that name no longer
                 # means what it meant one scope up.
                 new_scope.pop(arg.arg, None)
+        for arg in _iter_packed_args(node.args):
+            # Shadows, never binds: the annotation describes the elements,
+            # not the tuple or dict the name is actually bound to. See
+            # `_iter_packed_args`.
+            new_scope.pop(arg.arg, None)
 
         self._annotated_names = new_scope
         self._scope_stack.append(None)  # a function scope, never a model
