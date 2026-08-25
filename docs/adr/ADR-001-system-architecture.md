@@ -177,4 +177,37 @@ enumeration and interrupt-payload construction belong to `assess_risk`;
 `human_review` only calls `interrupt()` and validates the returned
 decision. Locked by `backend/tests/graph/test_langgraph_contract.py`.
 
+### Finding not anticipated by the design: unregistered types silently degrade to dicts
+
+Found in Phase 4 while wiring the checkpointer. LangGraph 1.2.11 logs
+"Deserializing unregistered type ... This will be blocked in a future version"
+for every type it has not been told about — which is all of
+`upgradepilot.models`.
+
+"Blocked" undersells the behaviour, and that is the finding. Measured directly
+against the pinned version with strict msgpack: deserialization does **not**
+raise. It returns a plain `dict`. So a resumed run would carry dictionaries
+wherever it expects Pydantic models, and D4's honesty invariants — the ones
+this design deliberately encodes in types rather than in prompts — would
+simply be absent from it: `BreakingChange.source` no longer required,
+`RiskFactor.evidence`'s `min_length=1` no longer enforced, `LLMCall`'s
+agreement between cost and basis no longer checked. Nothing raises at the
+point of loss, and the first symptom appears somewhere else entirely.
+
+**Rule adopted:** the checkpointer is always constructed through
+`graph.checkpointer.open_checkpointer`, whose serializer registers an
+allowlist **derived by walking `upgradepilot.models`** — models and enums
+both, since an unregistered `StrEnum` degrades to a bare string and
+`call.cost_basis is CostBasis.UNKNOWN` quietly stops being true. Derived
+rather than hand-listed because a hand-list is what a model added in a later
+phase gets forgotten from, and forgetting has no symptom until a resume.
+
+One trap worth recording, because it cost a passing test that proved nothing:
+`JsonPlusSerializer().with_msgpack_allowlist(types)` is a **silent no-op**.
+The default allowlist is the sentinel `True` (permissive), and the method
+returns `self` unchanged rather than narrowing it. The allowlist must be
+passed to the constructor. *Source: `backend/tests/graph/test_checkpoint_serde.py`
+and direct experiments run this session against the pinned
+`langgraph 1.2.11`.*
+
 Findings that contradict this ADR must be raised and the ADR amended before implementation proceeds, per development rule 14.
