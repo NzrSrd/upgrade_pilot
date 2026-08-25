@@ -21,12 +21,13 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from upgradepilot.graph.deps import GraphDeps
-from upgradepilot.graph.nodes import NodeBody, make_assess_risk, make_stub, traced
+from upgradepilot.graph.nodes import NodeBody, make_stub, traced
 from upgradepilot.graph.nodes.evidence import (
     make_agentic_rag,
     make_analyze_repo,
     make_inspect_dependency,
 )
+from upgradepilot.graph.nodes.judgment import make_assess_risk
 from upgradepilot.models.state import MigrationState
 
 NODE_SEQUENCE: tuple[str, ...] = (
@@ -64,9 +65,6 @@ def _bodies(deps: GraphDeps) -> dict[str, NodeBody[MigrationState]]:
             max_iterations=deps.max_rag_iterations,
             limit=deps.retrieval_limit,
         ),
-        # Phase 6 replaces this with real factor extraction; today it is the
-        # skeleton's single model call, kept because it is what the resume
-        # and usage-aggregation tests exercise.
         "assess_risk": make_assess_risk(deps.llm),
         "generate_plan": make_stub("generate_plan"),  # Phase 8
         "validate_plan": make_stub("validate_plan"),  # Phase 8

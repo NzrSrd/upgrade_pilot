@@ -4,13 +4,15 @@ Spec §6. A `TypedDict` with `Annotated` reducers because LangGraph's channel
 model requires it, while every value inside is a Pydantic model -- validation
 where data lives, merging where merging happens.
 
-**This state is deliberately smaller than spec §6's listing.** The RAG loop
-fields (`rag_queries`, `rag_evaluations`, `rag_context`), the judgment fields
-(`risk_analysis`, `pending_decision`, `human_decisions`) and the plan fields
-(`migration_plan`, `validation`) are absent because the models they hold do
-not exist yet; each arrives with the phase that consumes it, where a real
-caller can shape it, exactly as the domain models did in Phase 1. Declaring
-them now would mean guessing at eight models to satisfy a type annotation.
+**This state grows phase by phase, and deliberately so.** The RAG loop
+fields (`rag_queries`, `rag_evaluations`, `rag_context`) arrived with Phase 5
+and `risk_analysis` with Phase 6. The remaining judgment fields
+(`pending_decision`, `human_decisions`) and the plan fields
+(`migration_plan`, `validation`) are still absent because the models they
+hold do not exist yet; each arrives with the phase that consumes it, where a
+real caller can shape it, exactly as the domain models did in Phase 1.
+Declaring them early would mean guessing at models to satisfy a type
+annotation.
 
 `llm_calls` carries the append-only usage records that §6.1 keeps instead of a
 stored total -- see `models/usage.py` for why a counter is wrong.
@@ -25,6 +27,7 @@ from upgradepilot.models.evidence import BreakingChange, SourceRef
 from upgradepilot.models.inputs import DependencySpec, RepoRef, UserConstraints
 from upgradepilot.models.knowledge import RagContext, RagEvaluation, RagQuery
 from upgradepilot.models.repo import AffectedFile, RepoAnalysis, SymbolInventory
+from upgradepilot.models.risk import RiskAnalysis
 from upgradepilot.models.trace import TraceEvent
 from upgradepilot.models.usage import LLMCall
 
@@ -120,6 +123,9 @@ class MigrationState(TypedDict):
     breaking_changes: list[BreakingChange]
     rag_context: RagContext | None
 
+    # Judgment.
+    risk_analysis: RiskAnalysis | None
+
     # Append-only channels. A channel that lost its reducer degrades to
     # last-value, so each node's writes would *replace* the accumulated list
     # rather than extend it and the trace would show only the final node's
@@ -158,6 +164,7 @@ def initial_state(
         symbol_inventory=None,
         breaking_changes=[],
         rag_context=None,
+        risk_analysis=None,
         rag_queries=[],
         rag_evaluations=[],
         retrieved_sources=[],

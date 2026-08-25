@@ -378,9 +378,11 @@ async def test_a_failed_analysis_does_not_make_retrieval_claim_a_clean_repositor
     ]
     assert decisions and "the repository analysis did not complete" in decisions[0]
     assert result["rag_context"] is None
-    # Only `assess_risk`'s narrative: the retrieval loop never ran, so it
-    # never planned or graded anything.
-    assert len(model.prompts) == 1
+    assert result["risk_analysis"] is None
+    # Not one model call in the whole run. Every node that would have made
+    # one reads the repository analysis first, so a failed analysis costs
+    # nothing rather than paying for judgements over an empty state.
+    assert model.prompts == []
 
 
 async def test_a_failing_node_does_not_stop_the_trace_recording_the_rest(

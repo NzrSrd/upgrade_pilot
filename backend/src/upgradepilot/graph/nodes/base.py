@@ -1,10 +1,10 @@
 """The wrapper every node wears, and the stubs not yet replaced.
 
-**What is left here is a stub and a wrapper.** Real bodies live beside this
-module, one file per layer -- `evidence.py` for `analyze_repo`,
-`inspect_dependency` and `agentic_rag`. `assess_risk` is still the skeleton's
-placeholder below and is replaced in Phase 6, alongside `generate_plan` and
-`validate_plan` in Phase 8.
+**What is left here is the wrapper and one stub factory.** Real bodies live
+beside this module, one file per layer -- `evidence.py` for `analyze_repo`,
+`inspect_dependency` and `agentic_rag`, `judgment.py` for `assess_risk`.
+`generate_plan`, `validate_plan` and `finalize` are still `make_stub` and are
+replaced in Phase 8.
 
 The wrapper is the point of this module. CLAUDE.md rule 20 -- a caught
 exception produces an `AppError` in state *and* a trace event, always -- is
@@ -17,13 +17,10 @@ can act on.
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from pydantic import BaseModel
-
 from upgradepilot.models.enums import TraceEventKind
 from upgradepilot.models.errors import AppError, ErrorCode, UpgradePilotError
 from upgradepilot.models.state import MigrationState
 from upgradepilot.models.trace import trace_event
-from upgradepilot.services.llm.tracked import TrackedLLM
 
 StateUpdate = dict[str, Any]
 type NodeBody[StateT] = Callable[[StateT], Awaitable[StateUpdate]]
@@ -34,18 +31,6 @@ Generic over the state because the RAG subgraph's nodes wear the same
 -- it is a rule about nodes, and a subgraph node that swallowed an exception
 would swallow it just as thoroughly.
 """
-
-
-class StubNarrative(BaseModel):
-    """The schema the skeleton's one model call asks for.
-
-    A stand-in for §8.1's risk narrative, kept deliberately trivial: its job
-    is to make a real structured call travel the real `TrackedLLM` path so
-    the usage channel is exercised end to end, not to produce anything a
-    reader would be shown.
-    """
-
-    summary: str
 
 
 def traced[StateT](name: str, body: NodeBody[StateT]) -> NodeBody[StateT]:
@@ -140,28 +125,4 @@ def make_stub(name: str) -> NodeBody[MigrationState]:
         return stub_node(state)
 
     body.__name__ = name
-    return body
-
-
-def make_assess_risk(llm: TrackedLLM) -> NodeBody[MigrationState]:
-    """The one skeleton node that calls a model.
-
-    Placed at `assess_risk` because that is where §8.1 puts narrative
-    synthesis, so the skeleton's single call sits where a real one will. The
-    prompt is a placeholder; the `LLMCall` it records is not, and it is what
-    the resume test exercises.
-    """
-
-    async def body(state: MigrationState) -> StateUpdate:
-        _, call = await llm.invoke_structured(
-            node="assess_risk",
-            prompt=(
-                f"Summarise the upgrade of {state['dependency'].name} from "
-                f"{state['dependency'].current_version} to "
-                f"{state['dependency'].target_version} in one sentence."
-            ),
-            schema=StubNarrative,
-        )
-        return {"llm_calls": [call]}
-
     return body

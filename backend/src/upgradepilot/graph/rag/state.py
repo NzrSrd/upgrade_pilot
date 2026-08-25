@@ -25,6 +25,7 @@ simply showing everything twice.
 import operator
 from typing import Annotated, TypedDict
 
+from upgradepilot.models.enums import TraceEventKind
 from upgradepilot.models.errors import AppError
 from upgradepilot.models.evidence import BreakingChange, SourceRef
 from upgradepilot.models.inputs import DependencySpec
@@ -38,6 +39,38 @@ from upgradepilot.models.repo import SymbolInventory
 from upgradepilot.models.state import merge_by_relevance, merge_sources_by_id
 from upgradepilot.models.trace import TraceEvent
 from upgradepilot.models.usage import LLMCall
+
+
+def rounds_started(state: "RAGState") -> int:
+    """How many retrieval rounds have begun, counted from the trace.
+
+    **This is the loop's real bound, and it is derived from the one channel no
+    node body can suppress.** `traced` emits a `node_started` event for every
+    node execution, success or failure, before the body runs and regardless of
+    what the body does -- so this number advances even on a round where every
+    node raised.
+
+    That property is not decoration. The `iteration` field below is written by
+    `plan_retrieval`, and `traced` discards a failed body's update entirely
+    (correctly: a half-built update is not trustworthy). A router that bounded
+    the loop on `iteration` therefore stops advancing the moment
+    `plan_retrieval` hits an unexpected exception, and the graph loops
+    forever -- the run never completes, the API never returns, and the only
+    symptom is a checkpoint file growing on disk. Measured, not theorised:
+    it happened, with a scripted model that ran out of responses standing in
+    for the bug.
+
+    Reading a "presentation" channel for control flow is worth a word. The
+    trace is not decoration either -- it is the run's record of what
+    executed, written by a mechanism no node can skip, and "how many times
+    has planning begun" is exactly the loop counter. Deriving it here rather
+    than storing a second copy is CLAUDE.md rule 21 applied to control flow.
+    """
+    return sum(
+        1
+        for event in state["agent_trace"]
+        if event.node == "plan_retrieval" and event.kind is TraceEventKind.NODE_STARTED
+    )
 
 
 def merge_chunks_by_id(
@@ -75,6 +108,13 @@ class RAGState(TypedDict):
 
     # Loop control, child-only.
     iteration: int
+    """The round number stamped on this round's queries and evaluation.
+
+    Written by `plan_retrieval`. **Not** the loop's bound -- see
+    `rounds_started` above for why a bound written by a node body is a bound
+    that stops advancing the moment that body fails.
+    """
+
     retrieval_necessary: bool
     """Whether there is anything worth asking the corpus about.
 

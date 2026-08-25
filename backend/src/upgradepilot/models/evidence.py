@@ -154,7 +154,38 @@ class DocEvidence(HonestModel):
     relevance: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
-EvidenceRef = Annotated[RepoEvidence | DocEvidence, Field(discriminator="kind")]
+class ConstraintEvidence(HonestModel):
+    """A constraint the user stated, cited as the thing it actually is.
+
+    Added in Phase 6, and the reason is specific: `constraint_pressure` is one
+    of spec 8.1's seven risk factors, `RiskFactor.evidence` has
+    `min_length=1`, and a constraint is not in the repository or in the
+    corpus. The three ways out were to cite an unrelated repository line
+    (a fabricated citation, and exactly what this package exists to prevent),
+    to exempt one factor from the evidence rule (a hole the next factor walks
+    through), or to say what the evidence really is. This is the third.
+
+    It resolves, which is what makes it evidence rather than a label: `field`
+    names a real field of `UserConstraints` and `value` is that field's value
+    as the run received it, so a validator can check the citation against the
+    run's own inputs the same way a `RepoEvidence` is checked against the
+    analysis record.
+    """
+
+    kind: Literal["constraint"] = "constraint"
+    field: NonBlankStr
+    """The `UserConstraints` field name, e.g. `zero_downtime`."""
+
+    value: NonBlankStr
+    """That field's value, rendered for display. A string rather than the
+    original type because this is a citation, not a copy of the input: the
+    reader is shown "2026-09-01", and the authoritative value stays in
+    `UserConstraints` where nothing can drift from it."""
+
+
+EvidenceRef = Annotated[
+    RepoEvidence | DocEvidence | ConstraintEvidence, Field(discriminator="kind")
+]
 
 
 class BreakingChange(HonestModel):

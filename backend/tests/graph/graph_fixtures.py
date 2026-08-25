@@ -20,13 +20,13 @@ from datetime import date
 from pathlib import Path
 
 from langchain_core.runnables import RunnableConfig
-from pydantic import BaseModel
 
 from tests.fixtures.repo_builder import build_sample_repo
 from tests.knowledge.fake_embedding import fake_embedding_function
 from tests.llm.fake_chat_model import ScriptedChatModel, ScriptedResponse
 from upgradepilot.config import ModelPrice, Settings
 from upgradepilot.graph.deps import GraphDeps
+from upgradepilot.graph.nodes.judgment import RiskNarrative
 from upgradepilot.graph.rag.nodes import CoverageGrade, PlannedQuery, RetrievalPlan
 from upgradepilot.models.enums import Severity, SourceType
 from upgradepilot.models.inputs import (
@@ -134,12 +134,6 @@ def a_workspace_manager(repo_root: Path) -> WorkspaceManager:
     return WorkspaceManager(Settings(_env_file=None, allowed_local_roots=(repo_root.parent,)))
 
 
-class Narrative(BaseModel):
-    """The stub risk narrative schema the skeleton's one model call uses."""
-
-    summary: str
-
-
 def a_scripted_model(responses: Sequence[ScriptedResponse] = ()) -> ScriptedChatModel:
     return ScriptedChatModel(responses=list(responses))
 
@@ -240,9 +234,18 @@ def a_grade_response(
     return ScriptedResponse(parsed=grade, text="graded", **overrides)
 
 
-def a_narrative_response(**overrides: object) -> ScriptedResponse:
-    """One scripted answer for the stub `assess_risk` narrative."""
-    return ScriptedResponse(parsed=Narrative(summary="a stub narrative"), **overrides)
+def a_narrative_response(
+    summary: str = "A scripted risk narrative.",
+    notes: tuple[str, ...] = (),
+    **overrides: object,
+) -> ScriptedResponse:
+    """One scripted answer for `assess_risk`'s narrative.
+
+    The schema carries prose only -- no level, no confidence -- which is the
+    guarantee the node relies on: a field the model cannot fill in is a field
+    it cannot get wrong.
+    """
+    return ScriptedResponse(parsed=RiskNarrative(summary=summary, notes=list(notes)), **overrides)
 
 
 def a_full_run_script(

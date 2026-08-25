@@ -32,8 +32,12 @@ from tests.graph.graph_fixtures import (
 )
 from tests.knowledge.fake_embedding import fake_embedding_function
 from tests.llm.fake_chat_model import ScriptedChatModel
-from upgradepilot.graph.rag.build import compile_rag_graph, route_after_evaluate
-from upgradepilot.graph.rag.state import RAGState, initial_rag_state
+from upgradepilot.graph.rag.build import (
+    compile_rag_graph,
+    route_after_evaluate,
+    route_after_plan,
+)
+from upgradepilot.graph.rag.state import RAGState, initial_rag_state, rounds_started
 from upgradepilot.models.enums import (
     Confidence,
     QueryOrigin,
@@ -43,6 +47,7 @@ from upgradepilot.models.enums import (
 from upgradepilot.models.inputs import DependencySpec
 from upgradepilot.models.knowledge import RagContext
 from upgradepilot.models.repo import SymbolInventory, SymbolStat
+from upgradepilot.models.trace import TraceEvent, trace_event
 from upgradepilot.services.knowledge.store import KnowledgeStore
 
 DEPENDENCY = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
@@ -259,6 +264,10 @@ async def test_the_loop_stops_at_the_configured_iteration_bound(
     assert model.responses == []
 
 
+def a_started_round(node: str = "plan_retrieval") -> TraceEvent:
+    return trace_event(TraceEventKind.NODE_STARTED, node=node, summary=f"{node} started")
+
+
 def test_the_bound_is_a_floor_as_well_as_a_ceiling() -> None:
     """`>=`, not `==`. `max_iterations` arrives from configuration, and a
     zero must stop the loop rather than run it forever looking for an
@@ -266,9 +275,56 @@ def test_the_bound_is_a_floor_as_well_as_a_ceiling() -> None:
     state = initial_rag_state(
         dependency=DEPENDENCY, symbol_inventory=FIXTURE_INVENTORY, max_iterations=0
     )
-    state["iteration"] = 1
+    state["agent_trace"] = [a_started_round()]
 
     assert route_after_evaluate(state) == "build_context"
+
+
+def test_the_bound_advances_even_when_every_node_body_failed() -> None:
+    """The property that makes the loop provably terminate.
+
+    `traced` discards a failed body's update, so `iteration` stops advancing
+    the moment `plan_retrieval` raises -- and a router bounded on `iteration`
+    then loops forever. This was measured, not theorised: a scripted model
+    that ran out of responses stood in for the bug, and the graph spun until
+    it was killed. The bound is counted from the trace instead, which
+    `traced` writes whatever the body does.
+    """
+    state = initial_rag_state(
+        dependency=DEPENDENCY, symbol_inventory=FIXTURE_INVENTORY, max_iterations=2
+    )
+    state["iteration"] = 0  # every plan_retrieval body failed
+    state["agent_trace"] = [a_started_round(), a_started_round()]
+
+    assert rounds_started(state) == 2
+    assert route_after_evaluate(state) == "build_context"
+
+
+def test_a_round_whose_planning_died_ends_the_loop_rather_than_re_searching() -> None:
+    """`plan_retrieval` handles a provider outage itself, so reaching
+    `traced`'s catch means a bug. Its update is discarded, leaving
+    `iteration` one behind `rounds_started`; sending `retrieve` on would
+    re-run the previous round's queries and be billed for them again.
+    """
+    state = initial_rag_state(
+        dependency=DEPENDENCY, symbol_inventory=FIXTURE_INVENTORY, max_iterations=3
+    )
+    state["iteration"] = 1
+    state["agent_trace"] = [a_started_round(), a_started_round()]
+
+    assert route_after_plan(state) == "build_context"
+
+
+def test_a_healthy_round_routes_on_to_retrieval() -> None:
+    """The complement, without which the test above passes on a router that
+    always says `build_context`."""
+    state = initial_rag_state(
+        dependency=DEPENDENCY, symbol_inventory=FIXTURE_INVENTORY, max_iterations=3
+    )
+    state["iteration"] = 1
+    state["agent_trace"] = [a_started_round()]
+
+    assert route_after_plan(state) == "retrieve"
 
 
 # -- retrieval that was never necessary -------------------------------------

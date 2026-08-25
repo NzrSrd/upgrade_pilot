@@ -15,7 +15,6 @@ is the seam the graph builder and its tests already use.
 from upgradepilot.graph.nodes.base import (
     NodeBody,
     StateUpdate,
-    make_assess_risk,
     make_stub,
     stub_node,
     traced,
@@ -24,7 +23,6 @@ from upgradepilot.graph.nodes.base import (
 __all__ = [
     "NodeBody",
     "StateUpdate",
-    "make_assess_risk",
     "make_stub",
     "stub_node",
     "traced",
