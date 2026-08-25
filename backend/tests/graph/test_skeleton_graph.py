@@ -26,6 +26,7 @@ from tests.graph.graph_fixtures import (
     a_full_run_script,
     a_graph_environment,
     a_state,
+    run_to_completion,
 )
 from upgradepilot.graph.build import NODE_SEQUENCE, compile_graph
 from upgradepilot.graph.checkpointer import open_checkpointer
@@ -58,7 +59,7 @@ async def test_the_graph_runs_from_start_to_end(tmp_path: Path) -> None:
         graph = compile_graph(deps=deps, checkpointer=saver)
         config = a_config()
 
-        result = await graph.ainvoke(a_state(repo_root), config)
+        result = await run_to_completion(graph, a_state(repo_root), config)
 
         state = await graph.aget_state(config)
         assert state.next == (), "the graph did not reach END"
@@ -76,7 +77,7 @@ async def test_the_run_produces_cited_evidence_rather_than_only_finishing(
     async with open_checkpointer(tmp_path / "c.db") as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
 
-        result = await graph.ainvoke(a_state(repo_root), a_config())
+        result = await run_to_completion(graph, a_state(repo_root), a_config())
 
     assert result["repo_analysis"] is not None
     assert result["affected_files"], "no file was reported as using the dependency"
@@ -96,7 +97,7 @@ async def test_every_node_reports_itself_starting_and_finishing(tmp_path: Path) 
     async with open_checkpointer(tmp_path / "c.db") as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
 
-        result = await graph.ainvoke(a_state(repo_root), a_config())
+        result = await run_to_completion(graph, a_state(repo_root), a_config())
 
     def parent_nodes(kind: TraceEventKind) -> list[str]:
         return [
@@ -120,7 +121,7 @@ async def test_the_trace_never_carries_a_prompt(tmp_path: Path) -> None:
     async with open_checkpointer(tmp_path / "c.db") as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
 
-        result = await graph.ainvoke(a_state(repo_root), a_config())
+        result = await run_to_completion(graph, a_state(repo_root), a_config())
 
     assert model.prompts, "no prompt was issued, so this test proves nothing"
     rendered = " ".join(f"{e.summary} {e.detail or ''}" for e in result["agent_trace"])
@@ -141,7 +142,7 @@ async def test_state_outlives_the_connection_that_wrote_it(tmp_path: Path) -> No
 
     async with open_checkpointer(db) as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
-        await graph.ainvoke(a_state(repo_root), config)
+        await run_to_completion(graph, a_state(repo_root), config)
 
     async with open_checkpointer(db) as reopened:
         graph = compile_graph(deps=deps, checkpointer=reopened)
@@ -172,7 +173,7 @@ async def test_the_evidence_survives_a_reopen_as_models_not_dictionaries(
 
     async with open_checkpointer(db) as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
-        await graph.ainvoke(a_state(repo_root), config)
+        await run_to_completion(graph, a_state(repo_root), config)
 
     async with open_checkpointer(db) as reopened:
         graph = compile_graph(deps=deps, checkpointer=reopened)
@@ -195,8 +196,8 @@ async def test_two_threads_do_not_share_state(tmp_path: Path) -> None:
     async with open_checkpointer(tmp_path / "c.db") as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
 
-        first = await graph.ainvoke(a_state(repo_root, "t-1"), a_config("t-1"))
-        second = await graph.ainvoke(a_state(repo_root, "t-2"), a_config("t-2"))
+        first = await run_to_completion(graph, a_state(repo_root, "t-1"), a_config("t-1"))
+        second = await run_to_completion(graph, a_state(repo_root, "t-2"), a_config("t-2"))
 
     assert first["thread_id"] == "t-1"
     assert second["thread_id"] == "t-2"
@@ -227,7 +228,7 @@ async def test_a_duplicated_call_record_does_not_change_the_totals(
 
     async with open_checkpointer(tmp_path / "c.db") as saver:
         graph = compile_graph(deps=deps, checkpointer=saver)
-        finished = await graph.ainvoke(a_state(repo_root), config)
+        finished = await run_to_completion(graph, a_state(repo_root), config)
         before = UsageSummary.from_calls(finished["llm_calls"])
         assert before.calls == EXPECTED_CALLS_PER_RUN
 
@@ -265,7 +266,9 @@ async def test_pausing_and_resuming_does_not_change_what_the_run_cost(
     )
     async with open_checkpointer(tmp_path / "a.db") as saver:
         graph = compile_graph(deps=straight_deps, checkpointer=saver)
-        straight = await graph.ainvoke(a_state(repo_root, "straight"), a_config("straight"))
+        straight = await run_to_completion(
+            graph, a_state(repo_root, "straight"), a_config("straight")
+        )
 
     paused_deps, paused_root, model = a_graph_environment(
         tmp_path / "paused", responses=a_full_run_script()
@@ -274,7 +277,7 @@ async def test_pausing_and_resuming_does_not_change_what_the_run_cost(
         graph = compile_graph(
             deps=paused_deps, checkpointer=saver, interrupt_before=["generate_plan"]
         )
-        await graph.ainvoke(a_state(paused_root, "paused"), a_config("paused"))
+        await run_to_completion(graph, a_state(paused_root, "paused"), a_config("paused"))
         invocations_at_pause = len(model.prompts)
         resumed = await graph.ainvoke(None, a_config("paused"))
 
@@ -300,7 +303,9 @@ async def test_a_resumed_run_reaches_the_same_end_as_an_uninterrupted_one(
     )
     async with open_checkpointer(tmp_path / "a.db") as saver:
         graph = compile_graph(deps=straight_deps, checkpointer=saver)
-        straight = await graph.ainvoke(a_state(straight_root, "straight"), a_config("straight"))
+        straight = await run_to_completion(
+            graph, a_state(straight_root, "straight"), a_config("straight")
+        )
 
     paused_deps, paused_root, _ = a_graph_environment(
         tmp_path / "paused", responses=a_full_run_script()
@@ -309,7 +314,7 @@ async def test_a_resumed_run_reaches_the_same_end_as_an_uninterrupted_one(
         graph = compile_graph(
             deps=paused_deps, checkpointer=saver, interrupt_before=["generate_plan"]
         )
-        await graph.ainvoke(a_state(paused_root, "paused"), a_config("paused"))
+        await run_to_completion(graph, a_state(paused_root, "paused"), a_config("paused"))
         resumed = await graph.ainvoke(None, a_config("paused"))
 
     def nodes(result: Any) -> list[str]:
@@ -342,7 +347,7 @@ async def test_a_failing_node_records_an_app_error_and_a_trace_event(
             fail_in={"analyze_repo": RepoUnavailableError("The repository could not be read.")},
         )
 
-        result = await graph.ainvoke(a_state(repo_root), a_config())
+        result = await run_to_completion(graph, a_state(repo_root), a_config())
 
     assert [e.code for e in result["errors"]] == [ErrorCode.REPO_UNAVAILABLE]
     assert result["errors"][0].node == "analyze_repo"
@@ -369,7 +374,7 @@ async def test_a_failed_analysis_does_not_make_retrieval_claim_a_clean_repositor
             fail_in={"analyze_repo": RepoUnavailableError("nope")},
         )
 
-        result = await graph.ainvoke(a_state(repo_root), a_config())
+        result = await run_to_completion(graph, a_state(repo_root), a_config())
 
     decisions = [
         e.summary
@@ -399,7 +404,7 @@ async def test_a_failing_node_does_not_stop_the_trace_recording_the_rest(
             fail_in={"analyze_repo": RepoUnavailableError("nope")},
         )
 
-        result = await graph.ainvoke(a_state(repo_root), a_config())
+        result = await run_to_completion(graph, a_state(repo_root), a_config())
 
     completed = [e.node for e in result["agent_trace"] if e.kind is TraceEventKind.NODE_COMPLETED]
     assert "finalize" in completed
@@ -419,7 +424,7 @@ async def test_an_unexpected_exception_is_recorded_as_internal_not_swallowed(
             fail_in={"assess_risk": TypeError("a bug in the node body")},
         )
 
-        result = await graph.ainvoke(a_state(repo_root), a_config())
+        result = await run_to_completion(graph, a_state(repo_root), a_config())
 
     assert [e.code for e in result["errors"]] == [ErrorCode.INTERNAL]
     assert "TypeError" in (result["errors"][0].detail or "")

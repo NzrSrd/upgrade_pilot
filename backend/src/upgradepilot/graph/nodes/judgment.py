@@ -21,20 +21,28 @@ is recorded, and the run continues with real numbers and plainer prose --
 rather than losing the entire risk assessment to a provider outage.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from pydantic import BaseModel, Field
+from langgraph.types import interrupt
+from pydantic import BaseModel, Field, ValidationError
 
 from upgradepilot.graph.nodes.base import NodeBody, StateUpdate
-from upgradepilot.models.enums import TraceEventKind
+from upgradepilot.models.decision import (
+    HumanDecision,
+    InterruptPayload,
+    unanswered,
+)
+from upgradepilot.models.enums import DecisionKind, TraceEventKind
 from upgradepilot.models.errors import UpgradePilotError
 from upgradepilot.models.evidence import RiskFactor
 from upgradepilot.models.risk import RiskAnalysis
 from upgradepilot.models.state import MigrationState
-from upgradepilot.models.trace import trace_event
+from upgradepilot.models.trace import TraceEvent, trace_event
 from upgradepilot.services.llm.tracked import TrackedLLM
 from upgradepilot.services.risk.aggregate import build_risk_analysis
 from upgradepilot.services.risk.factors import FactorInputs, extract_factors
+from upgradepilot.services.strategy.catalog import recommended
+from upgradepilot.services.strategy.questions import pending_decisions
 
 MAX_NARRATIVE_NOTES = 5
 """Qualitative notes kept. They carry no weight in any level, so the only
@@ -104,6 +112,47 @@ def _mechanical_summary(analysis: RiskAnalysis) -> str:
     if worst:
         lead += " Driven by: " + "; ".join(worst) + "."
     return lead + " (No narrative was generated: the model could not be reached.)"
+
+
+def _decision_events(
+    state: MigrationState,
+    decisions: tuple[InterruptPayload, ...],
+    *,
+    today: date,
+) -> list[TraceEvent]:
+    """Say what was asked -- and, when nothing was, say that too.
+
+    The no-interrupt case is the one that needs an event. A run that sails
+    past `human_review` looks identical in a timeline to a run where the
+    question never came up, and spec 8.2's whole argument for the conditional
+    edge is that the constraints *decided* it. Recording "resolved by
+    constraints, no human input required" alongside the strategy that won is
+    what turns a silent skip into a visible decision.
+    """
+    events = [
+        trace_event(
+            TraceEventKind.DECISION_REQUIRED,
+            node="assess_risk",
+            summary=f"{payload.kind.value.replace('_', ' ').capitalize()}: {payload.question}",
+            detail=payload.reason,
+        )
+        for payload in decisions
+    ]
+    if not any(payload.kind is DecisionKind.STRATEGY_CHOICE for payload in decisions):
+        constraints = state["constraints"]
+        best = recommended(constraints, today=today)
+        events.append(
+            trace_event(
+                TraceEventKind.AGENT_DECISION,
+                node="assess_risk",
+                summary=(
+                    f"Migration approach resolved by the stated constraints, so no "
+                    f"human input was required: {best.label.lower()}."
+                ),
+                detail=best.summary,
+            )
+        )
+    return events
 
 
 def make_assess_risk(llm: TrackedLLM) -> NodeBody[MigrationState]:
@@ -215,11 +264,165 @@ def make_assess_risk(llm: TrackedLLM) -> NodeBody[MigrationState]:
             )
         update["agent_trace"] = events
 
+        # Spec 8.2 puts strategy enumeration and payload construction HERE,
+        # not in `human_review`, and the reason is billing rather than tidiness:
+        # a node that calls `interrupt()` re-executes from the top on every
+        # resume -- measured at four executions for a two-question node in
+        # `probes/probe_interrupt.py` -- so any work placed before its
+        # interrupt happens once per resume. Model calls would be billed each
+        # time while only one usage record survives, and recorded cost would
+        # understate real spend. ADR-001 records the rule; this is where it is
+        # obeyed.
+        decisions = pending_decisions(
+            analysis=analysis,
+            risk=risk,
+            breaking_changes=inputs.breaking_changes,
+            dependency=state["dependency"],
+            constraints=state["constraints"],
+            today=inputs.today,
+        )
+        events.extend(_decision_events(state, decisions, today=inputs.today))
+
         update["risk_analysis"] = risk
+        update["pending_decisions"] = list(decisions)
+        update["agent_trace"] = events
         update["summary"] = (
             f"Risk {risk.overall_risk.value} at {risk.confidence:.0%} confidence, "
             f"from {len(risk.factors)} measured factor(s)."
+            + (f" {len(decisions)} question(s) need a human." if decisions else "")
         )
         return update
+
+    return body
+
+
+def _as_decision(raw: object, payload: InterruptPayload) -> HumanDecision | str:
+    """Validate one resume value, or say in one sentence what is wrong with it.
+
+    `interrupt()` returns whatever the HTTP layer handed it, unvalidated and
+    of any shape at all -- spec 8.2 calls it untrusted and it is. Four things
+    can be wrong with it and each gets its own message, because the person who
+    has to fix it is looking at a form, not a stack trace.
+
+    Returns the string rather than raising, deliberately. A raised error here
+    would be caught by `traced`, recorded as a failure and the run would
+    continue *past* the question with no answer -- turning "you sent something
+    unusable" into "nobody was asked". The string travels back onto the
+    payload and the node interrupts again.
+    """
+    if isinstance(raw, HumanDecision):
+        decision = raw
+    elif isinstance(raw, str):
+        # The convenient shorthand: a bare option id. Accepted because it is
+        # unambiguous -- there is exactly one question in flight -- and
+        # refusing it would make the API harder to use for nothing.
+        decision = HumanDecision(
+            question_id=payload.question_id,
+            selected_option_id=raw.strip(),
+            decided_at=datetime.now(UTC),
+        )
+    elif isinstance(raw, dict):
+        try:
+            decision = HumanDecision.model_validate(
+                {
+                    "question_id": raw.get("question_id", payload.question_id),
+                    "selected_option_id": raw.get("selected_option_id", ""),
+                    "rationale": raw.get("rationale"),
+                    "decided_at": raw.get("decided_at", datetime.now(UTC)),
+                }
+            )
+        except ValidationError as exc:
+            return f"That answer could not be read: {exc.error_count()} field(s) are invalid."
+    else:
+        return (
+            f"That answer could not be read: expected an option id or a decision "
+            f"object, got {type(raw).__name__}."
+        )
+
+    if decision.question_id != payload.question_id:
+        return (
+            f"That answer is for a different question "
+            f"({decision.question_id!r}, not {payload.question_id!r})."
+        )
+    if payload.option(decision.selected_option_id) is None:
+        offered = ", ".join(option.id for option in payload.options)
+        return (
+            f"{decision.selected_option_id!r} is not one of the options offered. "
+            f"Choose one of: {offered}."
+        )
+    return decision
+
+
+def make_human_review() -> NodeBody[MigrationState]:
+    """Spec 8.2's interrupt node: read, pause, validate, and nothing else.
+
+    **No model is called here, and that is a correctness requirement rather
+    than a style choice.** A node containing `interrupt()` re-executes from
+    the top on every resume -- measured at four executions for a two-question
+    node in `probes/probe_interrupt.py` -- so a model call placed above the
+    interrupt is billed once per resume while only one usage record survives.
+    Recorded cost would understate real spend, and the shortfall would grow
+    with the number of times a person changed their mind. Everything expensive
+    -- strategy enumeration, scoring, payload construction -- happens in
+    `assess_risk`, once. ADR-001 records the rule.
+
+    Re-execution also explains the shape of the loop below. On resume,
+    LangGraph replays each `interrupt()` in order and returns the value it was
+    given before, pausing only at the newest one; measured, not assumed. So a
+    rejected answer is re-asked by simply calling `interrupt()` again, and the
+    loop terminates because each pass consumes one more already-supplied
+    resume value.
+    """
+
+    async def body(state: MigrationState) -> StateUpdate:
+        outstanding = unanswered(state["pending_decisions"], state["human_decisions"])
+        if not outstanding:
+            return {"summary": "No question was outstanding, so the run did not pause."}
+
+        # **One question per execution, and the router sends the run back here
+        # for the next one.** Asking all of them in a single execution looks
+        # tidier and is wrong: a node that interrupts produces no state update
+        # until it finishes, so the answers to questions one and two would sit
+        # in LangGraph's resume store and never reach `human_decisions`.
+        # Everything downstream derives from that channel -- the router's
+        # "what is still unanswered", and the API's "which question is the
+        # user looking at" -- so a partially-answered run would keep showing
+        # the question it had already answered. Measured, not reasoned:
+        # `human_decisions` came back empty from a two-question run that had
+        # answered one.
+        payload = outstanding[0]
+        asking = payload
+        while True:
+            raw = interrupt(asking)
+            result = _as_decision(raw, payload)
+            if isinstance(result, HumanDecision):
+                break
+            # Re-ask the same question carrying the complaint. The payload is
+            # rebuilt rather than mutated because it is frozen, and
+            # `validation_error` travels on the payload rather than as a
+            # raised error so the person answering sees it instead of a log
+            # line. The loop terminates because each pass consumes one more
+            # already-supplied resume value -- measured in
+            # `probes/probe_interrupt.py`.
+            asking = payload.model_copy(update={"validation_error": result})
+
+        chosen = payload.option(result.selected_option_id)
+        assert chosen is not None  # narrowed by _as_decision
+        remaining = len(outstanding) - 1
+        return {
+            "human_decisions": [result],
+            "agent_trace": [
+                trace_event(
+                    TraceEventKind.DECISION_APPLIED,
+                    node="human_review",
+                    summary=f"{payload.question} Answered: {chosen.label}.",
+                    detail=result.rationale,
+                )
+            ],
+            "summary": (
+                f"Answered {payload.question_id!r} with {chosen.label!r}."
+                + (f" {remaining} question(s) still outstanding." if remaining else "")
+            ),
+        }
 
     return body

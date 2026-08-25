@@ -7,8 +7,8 @@ where data lives, merging where merging happens.
 **This state grows phase by phase, and deliberately so.** The RAG loop
 fields (`rag_queries`, `rag_evaluations`, `rag_context`) arrived with Phase 5
 and `risk_analysis` with Phase 6. The remaining judgment fields
-(`pending_decision`, `human_decisions`) and the plan fields
-(`migration_plan`, `validation`) are still absent because the models they
+arrived with Phase 7. The plan fields (`migration_plan`, `validation`) are
+still absent because the models they
 hold do not exist yet; each arrives with the phase that consumes it, where a
 real caller can shape it, exactly as the domain models did in Phase 1.
 Declaring them early would mean guessing at models to satisfy a type
@@ -22,6 +22,7 @@ import operator
 from collections.abc import Callable
 from typing import Annotated, Protocol, TypedDict
 
+from upgradepilot.models.decision import HumanDecision, InterruptPayload
 from upgradepilot.models.errors import AppError
 from upgradepilot.models.evidence import BreakingChange, SourceRef
 from upgradepilot.models.inputs import DependencySpec, RepoRef, UserConstraints
@@ -125,6 +126,18 @@ class MigrationState(TypedDict):
 
     # Judgment.
     risk_analysis: RiskAnalysis | None
+    pending_decisions: list[InterruptPayload]
+    """Every question this run has to put to a human, in ask order.
+
+    A list rather than spec 6's singular `pending_decision`, and the
+    difference is real rather than cosmetic: spec 8.2 requires that "multiple
+    sequential interrupts work naturally", and a single slot cannot hold two
+    unanswered questions. The singular thing the API surfaces -- *the*
+    question currently awaiting an answer -- is derived by
+    `models/decision.unanswered`, never stored, because a stored pointer
+    drifts the moment a resume lands on the `human_decisions` channel without
+    it.
+    """
 
     # Append-only channels. A channel that lost its reducer degrades to
     # last-value, so each node's writes would *replace* the accumulated list
@@ -133,6 +146,7 @@ class MigrationState(TypedDict):
     rag_queries: Annotated[list[RagQuery], operator.add]
     rag_evaluations: Annotated[list[RagEvaluation], operator.add]
     retrieved_sources: Annotated[list[SourceRef], merge_sources_by_id]
+    human_decisions: Annotated[list[HumanDecision], operator.add]
     llm_calls: Annotated[list[LLMCall], operator.add]
     agent_trace: Annotated[list[TraceEvent], operator.add]
     errors: Annotated[list[AppError], operator.add]
@@ -165,6 +179,8 @@ def initial_state(
         breaking_changes=[],
         rag_context=None,
         risk_analysis=None,
+        pending_decisions=[],
+        human_decisions=[],
         rag_queries=[],
         rag_evaluations=[],
         retrieved_sources=[],

@@ -18,8 +18,10 @@ carries anything.
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.types import Command
 
 from tests.fixtures.repo_builder import build_sample_repo
 from tests.knowledge.fake_embedding import fake_embedding_function
@@ -271,3 +273,62 @@ def a_full_run_script(
         )
     script.append(a_narrative_response())
     return script
+
+
+async def answer_all(
+    graph: Any,
+    config: RunnableConfig,
+    result: Any,
+    *,
+    answers: Sequence[object] = (),
+    max_resumes: int = 8,
+) -> Any:
+    """Resume an already-started run until it stops asking.
+
+    Split from `run_to_completion` because a test that starts the run itself
+    -- to assert something about the first pause -- still needs to finish it,
+    and re-invoking with the initial state would start a second run rather
+    than continue this one.
+    """
+    queued = list(answers)
+    for _ in range(max_resumes):
+        interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
+        if not interrupts:
+            return result
+        payload = interrupts[0].value
+        answer: object = (
+            queued.pop(0) if queued else (payload.recommendation_id or payload.options[0].id)
+        )
+        result = await graph.ainvoke(Command(resume=answer), config)
+
+    raise AssertionError(f"the graph was still asking questions after {max_resumes} resumes")
+
+
+async def run_to_completion(
+    graph: Any,
+    state: MigrationState,
+    config: RunnableConfig,
+    *,
+    answers: Sequence[object] = (),
+    max_resumes: int = 8,
+) -> Any:
+    """Invoke the graph and answer every question it stops on.
+
+    The fixture repository plus the fixture corpus produces a genuine
+    tradeoff, so a straight `ainvoke` pauses rather than finishing -- which is
+    the product working, and a nuisance for the tests that are about
+    something else. This helper is the shape a caller (and Phase 9's API)
+    actually uses: invoke, and while the run reports an interrupt, resume with
+    an answer.
+
+    `answers` supplies scripted resume values in order; once they run out,
+    each remaining question is answered with its own `recommendation_id`. A
+    test that cares *which* option was chosen passes them; a test that only
+    needs the run to finish does not.
+
+    `max_resumes` is a test-side guard, not a product limit: a bug that made
+    the graph re-ask the same question forever would otherwise hang the suite
+    rather than fail it.
+    """
+    result = await graph.ainvoke(state, config)
+    return await answer_all(graph, config, result, answers=answers, max_resumes=max_resumes)

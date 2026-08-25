@@ -167,3 +167,55 @@ class RagStopReason(StrEnum):
     ITERATION_LIMIT = "iteration_limit"
     NOT_NECESSARY = "not_necessary"
     KB_UNAVAILABLE = "kb_unavailable"
+
+
+class DecisionKind(StrEnum):
+    """The four questions this system is willing to put to a human.
+
+    Spec 8.2 fixes the list, and fixing it is the design: an open-ended
+    "ask the user something" would degenerate into the ceremonial dialog the
+    brief's conditional edge exists to prevent. Each kind below has a
+    deterministic trigger -- a condition in the evidence, not a judgement call
+    -- so a run either has a real question or has none.
+    """
+
+    STRATEGY_CHOICE = "strategy_choice"
+    RISK_ACCEPTANCE = "risk_acceptance"
+    SCOPE_TRADEOFF = "scope_tradeoff"
+    DISCREPANCY_RESOLUTION = "discrepancy_resolution"
+
+
+class EffortLevel(StrEnum):
+    """How much work a strategy is. Three levels, like every other scale here."""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class StrategyId(StrEnum):
+    """The candidate migration strategies of spec 8.2.
+
+    A closed enum rather than free strings, because `MigrationPlan.strategy_id`
+    is what the decision-flip test compares: resuming the same checkpoint with
+    the opposite option must yield a *different* strategy, and comparing two
+    free-form strings would pass on a typo.
+    """
+
+    DIRECT_MIGRATION = "direct_migration"
+    COMPATIBILITY_LAYER = "compatibility_layer"
+    STAGED_ROLLOUT = "staged_rollout"
+
+
+class DecisionAxis(StrEnum):
+    """The dimensions two strategies can differ on.
+
+    Named because spec 8.2's interrupt predicate is stated in terms of them:
+    the graph interrupts only when two viable strategies differ on an axis the
+    stated constraints do not already settle. Without an enumerated set of
+    axes, "differ on an axis" is a phrase rather than a predicate.
+    """
+
+    RISK = "risk"
+    EFFORT = "effort"
+    DOWNTIME = "downtime"

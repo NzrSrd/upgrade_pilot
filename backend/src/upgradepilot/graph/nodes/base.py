@@ -17,6 +17,8 @@ can act on.
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from langgraph.errors import GraphBubbleUp
+
 from upgradepilot.models.enums import TraceEventKind
 from upgradepilot.models.errors import AppError, ErrorCode, UpgradePilotError
 from upgradepilot.models.state import MigrationState
@@ -41,6 +43,8 @@ def traced[StateT](name: str, body: NodeBody[StateT]) -> NodeBody[StateT]:
     - a `node_started` event before, and a `node_completed` event after --
       the latter carrying whatever the body returned under the reserved
       `summary` key, or a generic line when it returned none;
+    - LangGraph's own control-flow signals pass through untouched, because a
+      paused run is not a failed one;
     - a domain failure becomes an `AppError` carrying its own `ErrorCode`;
     - an *unexpected* exception becomes `AppError(INTERNAL)` naming the
       exception type. It is not reported as a domain error, because a bug in
@@ -57,6 +61,22 @@ def traced[StateT](name: str, body: NodeBody[StateT]) -> NodeBody[StateT]:
         events = [trace_event(TraceEventKind.NODE_STARTED, node=name, summary=f"{name} started")]
         try:
             update = await body(state)
+        except GraphBubbleUp:
+            # LangGraph's control flow, not a failure. `interrupt()` raises
+            # `GraphInterrupt` to pause the run, and the catch-all below would
+            # convert it into an `AppError(INTERNAL)` -- the graph would
+            # record "an internal error occurred while running human_review",
+            # continue to the end, and produce a complete report for a
+            # question nobody was ever asked. Measured: it did exactly that,
+            # and the only visible symptom was one extra error in a state
+            # nobody was reading yet.
+            #
+            # `GraphBubbleUp` rather than `GraphInterrupt` specifically,
+            # because it is the base LangGraph provides for exactly this --
+            # `ParentCommand` and `GraphDelegate` are control flow too, and a
+            # handler that named only the one we happened to hit would swallow
+            # the next one silently.
+            raise
         except UpgradePilotError as exc:
             return {
                 "errors": [exc.to_app_error(node=name)],

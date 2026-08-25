@@ -1,20 +1,19 @@
 """Assembling the parent graph.
 
-Spec 8.5's topology. The two conditional edges it draws -- the decision
-predicate before `human_review`, and validation's bounded repair retry --
-are still absent: each is defined by a predicate belonging to a later phase
-(Phase 7 owns "at least two viable strategies differing on an axis the
-constraints do not settle"; Phase 8 owns the ten validation checks), and a
-conditional edge wired now would have to guess at its own condition.
+Spec 8.5's topology. One of its two conditional edges is now real -- the
+decision predicate before `human_review` -- and one is still absent:
+validation's bounded repair retry is defined by the ten validation checks,
+which are Phase 8's, and an edge wired now would have to guess at its own
+condition.
 
 What is real: the evidence layer end to end (`analyze_repo`,
 `inspect_dependency`, and the retrieval subgraph behind `agentic_rag`), the
-state channels and their reducers, the checkpointer, the trace, the usage
-records, and rule 20's error handling.
+judgment layer through `human_review`, the state channels and their reducers,
+the checkpointer, the trace, the usage records, and rule 20's error handling.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
@@ -27,7 +26,8 @@ from upgradepilot.graph.nodes.evidence import (
     make_analyze_repo,
     make_inspect_dependency,
 )
-from upgradepilot.graph.nodes.judgment import make_assess_risk
+from upgradepilot.graph.nodes.judgment import make_assess_risk, make_human_review
+from upgradepilot.models.decision import unanswered
 from upgradepilot.models.state import MigrationState
 
 NODE_SEQUENCE: tuple[str, ...] = (
@@ -39,14 +39,35 @@ NODE_SEQUENCE: tuple[str, ...] = (
     "validate_plan",
     "finalize",
 )
-"""Spec 8.5's node list, minus `human_review`.
+"""The nodes every run passes through, in order.
 
-`human_review` is absent rather than stubbed because a stub of it would be
-actively misleading: the node's entire content is an `interrupt()` call, so a
-version that does not interrupt is a node that does nothing while occupying
-the place where the run is supposed to stop. Phase 7 adds it with the
-predicate that decides whether it fires at all.
+`human_review` is deliberately not in this tuple even though it now exists:
+it is the one node a run may legitimately skip, so a list used to assert
+"every node ran" must not contain it. It is added separately below, behind
+the conditional edge that decides whether it fires at all.
 """
+
+HUMAN_REVIEW = "human_review"
+
+
+def route_after_assess_risk(state: MigrationState) -> Literal["human_review", "generate_plan"]:
+    """Pause for a human only when there is a real question still waiting.
+
+    Used for both edges into and out of `human_review`, deliberately: one
+    predicate, evaluated the same way whether the run is arriving at the
+    question stage or coming back for the next question. Two copies would be
+    two chances to disagree about when a run is finished asking.
+
+    Spec 8.2: "If constraints decide it, no interrupt occurs." The check is
+    for an *unanswered* question rather than for any question at all, because
+    this router runs again on every resume: after the last answer lands,
+    `pending_decisions` is still full and `human_decisions` now matches it, so
+    a router asking "are there decisions?" would send the run back into
+    `human_review` forever.
+    """
+    if unanswered(state["pending_decisions"], state["human_decisions"]):
+        return "human_review"
+    return "generate_plan"
 
 
 def _bodies(deps: GraphDeps) -> dict[str, NodeBody[MigrationState]]:
@@ -66,6 +87,7 @@ def _bodies(deps: GraphDeps) -> dict[str, NodeBody[MigrationState]]:
             limit=deps.retrieval_limit,
         ),
         "assess_risk": make_assess_risk(deps.llm),
+        HUMAN_REVIEW: make_human_review(),
         "generate_plan": make_stub("generate_plan"),  # Phase 8
         "validate_plan": make_stub("validate_plan"),  # Phase 8
         "finalize": make_stub("finalize"),  # Phase 8
@@ -97,7 +119,7 @@ def build_graph(
         return failing
 
     graph = StateGraph(MigrationState)
-    for name in NODE_SEQUENCE:
+    for name in (*NODE_SEQUENCE, HUMAN_REVIEW):
         # `type: ignore[call-overload]`, for the reason already established in
         # `tests/graph/test_langgraph_contract.py`: langgraph resolves the
         # contravariant NodeInputT per `add_node` call rather than once per
@@ -107,7 +129,22 @@ def build_graph(
 
     graph.add_edge(START, NODE_SEQUENCE[0])
     for earlier, later in zip(NODE_SEQUENCE, NODE_SEQUENCE[1:], strict=False):
+        if earlier == "assess_risk":
+            # Spec 8.5's first conditional edge. `assess_risk` has already
+            # decided *whether* there is a question -- the predicate lives in
+            # `services/strategy/catalog.py` and its answer is in
+            # `pending_decisions` -- so the router reads the answer rather
+            # than recomputing it. A predicate evaluated twice is a predicate
+            # that can disagree with the trace event explaining it.
+            graph.add_conditional_edges(earlier, route_after_assess_risk)
+            continue
         graph.add_edge(earlier, later)
+    # `human_review` routes through the same predicate it was reached by.
+    # It answers one question per execution (see the node's own comment), so
+    # a run with two questions comes back here, finds the second still
+    # unanswered, and pauses again -- which is what makes each answer reach
+    # `human_decisions` before the next question is asked.
+    graph.add_conditional_edges(HUMAN_REVIEW, route_after_assess_risk)
     graph.add_edge(NODE_SEQUENCE[-1], END)
     return graph
 
