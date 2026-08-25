@@ -69,6 +69,30 @@ def _require_repo_relative(value: str) -> str:
     return value
 
 
+def is_repo_relative(value: str) -> bool:
+    """Whether `value` could be a `RepoRelativePath`.
+
+    The producer-side companion to the validator below, and deliberately
+    implemented BY it rather than beside it: a second copy of these rules
+    would drift, and the whole point is that a path this returns False for
+    can never reach a model constructor and raise.
+
+    `Workspace` is the caller. Its input is an untrusted third-party
+    repository, where `back\\slash.py` and (via git's `core.quotePath`) any
+    escaped filename are legal on disk and unrepresentable as a citation.
+    CLAUDE.md rule 20: such a path becomes a recorded gap, never an
+    exception in the middle of an otherwise complete analysis.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return False
+    try:
+        _require_repo_relative(stripped)
+    except ValueError:
+        return False
+    return True
+
+
 RepoRelativePath = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1),

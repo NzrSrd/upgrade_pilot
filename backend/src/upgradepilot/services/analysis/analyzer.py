@@ -128,6 +128,38 @@ def analyze_repository(
             "to this report."
         )
 
+    # F3: a path the citation type cannot represent. `back\slash.py` is a
+    # legal POSIX filename and `RepoRelativePath` refuses it deliberately (a
+    # backslash separates paths on some platforms and names files on others,
+    # so a reference to it cannot be resolved). `Workspace.iter_files`
+    # excludes such a file so it never reaches a model constructor, and this
+    # is where that exclusion is recorded -- CLAUDE.md rule 20: the outcome
+    # is in the model, not an exception out of a run that had already
+    # analysed the rest of the tree.
+    #
+    # Not a `SkippedFile`: that model's own `path` field is
+    # `RepoRelativePath` too, so the record could not name the file either.
+    # `!r` rather than the raw path, because the raw bytes are untrusted
+    # third-party input going into a user-facing sentence -- `repr` renders
+    # a newline or a control character visibly instead of letting it break
+    # the line.
+    #
+    # Placed second, immediately after submodules: both are repository-wide
+    # "code exists that this report did not read", which is the broadest
+    # scope in the fixed order below.
+    uncitable = workspace.uncitable_files()
+    if uncitable:
+        confidence_reducers.append(
+            f"{len(uncitable)} file(s) in this repository were not analysed "
+            f"because their names cannot be cited: a citation must be a "
+            f"repository-relative path, and these are not representable as "
+            f"one (a name containing a backslash, for example, is a path "
+            f"separator on some platforms and an ordinary character on "
+            f"others). Their contents are invisible to this report: "
+            + ", ".join(repr(path) for path in uncitable)
+            + "."
+        )
+
     if not candidates.modules:
         confidence_reducers.append(
             f"No file in this repository names the module {import_root!r}. The "

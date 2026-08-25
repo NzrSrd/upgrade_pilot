@@ -14,6 +14,7 @@ from pathlib import Path
 from types import TracebackType
 
 from upgradepilot.models.errors import RepoTooLargeError, RepoUnavailableError
+from upgradepilot.models.evidence import is_repo_relative
 from upgradepilot.models.repo import CommitRecord
 
 SKIP_DIRECTORIES = frozenset(
@@ -210,6 +211,50 @@ class Workspace:
         it -- they are only checked per yielded file, and a non-terminating
         generator never finishes yielding.
         """
+        for relative in self._walk(suffix):
+            if is_repo_relative(relative.as_posix()):
+                yield relative
+
+    def uncitable_files(self, suffix: str = "") -> tuple[str, ...]:
+        """The repo-relative paths `iter_files` had to leave out because they
+        cannot be represented as a citation, sorted.
+
+        `back\\slash.py` is a legal POSIX filename, and `RepoRelativePath`
+        refuses it on purpose -- a backslash is a path separator on some
+        platforms and an ordinary filename character on others, so a
+        file-and-line reference to it could not be resolved by the reader.
+        The analyzer's input is an untrusted third-party repository, so such
+        a name is an input it must survive: before this filter existed, one
+        reached `ModelClass(file=...)` and raised an uncaught
+        `ValidationError` out of a run that had already analysed the rest of
+        the tree correctly.
+
+        Reported separately rather than as a `SkippedFile`, because that
+        model's own `path` field is `RepoRelativePath` too: the record could
+        not name the file either. `analyze_repository` turns a non-empty
+        result into a confidence reducer, which is the same in-model channel
+        the corrupted-history degrade already uses (CLAUDE.md rule 20 -- a
+        recorded outcome, never a propagating exception).
+
+        Walks the tree again rather than being returned alongside
+        `iter_files`: the analyzer already walks it several times (manifests,
+        candidates, test paths, language shares), and a generator cannot
+        return a side channel without every caller having to thread it
+        through.
+        """
+        return tuple(
+            sorted(
+                path
+                for relative in self._walk(suffix)
+                if not is_repo_relative(path := relative.as_posix())
+            )
+        )
+
+    def _walk(self, suffix: str) -> Iterator[Path]:
+        """Every readable, contained file under the root matching `suffix`,
+        as a repo-relative path -- with no judgement about whether the path
+        can be cited. `iter_files` and `uncitable_files` are the two views of
+        this, and they partition its output between them."""
         for path in sorted(self._root.rglob(f"*{suffix}")):
             relative = path.relative_to(self._root)
             if any(part in SKIP_DIRECTORIES for part in relative.parts):
@@ -299,6 +344,20 @@ class Workspace:
             completed = subprocess.run(
                 [
                     "git",
+                    # `core.quotePath` defaults to TRUE, which renders any
+                    # path with a byte outside printable ASCII as a quoted,
+                    # backslash-escaped C string: `café.py` arrives as the
+                    # literal `"caf\303\251.py"`. That is not the path on
+                    # disk, it does not match anything `iter_files` yields,
+                    # and its backslashes made `CommitRecord.files` --
+                    # `tuple[RepoRelativePath, ...]` -- raise an uncaught
+                    # ValidationError, so a single non-ASCII filename
+                    # anywhere in the history killed the whole analysis.
+                    # Turning it off gives the real path, which is also the
+                    # path the file walk reports, so churn for these files
+                    # works rather than merely not crashing.
+                    "-c",
+                    "core.quotePath=false",
                     "log",
                     f"-n{limit}",
                     "--name-only",
@@ -334,9 +393,19 @@ class Workspace:
 
         def flush() -> None:
             if sha and timestamp:
-                records.append(
-                    CommitRecord(sha=sha, timestamp=timestamp, files=tuple(sorted(set(files))))
-                )
+                # `is_repo_relative` filter, not a trusting pass-through:
+                # `core.quotePath=false` above removes the common escaping
+                # case, but git still quotes a name containing a `"`, a `\`
+                # or a control character, and `back\slash.py` is a legal
+                # POSIX filename that `RepoRelativePath` refuses outright.
+                # Any of those would raise here, out of a `git_log` the
+                # caller has no reason to expect to fail. Dropped rather
+                # than reported: `iter_files` excludes the same file from
+                # the analysis for the same reason, so no consumer can ask
+                # for its churn -- `analyze_repository`'s reducer is where
+                # the exclusion is recorded once, for the tree as a whole.
+                citable = sorted({path for path in files if is_repo_relative(path)})
+                records.append(CommitRecord(sha=sha, timestamp=timestamp, files=tuple(citable)))
 
         for line in completed.stdout.splitlines():
             if line.startswith("__commit__"):

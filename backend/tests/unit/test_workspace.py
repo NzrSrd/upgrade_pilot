@@ -357,6 +357,10 @@ def fake_git_on_path(tmp_path: Path) -> Path:
     script = bindir / "git"
     script.write_text(
         "#!/bin/sh\n"
+        # Skip any leading `-c key=value` pair so this stays a stand-in for
+        # `git` itself rather than for one exact argv: `git_log` passes
+        # `-c core.quotePath=false` before the subcommand.
+        'while [ "$1" = "-c" ]; do shift 2; done\n'
         'case "$1" in\n'
         "  rev-parse) echo 1111111111111111111111111111111111111111 ;;\n"
         "  log) printf '__commit__%s|%s\\n%s\\n' "
@@ -428,3 +432,69 @@ def test_the_hardened_environment_is_one_object_shared_by_clone_and_workspace() 
     # is narrowly ignored here rather than routed around.
     assert clone_module.HARDENED_GIT_ENV is workspace_module.HARDENED_GIT_ENV  # type: ignore[attr-defined]
     assert workspace_module.HARDENED_GIT_ENV["GIT_CONFIG_GLOBAL"] == "/dev/null"
+
+
+# --- F3: a legal POSIX filename must never crash the run (rule 20) ---------
+
+_UNCITABLE_NAME = "back\\slash.py"
+"""A perfectly legal POSIX filename that `RepoRelativePath` refuses, because
+a backslash is a path separator on some platforms and an ordinary filename
+character on others -- so a citation naming it could not be resolved. The
+analyzer's input is an untrusted third-party repository, so this must be
+excluded and recorded, never allowed to raise (CLAUDE.md rule 20)."""
+
+
+def test_iter_files_skips_a_path_that_could_never_be_cited(repo: Path) -> None:
+    """`iter_files` is the single boundary the whole analyzer reads the tree
+    through, so it is where an unrepresentable path has to stop. Downstream
+    there are four separate model constructors that would each raise on it
+    (`ModelClass.file`, `Manifest.path`, `SkippedFile.path`,
+    `RepoAnalysis.test_paths`)."""
+    (repo / _UNCITABLE_NAME).write_text("from pydantic import BaseModel\n")
+    workspace = Workspace(root=repo)
+    yielded = [p.as_posix() for p in workspace.iter_files(".py")]
+
+    assert _UNCITABLE_NAME not in yielded
+    assert "src/app/models.py" in yielded
+    assert workspace.uncitable_files(".py") == (_UNCITABLE_NAME,)
+
+
+def test_uncitable_files_is_empty_for_an_ordinary_tree(repo: Path) -> None:
+    """The negative direction. Without it, an implementation that reported
+    every path as uncitable would pass the test above."""
+    assert Workspace(root=repo).uncitable_files() == ()
+
+
+def test_git_log_drops_a_path_that_could_never_be_cited(git_repo: Path) -> None:
+    """`CommitRecord.files` is `tuple[RepoRelativePath, ...]`, and git reports
+    this name as `"back\\\\slash.py"` -- quoted and re-escaped, so it fails
+    validation twice over. Before this was filtered, one such file anywhere in
+    the history raised an uncaught `ValidationError` out of `git_log`."""
+    (git_repo / _UNCITABLE_NAME).write_text("x = 1\n")
+    _git(git_repo, "add", "--", _UNCITABLE_NAME)
+    _git(git_repo, "commit", "-q", "-m", "add an uncitable path")
+
+    commits = Workspace(root=git_repo).git_log(limit=10)
+    assert commits[0].files == ()
+    assert commits[1].files == ("src/app/models.py",)
+
+
+def test_git_log_reports_a_non_ascii_path_as_itself(git_repo: Path) -> None:
+    """The far more common trigger, and the one that must be FIXED rather
+    than filtered: git's `core.quotePath` defaults to true, which renders
+    `café.py` as the literal seven-character-escape string
+    `"caf\\\\303\\\\251.py"`. That contains backslashes, so `RepoRelativePath`
+    rejected it and the whole analysis crashed on any repository with a
+    non-ASCII filename in its history. `-c core.quotePath=false` emits the
+    real path, which is also the path `iter_files` yields -- so churn for
+    these files starts working rather than merely stopping the crash.
+    """
+    name = "café.py"
+    (git_repo / name).write_text("x = 1\n")
+    _git(git_repo, "add", "--", name)
+    _git(git_repo, "commit", "-q", "-m", "add a non-ascii path")
+
+    workspace = Workspace(root=git_repo)
+    commits = workspace.git_log(limit=10)
+    assert commits[0].files == (name,)
+    assert name in [p.as_posix() for p in workspace.iter_files(".py")]

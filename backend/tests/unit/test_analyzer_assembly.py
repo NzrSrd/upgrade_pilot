@@ -400,3 +400,47 @@ def test_a_file_colliding_on_dotted_module_gets_no_borrowed_model_definition(
             if site.kind is UsageKind.MODEL_DEFINITION:
                 assert site.snippet is not None
                 assert site.symbol in site.snippet, site
+
+
+# -- F3: an unrepresentable filename degrades, it does not crash (rule 20) --
+
+
+def test_a_filename_that_cannot_be_cited_becomes_a_reducer_not_a_crash(
+    tmp_path: Path,
+) -> None:
+    """`back\\slash.py` is a legal POSIX filename that `RepoRelativePath`
+    refuses, because a backslash is a separator on some platforms and an
+    ordinary character on others -- a citation naming it cannot be resolved.
+    The analyzer's input is an untrusted third-party repository, so this
+    reached `ModelClass(file=...)` and raised an uncaught `ValidationError`,
+    killing a run that had already analysed the rest of the tree correctly.
+
+    CLAUDE.md rule 20: the outcome is recorded, never a propagating
+    exception. It cannot be a `SkippedFile` -- that model's own `path` field
+    is `RepoRelativePath`, so the record could not name the file either --
+    which is why this is a reducer, the same in-model channel the corrupted-
+    history degrade already uses.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "back\\slash.py").write_text(
+        "from pydantic import BaseModel\n\n\nclass Ghost(BaseModel):\n    x: int\n",
+        encoding="utf-8",
+    )
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    # The rest of the analysis is intact.
+    assert analysis.detected_version is not None
+    assert "src/app/models.py" in {a.path for a in analysis.affected_files}
+    # And the excluded file is named as a gap, not silently dropped.
+    reducer = next((r for r in analysis.confidence_reducers if "cited" in r), None)
+    assert reducer is not None, analysis.confidence_reducers
+    assert "back\\\\slash.py" in reducer, reducer
+    assert "Ghost" not in {s for a in analysis.affected_files for s in a.symbols}
+
+
+def test_an_ordinary_tree_gets_no_uncitable_reducer(tmp_path: Path) -> None:
+    """The negative direction, in the same shape as
+    `test_no_gitmodules_means_no_submodule_reducer` above."""
+    analysis = _analysis(tmp_path)
+    assert not any("cited" in r for r in analysis.confidence_reducers)
