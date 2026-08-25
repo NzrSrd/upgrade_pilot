@@ -1,5 +1,13 @@
 # UI readiness review — 2026-08-25
 
+> **Status: closed 2026-08-25.** Every item below is resolved. §1 and §2's
+> nine decisions, all of §3, and §4's screenshot defects were settled in
+> `DESIGN.md` and `COMPONENTS.md` before Phase 10 began — see `DESIGN.md`
+> §Amendments for what changed and why, and §5 here for the disposition of
+> each blocking decision. Two items resolved differently from this review's
+> own recommendation and are marked as such. This file stays as the record of
+> what was wrong and what it would have cost; it is no longer a to-do list.
+
 A review of `DESIGN.md`, `COMPONENTS.md` and the six screenshots against the
 contract Phase 10 will actually build on: spec §10 (UI), §9 (API and run
 lifecycle), §8 (judgment layer), ADR-001 A3, and the models in
@@ -301,20 +309,68 @@ visually stable while the main workspace changes".
 
 ## 5. Decisions needed before Phase 10 starts
 
-Ordered by how much downstream work each one blocks.
+Ordered by how much downstream work each one blocks. **All eight resolved
+2026-08-25**, before any Phase 10 code was written.
 
-1. **Changes tab: generated patches or cited existing code?** (2.13) Blocks
-   Phase 8's `MigrationStep` shape and `validate_plan`'s check list. Needed
-   before Phase 8, not before Phase 10.
-2. **Which screenshot scenario is normative** (2.12) — re-render against
-   Pydantic v1 → v2, or declare content non-normative.
+1. ~~**Changes tab: generated patches or cited existing code?**~~ (2.13)
+   **Resolved: cited existing code.** This review filed it as "needed before
+   Phase 8", and Phase 8 came and went without it being asked — which
+   decided it by default. `MigrationStep` has no patch field and
+   `validate_plan` has no check that a patch parses or applies. Adding both
+   now would reopen a completed phase in order to build the one surface most
+   likely to present unverified LLM output as fact. The tab renders
+   `AffectedFile` → `UsageSite` instead: file, line, column, symbol,
+   `UsageKind`, confidence, snippet. Existing code, fully cited, and renamed
+   **Code** so nothing about it promises a diff.
+2. ~~**Which screenshot scenario is normative**~~ (2.12) **Resolved: content
+   declared non-normative**, layout normative, with a per-screenshot table in
+   `DESIGN.md` of what must not be copied out of each. Re-rendering against
+   Pydantic v1 → v2 remains worth doing and is not blocking; declaring the
+   content non-normative removes the hazard for a fraction of the cost, and
+   the hazard was the point of the item.
 3. ~~**Two regions or three** (1.2)~~ — **decided 2026-08-25**: three regions,
    spec §10 amended.
-4. **Complexity, grade, duration, impact-breakdown, "potential issues"**
-   (2.1–2.4) — derive each from the factor table or delete it.
-5. **The four missing statuses** (1.3), `ORPHANED` first.
-6. **Constraint fields** (2.9) — add `deadline` and `risk_tolerance`, drop the
-   two unbacked checkboxes, decide `Additional Context`'s fate (2.10).
-7. **Tabs inside the report only** (1.6), and one component vocabulary (1.4).
-8. **Streaming wording** (1.1) — cheapest fix in the list, and it misleads
-   every reader until it is made.
+4. ~~**Complexity, grade, duration, impact-breakdown, "potential issues"**~~
+   (2.1–2.4) **Resolved: all five deleted**, none derived. This review offered
+   "derive from the factor table or delete"; deriving would have invented a
+   second scoring system alongside the seven factors, and the factors already
+   answer the question those figures were gesturing at. `DecisionOption.effort`
+   survives and legitimately backs "Estimated Effort". The seven-factor table
+   is now the report's centrepiece, which is what §3.1 asked for — so the
+   deletion and the addition are the same change.
+5. ~~**The four missing statuses**~~ (1.3) **Resolved: all eight**, in the
+   backend's own vocabulary, so the mapping is identity. `orphaned` has a view
+   with resume-from-checkpoint, `failed` has one with retry,
+   `completed_with_warnings` surfaces the failed checks, `queued` renders the
+   activity view in a queued state.
+6. ~~**Constraint fields**~~ (2.9) **Resolved: the form is exactly
+   `UserConstraints`** — `zero_downtime`, `minimize_effort`, `deadline`,
+   `risk_tolerance`. The two unbacked checkboxes are gone. `Additional
+   Context` (2.10) is **dropped** rather than given a modeled home: the only
+   honest treatment was a field carrying no weight in any level, and a UI
+   that renders prose next to findings while insisting it is not a finding is
+   a UI that will be misread.
+7. ~~**Tabs inside the report only** (1.6), and one component vocabulary
+   (1.4)~~ **Resolved: both.** `ReportTabs` is the only tab bar in the
+   application; workflow view selection stays derived. `COMPONENTS.md` is
+   rewritten in spec §10's vocabulary, which is also the vocabulary Phase
+   10's checklist is written in.
+8. ~~**Streaming wording**~~ (1.1) **Resolved:** *live · 1s poll*. The badge
+   is gone with it, which was the dangerous half.
+
+**One backend change fell out of §3.9.** `RepoAnalysis.version_discrepancy`
+is a method taking `stated`, not a field, so nothing about it reaches the
+client and the report could not have rendered it. It is now a
+`@computed_field` on `FinalReport`, the one model holding both the stated
+version and the analysis — the same move, for the same stated reason, as the
+four computed fields Phase 9 added. No rule changed; an already-written rule
+became visible.
+
+**What this review cost and returned.** Nine of its findings would have
+produced a fabricated figure on screen, and one (§1.3, `orphaned`) would have
+shipped the hanging spinner the architecture was shaped to avoid. The
+expensive one it caught too late was §2.13: filed as "decide before Phase 8",
+read after Phase 8, and therefore decided by omission rather than on the
+merits. The decision it defaulted to happens to be the right one, which is
+luck rather than process — **a readiness review's blocking items need to be
+tied to the phase that closes them, not to the phase they were noticed in.**

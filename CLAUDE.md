@@ -56,6 +56,11 @@ Rules to follow when working in this repository. For *what* we are building and 
 The canonical UI references are the six screenshots in `docs/ui/screenshots/`,
 indexed and captioned in `docs/ui/DESIGN.md`.
 
+**They are normative for layout, not for content.** They depict a React
+17 → 18 JavaScript migration the product cannot run, and they contain figures
+no field backs. Never copy a number, a label, or a scenario out of them —
+`docs/ui/DESIGN.md` carries the per-screenshot list of what not to copy.
+
 The design specification is `docs/ui/DESIGN.md`; the component hierarchy is
 `docs/ui/COMPONENTS.md`.
 
