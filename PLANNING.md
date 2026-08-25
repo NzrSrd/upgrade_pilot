@@ -72,30 +72,72 @@ deliberately deferred, because the analyzer that populates these models does not
 exist yet and the right constraint only becomes visible once it does. Deferred is
 not forgotten — each has a stated reason:
 
-- [ ] `SymbolInventory`/`AffectedFile` constraints that need a real consumer:
+- [x] `SymbolInventory`/`AffectedFile` constraints that need a real consumer:
       PEP 503 normalisation of `DependencySpec.name` (it is an exact-match corpus
       key, so normalisation changes retrieval), and `commit_count=0` currently
-      conflating "unknown" with "no churn".
-- [ ] `RiskCategory` member names have drifted from spec §8.1, and three of them
+      conflating "unknown" with "no churn". Both done: `canonicalize_name`
+      (`models/inputs.py`) backs matching, proven by
+      `tests/unit/test_analysis_manifests.py::test_matching_is_on_the_canonical_name_not_the_written_one`;
+      `commit_count` is now `int | None` with `None` meaning "history
+      unavailable" and `0` meaning "available, untouched"
+      (`services/analysis/analyzer.py:107`), proven by
+      `tests/unit/test_analyzer_assembly.py::test_commit_count_is_None_when_the_repository_has_no_history`
+      and `::test_commit_count_is_zero_for_an_untracked_file_while_history_is_available`.
+- [x] `RiskCategory` member names have drifted from spec §8.1, and three of them
       overstate their scope. Rename with the analyzer, so the names describe what
-      is actually computed.
-- [ ] Citation paths accept absolute and `..` forms; `EvidenceRef` should require
-      a repo-relative path once the analyzer is the only producer.
-- [ ] `RepoAnalysis.languages` is bounded but still mutable in place, and is
-      unspecified in the spec. Fixing the mutability is a shape change.
-- [ ] Naive vs aware datetimes across the models.
-- [ ] The fixture's expectation tuples bind **one way**: every listed symbol must
+      is actually computed. Done: `models/enums.py:34-41` now matches the spec
+      §8.1 factor table verbatim, proven by
+      `tests/unit/test_evidence_models.py::test_risk_categories_match_the_spec_factor_table_exactly`,
+      which asserts equality (both directions) between the enum's values and
+      the spec's factor list.
+- [x] Citation paths accept absolute and `..` forms; `EvidenceRef` should require
+      a repo-relative path once the analyzer is the only producer. Done:
+      `RepoRelativePath` (`models/evidence.py`) rejects absolute, `..`, and
+      backslash forms via `_require_repo_relative`, proven by
+      `tests/unit/test_evidence_models.py::test_repo_evidence_rejects_non_repo_relative_paths`
+      (parametrized negative cases) and
+      `::test_repo_evidence_accepts_ordinary_repo_relative_paths`.
+- [x] `RepoAnalysis.languages` is bounded but still mutable in place, and is
+      unspecified in the spec. Fixing the mutability is a shape change. Done:
+      `languages: tuple[LanguageShare, ...]` (`models/repo.py:246`) — a tuple,
+      not a list, so in-place mutation is structurally blocked. Shape checked
+      by `tests/unit/test_repo_models.py`; produced correctly by
+      `tests/unit/test_analysis_layout.py::test_language_shares_total_one_and_are_sorted_by_descending_share`.
+- [x] Naive vs aware datetimes across the models. Done: `CommitRecord.timestamp`
+      and `AffectedFile.last_modified` are `pydantic.AwareDatetime`
+      (`models/repo.py:164,222`), which rejects a naive `datetime` at
+      construction. Demonstrated this session (`CommitRecord(sha=..., timestamp=datetime(2026,1,1))`
+      raises `ValidationError`); no dedicated regression test exists in the
+      suite for the rejection itself, only for the aware values the analyzer
+      already produces (`tests/unit/test_analyzer_assembly.py`, asserting
+      `record.timestamp.tzinfo is not None`).
+- [x] The fixture's expectation tuples bind **one way**: every listed symbol must
       exist, but nothing catches someone *shortening* a tuple, which would
       silently narrow the documented claim while the suite stayed green. The
       analyzer's own test must assert its findings **equal** those tuples exactly,
-      which closes both directions.
-- [ ] The analyzer must detect `.gitmodules` and surface "submodule content not
+      which closes both directions. Done:
+      `tests/analysis/test_analyzer_end_to_end.py` (commit `24a50af`) asserts
+      `==` against `EXPECTED_HIGH_CONFIDENCE_SYMBOLS`,
+      `EXPECTED_MEDIUM_CONFIDENCE_SYMBOLS`, and the affected-file set, not
+      containment.
+- [x] The analyzer must detect `.gitmodules` and surface "submodule content not
       analysed" as an explicit confidence reducer. `git clone` does not fetch
       submodules, so a repository whose real code lives in them would otherwise
       analyse as nearly empty and report low risk having never seen the code.
-- [ ] Bring `tests` under mypy. Measured cost: 130 errors across 13 files, 8 of
-      them inside `tests/fixtures/sample_repo/`, whose contents must never be
-      "fixed" — so the fixture needs excluding first. See spec §11.
+      Done: `services/analysis/analyzer.py:124` checks for `.gitmodules` and
+      appends a confidence reducer without adding a `SkippedFile`, proven by
+      `tests/unit/test_analyzer_assembly.py::test_gitmodules_becomes_a_confidence_reducer_not_a_skipped_file`
+      and `::test_no_gitmodules_means_no_submodule_reducer`.
+- [x] Bring `tests` under mypy. Done: `files` in `backend/pyproject.toml` is now
+      `["src/upgradepilot", "tests"]`, with `exclude =
+      ["^tests/fixtures/sample_repo/"]` carving out the fixture tree (13 strict
+      errors there are the point of the fixture, not a defect). Measured cost
+      for the rest of `tests`: 158 errors across the branch at the start,
+      `plugins = ["pydantic.mypy"]` alone resolving 46 of them. Bare `mypy`
+      (no path argument) now reports `Success: no issues found in 66 source
+      files`. See spec §11. Proven by commit `809ee7c` (`chore(types): bring
+      tests under strict mypy, excluding the v1 fixture tree`) and a run of
+      `.venv/bin/python -m mypy` this session.
 
 **Deferred to the phase that owns the surface:**
 
@@ -105,7 +147,8 @@ not forgotten — each has a stated reason:
       `exists()` and `iterdir()`. Individual entries are guarded.
 - [ ] An `LLMRateLimitedError` / `LLMUnavailableError` taxonomy (Phase 4).
 - [ ] `api/app.py` calls `create_app()` at import time.
-- [ ] `_NON_INTERACTIVE_GIT_ENV` hardcodes `PATH` to `/usr/bin:/bin:/usr/local/bin`
+- [ ] `HARDENED_GIT_ENV` (`backend/src/upgradepilot/services/repo/workspace.py:40`,
+      imported by `clone.py:28`) hardcodes `PATH` to `/usr/bin:/bin:/usr/local/bin`
       and `GIT_ASKPASS` to `/usr/bin/true`. https transport works under it here,
       but git lives at `/opt/homebrew/bin` on Apple Silicon, so the product's
       primary input path would fail on such a host. Resolve these rather than
@@ -122,21 +165,29 @@ default and keep it reachable via `UP_ALLOWED_URL_SCHEMES`. Not changed
 unilaterally, because the code matches the spec and this is a spec decision.
 
 
-- [ ] Manifest detection across `pyproject.toml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock`
-- [ ] Version detection with precedence and confidence label; `DependencyNotFound` when absent
-- [ ] `DependencyRole` direct vs transitive-only
-- [ ] Stated-versus-detected discrepancy detection
-- [ ] Byte-substring candidate prefilter, then `ast.parse`
-- [ ] Alias map from `Import` / `ImportFrom`
-- [ ] Usage detection with confidence tiers per spec §7.1
-- [ ] `SkippedFile` records for unparseable files
-- [ ] Churn from a single `git log --name-only` call
-- [ ] Test location detection
-- [ ] Language mix for `RepoAnalysis.languages` by counting file extensions over the workspace — the field exists and defaults to `{}`, so without this it stays empty and any UI reading it shows nothing. A sixth item in Phase 1's scope note ("detect repository languages") deferred here without a corresponding line; this is that line
-- [ ] `SymbolInventory` and `AffectedFile` assembly
-- [ ] Tests: fixture files for every usage kind, an unparseable file, every manifest type
+- [x] Manifest detection across `pyproject.toml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `Pipfile.lock` — proven by `tests/unit/test_analysis_manifests.py::test_each_manifest_kind_yields_the_expected_declaration` (parametrized over one fixture per kind/dialect under `tests/fixtures/manifests/`) and `::test_scan_manifests_finds_both_manifests_in_the_sample_repo`
+- [x] Version detection with precedence and confidence label; `DependencyNotFound` when absent — proven by `tests/unit/test_analysis_versions.py::test_no_declaration_raises_rather_than_guessing`, `::test_a_lockfile_pin_beats_a_pyproject_range`, `::test_an_exact_requirements_pin_beats_a_pyproject_range`, `::test_a_range_only_declaration_reports_the_specifier_as_the_value`
+- [x] `DependencyRole` direct vs transitive-only — proven by `tests/unit/test_analysis_versions.py::test_lockfile_only_means_the_user_does_not_control_the_pin` and `::test_a_human_authored_manifest_means_direct`
+- [x] Stated-versus-detected discrepancy detection — proven by `RepoAnalysis.version_discrepancy` (`models/repo.py:326`) and `tests/unit/test_analyzer_assembly.py::test_version_discrepancy_surfaces_rather_than_being_overridden`
+- [x] Byte-substring candidate prefilter, then `ast.parse` — proven by `tests/unit/test_analysis_candidates.py::test_phase_a_selects_files_naming_the_import_root` and `::test_the_unparseable_file_becomes_a_skipped_record_not_an_exception`. This item covers only phase A of what the code actually does; phase B (see the carry-in below) was not part of this line's original scope and is recorded separately
+- [x] Alias map from `Import` / `ImportFrom` — proven by `tests/unit/test_analysis_imports.py::test_every_import_spelling_resolves`, parametrized across every import spelling (plain, aliased, dotted, relative, star)
+- [x] Usage detection with confidence tiers per spec §7.1 — proven by `tests/unit/test_analysis_usage.py` (27 test functions covering every `UsageKind`) and, for the tier boundary specifically, `::test_a_call_on_a_parameter_annotated_with_a_model_is_medium`, `::test_a_call_on_an_unresolvable_receiver_is_low`, `::test_the_two_tiers_are_actually_different_in_this_fixture`
+- [x] `SkippedFile` records for unparseable files — proven by `tests/unit/test_analysis_candidates.py::test_the_unparseable_file_becomes_a_skipped_record_not_an_exception` and `::test_a_file_that_is_not_utf8_is_skipped_with_a_decode_reason`, plus assembly-level `tests/unit/test_analyzer_assembly.py::test_the_unparseable_file_is_reported_not_swallowed`
+- [x] Churn from a single `git log --name-only` call — proven by `Workspace.git_log` (`services/repo/workspace.py:265-310`, one subprocess call) and `tests/unit/test_analyzer_assembly.py::test_commit_records_are_populated_from_the_same_history_git_log_read`
+- [x] Test location detection — proven by `tests/unit/test_analysis_layout.py::test_test_paths_are_recognised`, `::test_a_source_file_finds_its_conventional_test`, `::test_a_near_miss_filename_is_not_mistaken_for_the_conventional_test`, and end-to-end by `tests/analysis/test_analyzer_end_to_end.py::test_the_test_file_is_marked_as_a_test`
+- [x] Language mix for `RepoAnalysis.languages` by counting file extensions over the workspace — the field exists and defaults to `{}`, so without this it stays empty and any UI reading it shows nothing. A sixth item in Phase 1's scope note ("detect repository languages") deferred here without a corresponding line; this is that line. Proven by `tests/unit/test_analysis_layout.py::test_language_shares_total_one_and_are_sorted_by_descending_share` and `::test_language_shares_are_empty_for_a_repository_with_no_recognised_files`
+- [x] `SymbolInventory` and `AffectedFile` assembly — proven by `tests/unit/test_analyzer_assembly.py::test_counts_are_internally_consistent` and `::test_every_affected_file_path_appears_in_the_repository`, plus the equality tests in `tests/analysis/test_analyzer_end_to_end.py`
+- [x] Tests: fixture files for every usage kind, an unparseable file, every manifest type — proven by `tests/unit/test_fixture_repo.py` (10 tests asserting the fixture's own shape) and `tests/fixtures/repo_builder.py`'s documented expectation constants, consumed by `tests/analysis/test_analyzer_end_to_end.py`
 
-**Exit:** given the fixture repository and `pydantic`, the analyzer returns structured evidence with real file/line usage sites and honest confidence labels.
+**Exit:** given the fixture repository and `pydantic`, the analyzer returns structured evidence with real file/line usage sites and honest confidence labels. **Met** — proven by `tests/analysis/test_analyzer_end_to_end.py` (commit `24a50af`), which runs `analyze_repository` over the fixture and `pydantic`, asserting equality (not containment) against the fixture's documented expectation tuples for high- and medium-confidence symbols, the low-confidence site, the affected-file set, the detected version, and citation resolution (`test_every_citation_in_the_analysis_resolves`). Confirmed passing this session: `.venv/bin/python -m pytest -o addopts="" -q` → 693 passed, 5 skipped.
+
+**Carried in from Phase 2.** Found during this phase's own work and deliberately deferred, same discipline as the Phase 1 carry-ins above:
+
+- [ ] The analyzer's two-pass design (`ModelIndex` built to a fixed point, then usage graded by receiver resolution) and its two-phase candidate selection (byte-scan for the import root, then byte-scan the remainder for discovered model names) both depart from spec §7.1 and §7.1's "Candidate file selection" paragraph as originally written. The spec has been amended to describe the code (see this phase's Step 1); the departures themselves, with what was measured, are recorded in ADR-001.
+- [ ] `usage.py`'s dotted-decorator branch (`@dep.validator(...)`, as opposed to `@validator(...)`) has no test that fails when it is deleted (mutation-testing ruling 56).
+- [ ] `usage.py`'s async-function scope handling (the scope stack's treatment of `async def`, as opposed to `def`) has the same shape of gap (ruling 60).
+- [ ] Unexecuted lines, found and left as-is rather than deleted or force-covered: `usage.py:52,55,67`, `candidates.py:203`, `manifests.py:404-407`, `models_index.py:117-118,120`.
+- [ ] `broken.py`'s fixture comment names the dependency ("`# pydantic: ...`"), which is structurally the same accident phase B exists to close for `service.py` — acceptable here only because `broken.py` fails loudly (a test goes red immediately) if that comment is removed, unlike `service.py`'s docstring, which failed silently. Worth a real first-party consumer fixture that reaches `broken.py` only through phase B, the way `consumer.py` does for `service.py`, if the distinction ever needs to be demonstrated rather than merely argued.
 
 ## Phase 3 — Knowledge base
 
