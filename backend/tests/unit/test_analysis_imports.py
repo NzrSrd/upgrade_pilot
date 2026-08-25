@@ -171,3 +171,64 @@ def test_entries_carry_the_line_and_column_of_the_import() -> None:
     aliases = _map("import json\nimport pydantic\n")
     entry = next(e for e in aliases.entries if e.local == "pydantic")
     assert (entry.line, entry.column) == (2, 0)
+
+
+# -- I5: `ast.walk`, not `tree.body` ----------------------------------------
+
+
+def test_an_import_reachable_only_inside_a_try_block_is_still_recorded() -> None:
+    """`from_module` walks with `ast.walk` rather than iterating `tree.body`,
+    and `imports.py` calls the version-gated `try:`/`except ImportError:`
+    import "the common real case" -- `origin_of`'s whole argument rests on
+    it. Replacing `ast.walk` with `tree.body` nevertheless left all 675 tests
+    green, because the fixture that was supposed to guard it
+    (`test_shadowing_resolves_by_source_position_not_walk_order`) has a
+    top-level sibling import forcing the same answer.
+
+    Here the try block holds the ONLY import in the module, so a body-only
+    walk finds nothing at all and every downstream site in such a file
+    disappears.
+    """
+    aliases = _map(
+        "try:\n"
+        "    from pydantic.v1 import BaseModel\n"
+        "except ImportError:  # pragma: no cover\n"
+        "    BaseModel = object\n"
+    )
+    assert aliases.origin_of("BaseModel") == "pydantic.v1.BaseModel"
+    assert aliases.root_of("BaseModel") == "pydantic"
+    assert [e.line for e in aliases.entries if e.origin is not None] == [2]
+
+
+def test_a_star_import_nested_in_a_try_block_is_still_recorded() -> None:
+    """The same gap for `has_star_import_from`, which feeds a confidence
+    reducer: an optional-dependency star import is exactly the shape that
+    hides usage, and a body-only walk would report False for it."""
+    aliases = _map("try:\n    from pydantic import *\nexcept ImportError:\n    pass\n")
+    assert aliases.has_star_import_from("pydantic") is True
+
+
+# -- U8/X8/X2 family: a shared prefix is not a shared package ---------------
+
+
+def test_a_package_whose_name_merely_starts_with_the_root_is_a_different_root() -> None:
+    """`root_of` compares the first dotted SEGMENT for equality, so
+    `pydantic_settings` correctly does not read as `pydantic`. Nothing bound
+    that: a `startswith` mutation survived the whole suite. A refactor to
+    prefix matching would make every `pydantic_settings` import a false
+    finding against `pydantic` -- the same false-positive class
+    `is_test_path`'s docstring warns about, and a CLAUDE.md rule 1 defect.
+    """
+    aliases = _map("import pydantic_settings\nfrom pydantic_settings import BaseSettings\n")
+    assert aliases.root_of("pydantic_settings") == "pydantic_settings"
+    assert aliases.root_of("BaseSettings") == "pydantic_settings"
+    assert aliases.has_star_import_from("pydantic") is False
+
+
+def test_a_star_import_from_a_prefix_named_package_is_not_the_dependency() -> None:
+    """`has_star_import_from` compares by root segment for the same reason.
+    `from pydantic_settings import *` must not raise the reducer that says
+    usage of PYDANTIC may be under-reported."""
+    aliases = _map("from pydantic_settings import *\n")
+    assert aliases.has_star_import_from("pydantic_settings") is True
+    assert aliases.has_star_import_from("pydantic") is False

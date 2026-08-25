@@ -280,3 +280,52 @@ def test_two_files_sharing_one_dotted_module_are_both_indexed() -> None:
         ("app/models.py", "Invoice", 4),
         ("src/app/models.py", "Invoice", 4),
     ]
+
+
+# -- X8/X2: a shared prefix is neither a shared package nor a shared class --
+
+
+def test_a_base_from_a_prefix_named_package_is_not_indexed() -> None:
+    """The seed compares `aliases.root_of(leftmost)` to `import_root` for
+    EQUALITY. Nothing bound that: a `startswith` mutation survived the whole
+    suite, and would index `class S(pydantic_settings.BaseSettings)` as a
+    pydantic model -- a HIGH-confidence MODEL_DEFINITION for a dependency the
+    class does not derive from.
+    """
+    index = build_model_index(
+        (
+            _module(
+                "m.py",
+                "import pydantic_settings\nclass S(pydantic_settings.BaseSettings):\n    x: int\n",
+            ),
+        ),
+        import_root="pydantic",
+    )
+    assert index.classes == ()
+
+
+def test_a_transitive_base_must_match_an_indexed_class_exactly_not_by_prefix() -> None:
+    """The fixed point compares the resolved base against the FULL dotted
+    path of an indexed class. Ruling 41 bound `is_model_class`, not this
+    comparison, so a prefix mutation here survived: `CustomerHelper` resolves
+    to `app.models.CustomerHelper`, which starts with the indexed
+    `app.models.Customer`, and `Thing` would be indexed as a pydantic model
+    on the strength of a shared name prefix.
+
+    `Customer` IS indexed in the same fixture, so the test cannot pass by the
+    fixed point failing to find anything at all.
+    """
+    models = _module(
+        "app/models.py",
+        "from pydantic import BaseModel\n"
+        "class Customer(BaseModel):\n"
+        "    x: int\n"
+        "class CustomerHelper:\n"
+        "    pass\n",
+    )
+    consumer = _module(
+        "app/thing.py",
+        "from app.models import CustomerHelper\nclass Thing(CustomerHelper):\n    y: int\n",
+    )
+    index = build_model_index((models, consumer), import_root="pydantic")
+    assert [(c.file, c.name) for c in index.classes] == [("app/models.py", "Customer")]

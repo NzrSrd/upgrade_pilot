@@ -693,3 +693,20 @@ def test_a_packed_parameter_still_shadows_an_outer_binding_of_its_name() -> None
         (6, Confidence.LOW),
         (8, Confidence.MEDIUM),
     ]
+
+
+# -- U8: the import-root comparison is by segment, not by prefix ------------
+
+
+def test_an_import_of_a_prefix_named_package_is_not_an_import_site() -> None:
+    """`_emit_import_sites` compares `origin.split(".")[0]` to the import
+    root for EQUALITY. Nothing bound that: mutating it to `startswith`
+    survived the whole suite, and would make every `import pydantic_settings`
+    an IMPORT site citing `pydantic` -- a finding on a line that does not
+    mention the dependency at all (CLAUDE.md rule 1).
+    """
+    source = "import pydantic_settings\nfrom pydantic_settings import BaseSettings\n"
+    module = ParsedModule(file="m.py", dotted_module="m", source=source, tree=ast.parse(source))
+    index = build_model_index((module,), import_root="pydantic")
+    sites = detect_usage(module, import_root="pydantic", index=index)
+    assert sites == ()
