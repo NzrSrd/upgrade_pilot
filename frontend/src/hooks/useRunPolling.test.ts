@@ -2,6 +2,7 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { RunStatus } from "../api/types";
 import { aSnapshot } from "../test/fixtures";
 import { server } from "../test/server";
 import { BACKOFF_MS, POLL_MS, useRunPolling } from "./useRunPolling";
@@ -16,7 +17,7 @@ function scriptSnapshots(...statuses: string[]) {
     http.get(STATUS, () => {
       const status = statuses[Math.min(call, statuses.length - 1)];
       call += 1;
-      return HttpResponse.json(aSnapshot({ status: status as never }));
+      return HttpResponse.json(aSnapshot({ status: status as RunStatus }));
     }),
   );
   return seen;

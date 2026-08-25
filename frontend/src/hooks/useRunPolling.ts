@@ -60,6 +60,11 @@ export function useRunPolling(threadId: string | null): PollState {
     const id = threadId;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Both are needed, for narrower reasons than it might look: `abort()`
+    // cancels a request already on the wire, while `stopped` is the flag the
+    // success path in `tick` actually checks once a response comes back. That
+    // path tests `stopped`, not `signal.aborted`, so the abort alone would not
+    // stop it from setting state after cleanup.
     let stopped = false;
     let failures = 0;
 
