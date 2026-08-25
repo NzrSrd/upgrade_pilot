@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { aSnapshot, anUsageView } from "../test/fixtures";
+import { aSnapshot, aTraceEvent, anUsageView } from "../test/fixtures";
 import { RunMetrics } from "./RunMetrics";
 
 describe("RunMetrics", () => {
@@ -95,5 +95,28 @@ describe("RunMetrics", () => {
     render(<RunMetrics snapshot={aSnapshot({ usage: anUsageView({ by_model: [] }) })} />);
 
     expect(screen.getByText(/not recorded yet/i)).toBeInTheDocument();
+  });
+
+  it("shows a compact recorded span between the first and last trace event", () => {
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({
+          trace: [
+            aTraceEvent({ event_id: "e-1", at: "2026-08-25T12:00:00.000Z" }),
+            aTraceEvent({ event_id: "e-2", at: "2026-08-25T12:00:03.200Z" }),
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Recorded span")).toBeInTheDocument();
+    expect(screen.getByText("3.2s")).toBeInTheDocument();
+  });
+
+  it("does not render a zero recorded span for an empty trace", () => {
+    render(<RunMetrics snapshot={aSnapshot({ trace: [] })} />);
+
+    expect(screen.queryByText("0s")).not.toBeInTheDocument();
+    expect(screen.queryByText("0.0s")).not.toBeInTheDocument();
   });
 });

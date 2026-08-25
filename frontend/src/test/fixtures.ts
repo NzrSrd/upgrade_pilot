@@ -6,7 +6,7 @@
  * against an impossible fixture is worse than no test.
  */
 
-import type { BreakingChange, RunSnapshot, SourceRef, UsageView } from "../api/types";
+import type { BreakingChange, FinalReport, RunSnapshot, SourceRef, TraceEvent, UsageView } from "../api/types";
 
 export function aSourceRef(overrides: Partial<SourceRef> = {}): SourceRef {
   return {
@@ -34,6 +34,18 @@ export function aBreakingChange(overrides: Partial<BreakingChange> = {}): Breaki
   };
 }
 
+export function aTraceEvent(overrides: Partial<TraceEvent> = {}): TraceEvent {
+  return {
+    event_id: "e-1",
+    kind: "node_started",
+    node: "assess_risk",
+    at: "2026-08-25T12:00:00Z",
+    summary: "assess_risk started",
+    detail: null,
+    ...overrides,
+  };
+}
+
 export function anUsageView(overrides: Partial<UsageView> = {}): UsageView {
   return {
     calls: 0,
@@ -45,6 +57,28 @@ export function anUsageView(overrides: Partial<UsageView> = {}): UsageView {
     estimated_cost_usd: 0,
     by_node: [],
     by_model: [],
+    ...overrides,
+  };
+}
+
+export function aFinalReport(overrides: Partial<FinalReport> = {}): FinalReport {
+  return {
+    thread_id: "t-1",
+    repo_ref: { kind: "remote", url: "https://example.com/repo.git" },
+    dependency: {
+      name: "pydantic",
+      canonical_name: "pydantic",
+      current_version: "1.10.13",
+      target_version: "2.9.2",
+      import_root: "pydantic",
+    },
+    constraints: { zero_downtime: false, minimize_effort: false, deadline: null, risk_tolerance: "medium" },
+    commit_sha: null,
+    completed_at: "2026-08-25T12:00:00Z",
+    completed_with_warnings: false,
+    repo_analysis: null,
+    usage: { calls: 0, input_tokens: 0, output_tokens: 0 },
+    version_discrepancy: null,
     ...overrides,
   };
 }

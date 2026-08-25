@@ -14,6 +14,7 @@
 
 import type { RunSnapshot } from "../api/types";
 import { costLabel } from "../derive/cost";
+import { recordedSpan } from "../derive/recordedSpan";
 import { EmptyState, Field, Panel } from "./ui";
 
 const integer = new Intl.NumberFormat("en-US");
@@ -37,6 +38,7 @@ export function RunMetrics({ snapshot }: { snapshot: RunSnapshot | null }) {
   // call site below.
   const completedSteps = snapshot.completed_steps ?? [];
   const ragContext = snapshot.rag_context ?? null;
+  const span = recordedSpan(snapshot);
 
   return (
     <div className="space-y-3">
@@ -101,6 +103,14 @@ export function RunMetrics({ snapshot }: { snapshot: RunSnapshot | null }) {
             value={<span className="font-mono text-[13px]">{snapshot.current_step ?? "—"}</span>}
           />
           <Field label="Completed" value={`${completedSteps.length} of 8`} />
+          {/* "Recorded span", never "elapsed time": this measures the gap
+              between the first and last recorded trace event, not
+              wall-clock time since the run started. This client cannot
+              observe when the server actually began, and a checkpointed run
+              can be resumed hours or days after it paused, so wall-clock
+              across a resume would be a number that looks authoritative and
+              is not. `null` (an empty trace) renders as "--", never "0s". */}
+          <Field label="Recorded span" value={span ?? "\u2014"} />
           {ragContext !== null && (
             <>
               <Field label="Retrieval rounds" value={String(ragContext.iterations)} />

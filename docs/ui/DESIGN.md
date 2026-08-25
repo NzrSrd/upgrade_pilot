@@ -102,9 +102,20 @@ Execution observability, visible during a run **and after it completes**:
 - LLM call count
 - Model in use
 - Tokens by node
+- Recorded span — the interval between the first and last recorded trace
+  event, not wall-clock time since the run started; see the Telemetry
+  section below for why
 - Graph execution state
-- Retrieved sources
-- Diagnostics
+
+Two items an earlier version of this list implied belong here and do not:
+
+- **Retrieved sources** are not a sidebar panel. They render in the
+  Activity view (`EvidencePanel`, scoped to the run in progress) and, once a
+  run completes, in the report's Evidence tab — not in this region.
+- **Diagnostics** — latency, internals — is deferred. Nothing computes it,
+  Phase 10 does not implement it, and no field backs it. It is named as out
+  of scope here rather than left looking settled, the same treatment the PR
+  Draft tab gets below.
 
 Telemetry earns a region rather than a block inside the left sidebar because
 token and cost tracking is a graded capability, not a diagnostic: it has to
@@ -398,7 +409,11 @@ and after execution:
 - Model in use, from `UsageSummary.by_model`
 - Tokens by node — "where did the tokens go" is the second question a
   developer asks
-- Elapsed time
+- Recorded span — the interval between the first and last recorded trace
+  event, not wall-clock time since the run started. The server's actual
+  start time is not observable from here, and a checkpointed run can be
+  resumed hours or days later, so wall-clock across a resume would be a
+  number that looks authoritative and is not.
 
 ### The cost card's two flags are not optional
 
