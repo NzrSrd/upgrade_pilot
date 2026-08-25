@@ -61,7 +61,6 @@ def test_a_lockfile_pin_beats_a_pyproject_range() -> None:
         canonical_name="pydantic",
     )
     assert detected is not None
-    assert detected is not None
     assert detected.value == "1.10.13"
     assert detected.confidence is VersionConfidence.EXACT
     assert detected.source_manifest.kind is ManifestKind.POETRY_LOCK
