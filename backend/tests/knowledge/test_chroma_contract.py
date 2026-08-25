@@ -12,13 +12,20 @@
 
 import hashlib
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import chromadb
 import numpy as np
 import numpy.typing as npt
 from chromadb.api import ClientAPI
-from chromadb.api.types import Documents, EmbeddingFunction, Embeddings, Metadata, Where
+from chromadb.api.types import (
+    Documents,
+    Embeddable,
+    EmbeddingFunction,
+    Embeddings,
+    Metadata,
+    Where,
+)
 
 DIM = 16
 
@@ -41,9 +48,26 @@ class DeterministicEmbedding(EmbeddingFunction[Documents]):
         return "deterministic-test-embedding"
 
 
-def fake_embedding_function() -> DeterministicEmbedding:
-    """Shared by every knowledge-base test from Phase 3 onward."""
-    return DeterministicEmbedding()
+def fake_embedding_function() -> EmbeddingFunction[Embeddable]:
+    """Shared by every knowledge-base test from Phase 3 onward.
+
+    Returns `EmbeddingFunction[Embeddable]` rather than the concrete
+    `DeterministicEmbedding`, so the one unavoidable suppression lives here
+    instead of at all eight call sites. `EmbeddingFunction`'s `__call__`
+    takes its type parameter as a parameter, so the protocol is
+    contravariant in it: a `Documents`-only embedder cannot structurally
+    satisfy the `EmbeddingFunction[Embeddable]` that `create_collection` and
+    `get_collection` declare, even though it is exactly what chromadb calls
+    it with. Chromadb hits this in its own code and silences it the same
+    way, at the assignment of `DefaultEmbeddingFunction` in
+    `chromadb/api/types.py`. `Documents` is `list[str]`, and every caller's
+    input here is documents, so the cast is sound in practice.
+
+    A `cast`, not a `# type: ignore`: the mismatch is a variance fact about
+    the protocol, not an error to be suppressed, and a cast keeps the
+    return type honest for anything that later reads it.
+    """
+    return cast(EmbeddingFunction[Embeddable], DeterministicEmbedding())
 
 
 def _contains(field: str, symbol: str) -> Where:
@@ -105,7 +129,7 @@ DOCS: list[tuple[str, str, Metadata]] = [
 def _seed(client: ClientAPI) -> None:
     collection = client.get_or_create_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
     collection.add(
         ids=[d[0] for d in DOCS],
@@ -119,14 +143,9 @@ def test_persistent_client_survives_restart(tmp_path: Path) -> None:
     _seed(chromadb.PersistentClient(path=path))
 
     reopened = chromadb.PersistentClient(path=path)
-    # chromadb's own default embedding function is typed `EmbeddingFunction[Documents]` too
-    # (see `chromadb/api/types.py`'s `DefaultEmbeddingFunction`, assigned to this exact
-    # parameter upstream with the same `# type: ignore`) -- `ClientAPI.get_collection`'s
-    # declared parameter type is the contravariant `EmbeddingFunction[Embeddable]`, which no
-    # `Documents`-only embedding function can satisfy structurally, only in practice.
     collection = reopened.get_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
     assert collection.count() == 3
 
@@ -136,7 +155,7 @@ def test_scalar_metadata_filter_narrows_results(tmp_path: Path) -> None:
     _seed(client)
     collection = client.get_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
 
     result = collection.query(
@@ -156,7 +175,7 @@ def test_source_metadata_round_trips(tmp_path: Path) -> None:
     _seed(client)
     collection = client.get_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
 
     result = collection.get(ids=["pydantic-v2#validator"])
@@ -179,7 +198,7 @@ def test_list_valued_metadata_is_accepted_and_round_trips(tmp_path: Path) -> Non
     _seed(client)
     collection = client.get_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
 
     metadatas = collection.get(ids=["pydantic-v2#validator"])["metadatas"]
@@ -200,7 +219,7 @@ def test_symbol_filter_matches_whole_elements_not_substrings(tmp_path: Path) -> 
     client = chromadb.PersistentClient(path=str(tmp_path / "chroma"))
     collection = client.get_or_create_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
     collection.add(
         ids=["exact", "longer"],
@@ -226,7 +245,7 @@ def test_multiple_symbols_filter_with_or_of_contains(tmp_path: Path) -> None:
     _seed(client)
     collection = client.get_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
 
     result = collection.get(
@@ -252,7 +271,7 @@ def test_in_operator_does_not_work_on_list_metadata(tmp_path: Path) -> None:
     _seed(client)
     collection = client.get_collection(
         "migrations",
-        embedding_function=fake_embedding_function(),  # type: ignore[arg-type]
+        embedding_function=fake_embedding_function(),
     )
 
     result = collection.get(where=_in("affected_symbols", ["validator"]))
