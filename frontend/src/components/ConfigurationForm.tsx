@@ -198,6 +198,8 @@ export function ConfigurationForm({ onStarted }: { onStarted: (run: SessionRun) 
               onChange={setFrom}
               placeholder="1.10.13"
               error={errorFor("versions")}
+              describedBy="versions-error"
+              hideMessage
               mono
             />
             <TextField
@@ -206,9 +208,22 @@ export function ConfigurationForm({ onStarted }: { onStarted: (run: SessionRun) 
               value={to}
               onChange={setTo}
               placeholder="2.9.2"
+              error={errorFor("versions")}
+              describedBy="versions-error"
+              hideMessage
               mono
             />
           </div>
+          {errorFor("versions") != null && (
+            // Rendered once, outside either input: the relationship error
+            // implicates both `version-from` and `version-to`, and a message
+            // duplicated per field would make `getByText` ambiguous while
+            // saying nothing more than the single copy already says. Both
+            // inputs point `aria-describedby` at this one id.
+            <p id="versions-error" className="text-xs text-risk-high">
+              {errorFor("versions")}
+            </p>
+          )}
           <p className="text-[11px] text-ink-faint">
             The version you state is compared against what the manifests declare; the report shows
             both when they disagree.
@@ -298,6 +313,8 @@ function TextField({
   placeholder,
   error,
   mono = false,
+  describedBy: describedByOverride,
+  hideMessage = false,
 }: {
   id: string;
   label: string;
@@ -306,8 +323,20 @@ function TextField({
   placeholder?: string;
   error?: string | null;
   mono?: boolean;
+  /**
+   * Point `aria-describedby` at an id this field does not own -- for an error
+   * that implicates more than one input (the versions-must-differ case) and
+   * so is rendered once, by the caller, rather than once per field.
+   */
+  describedBy?: string;
+  /**
+   * Suppress this field's own `<p>` message while still applying
+   * `aria-invalid` and `describedBy`. Used together with `describedBy` so a
+   * shared relationship error is not duplicated in the DOM.
+   */
+  hideMessage?: boolean;
 }) {
-  const describedBy = error != null ? `${id}-error` : undefined;
+  const describedBy = error != null ? (describedByOverride ?? `${id}-error`) : undefined;
   return (
     <div>
       <label className="block text-[11px] tracking-wide text-ink-faint uppercase" htmlFor={id}>
@@ -325,7 +354,7 @@ function TextField({
           mono ? "font-mono text-[13px]" : ""
         } ${error != null ? "border-risk-high" : "border-edge"}`}
       />
-      {error != null && (
+      {error != null && !hideMessage && (
         <p id={`${id}-error`} className="mt-1 text-xs text-risk-high">
           {error}
         </p>

@@ -59,6 +59,29 @@ describe("ConfigurationForm", () => {
     expect(screen.getByText(/must differ/i)).toBeInTheDocument();
   });
 
+  it("marks both version fields invalid when they must differ, not just one", async () => {
+    // The relationship error implicates `version-from` and `version-to`
+    // equally. A screen-reader user tabbed to either one needs to hear it;
+    // the message itself stays rendered exactly once so `getByText` above
+    // stays unambiguous.
+    const user = userEvent.setup();
+    render(<ConfigurationForm onStarted={() => {}} />);
+
+    await user.type(screen.getByLabelText(/repository url/i), "https://example.invalid/r.git");
+    await user.type(screen.getByLabelText(/dependency/i), "pydantic");
+    await user.type(screen.getByLabelText(/current version/i), "2.9.2");
+    await user.type(screen.getByLabelText(/target version/i), "2.9.2");
+    await user.click(screen.getByRole("button", { name: /start/i }));
+
+    const current = screen.getByLabelText(/current version/i);
+    const target = screen.getByLabelText(/target version/i);
+
+    expect(current).toHaveAttribute("aria-invalid", "true");
+    expect(target).toHaveAttribute("aria-invalid", "true");
+    expect(current).toHaveAccessibleDescription(/must differ/i);
+    expect(target).toHaveAccessibleDescription(/must differ/i);
+  });
+
   it("sends exactly one of url or path", async () => {
     // Spec 9.1: a request naming both is refused rather than resolved by
     // precedence, because quietly preferring one analyses a repository the
