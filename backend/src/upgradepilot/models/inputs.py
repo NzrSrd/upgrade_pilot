@@ -13,6 +13,25 @@ from upgradepilot.models.evidence import NonBlankStr
 _PEP503_SEPARATORS = re.compile(r"[-_.]+")
 
 
+def canonicalize_name(name: str) -> str:
+    """PEP 503 normalisation. The corpus's exact-match key.
+
+    `PLANNING.md` carried this in with the reason that matters: the corpus
+    is filtered with Chroma's `$contains`, which is exact-element, so a
+    document ingested under `pydantic` is invisible to a query for
+    `Pydantic` or `py_dantic`. Normalising at the boundary means every
+    producer and every consumer agrees without either remembering to.
+
+    Public and singular on purpose: `services/analysis/manifests.py` needs
+    this exact transform to match manifest entries against the corpus's key,
+    and `services/` is permitted to import `models/` (CLAUDE.md rule 16).
+    A second, private copy in `manifests.py` was the earlier shape and nothing
+    kept the two in agreement -- moving the one implementation here means
+    there is nothing left to drift.
+    """
+    return _PEP503_SEPARATORS.sub("-", name.strip()).lower()
+
+
 class RemoteRepoRef(HonestModel):
     kind: Literal["remote"] = "remote"
     url: NonBlankStr
@@ -40,18 +59,12 @@ class DependencySpec(HonestModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def canonical_name(self) -> str:
-        """PEP 503 normalised name. The corpus's exact-match key.
-
-        `PLANNING.md` carried this in with the reason that matters: the
-        corpus is filtered with Chroma's `$contains`, which is exact-element,
-        so a document ingested under `pydantic` is invisible to a query for
-        `Pydantic` or `py_dantic`. Normalising at the boundary means every
-        producer and every consumer agrees without either remembering to.
+        """PEP 503 normalised name. See `canonicalize_name` above for why.
 
         Derived, never stored (CLAUDE.md rule 21): a stored copy could
         disagree with `name`.
         """
-        return _PEP503_SEPARATORS.sub("-", self.name).lower()
+        return canonicalize_name(self.name)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

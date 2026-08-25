@@ -19,12 +19,11 @@ from typing import TYPE_CHECKING, Protocol
 from upgradepilot.models.base import HonestModel
 from upgradepilot.models.enums import ManifestKind, VersionConfidence
 from upgradepilot.models.evidence import NonBlankStr, RepoRelativePath
+from upgradepilot.models.inputs import canonicalize_name
 from upgradepilot.models.repo import Manifest
 
 if TYPE_CHECKING:
     from upgradepilot.services.repo.workspace import Workspace
-
-_PEP503_SEPARATORS = re.compile(r"[-_.]+")
 
 _REQUIREMENT_LINE = re.compile(
     r"""
@@ -66,13 +65,6 @@ accepts) at worst puts a stray row in `manifests` with
 `declared_specifier=None`, which is visible and changes no version. Given
 that asymmetry, this module accepts the broader form.
 """
-
-
-def canonicalize(name: str) -> str:
-    """PEP 503. The same transform `DependencySpec.canonical_name` applies --
-    matching here and keying the corpus there must agree exactly, or a
-    manifest hit never reaches the documents that describe it."""
-    return _PEP503_SEPARATORS.sub("-", name.strip()).lower()
 
 
 class Declaration(HonestModel):
@@ -119,10 +111,32 @@ def classify_manifest(path: str) -> ManifestKind | None:
     return None
 
 
-def _parse_pyproject(text: str, *, manifest: Manifest, canonical_name: str) -> Declaration | None:
+class _Unparseable:
+    """Singleton marking "this manifest's text could not be decoded at all".
+
+    Distinct from `None`, which the parsers below use to mean "decoded fine;
+    this dependency is just not declared here". Both used to collapse onto
+    the same `None`, which is how a corrupt `pyproject.toml` and a merely
+    irrelevant one became indistinguishable to `scan_manifests` -- see the
+    module-level note on `_parse` for the fix this enables.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "UNPARSEABLE"
+
+
+UNPARSEABLE = _Unparseable()
+
+
+def _parse_pyproject(
+    text: str, *, manifest: Manifest, canonical_name: str
+) -> Declaration | None | _Unparseable:
     """`[project].dependencies` (PEP 508 strings) and
-    `[tool.poetry.dependencies]` (a name -> specifier table). Confidence is
-    always RANGE: a pyproject entry is a declared constraint, not a resolved
+    `[tool.poetry.dependencies]` (a name -> specifier table, or a name ->
+    inline-table for extras/markers/git/path sources). Confidence is always
+    RANGE: a pyproject entry is a declared constraint, not a resolved
     install, even when the constraint happens to read `==1.2.3`.
 
     `[project.optional-dependencies]` is deliberately not read: an optional
@@ -131,7 +145,7 @@ def _parse_pyproject(text: str, *, manifest: Manifest, canonical_name: str) -> D
     try:
         data = tomllib.loads(text)
     except (tomllib.TOMLDecodeError, ValueError):
-        return None
+        return UNPARSEABLE
 
     project = data.get("project")
     if isinstance(project, dict):
@@ -141,7 +155,7 @@ def _parse_pyproject(text: str, *, manifest: Manifest, canonical_name: str) -> D
             match = _REQUIREMENT_LINE.match(entry)
             if match is None:
                 continue
-            if canonicalize(match.group("name")) != canonical_name:
+            if canonicalize_name(match.group("name")) != canonical_name:
                 continue
             specifier = match.group("specifier").strip() or None
             return Declaration(
@@ -160,15 +174,14 @@ def _parse_pyproject(text: str, *, manifest: Manifest, canonical_name: str) -> D
         for raw_name, spec in dependencies.items():
             if raw_name == "python":
                 continue  # an interpreter constraint, not a distribution
-            if canonicalize(raw_name) != canonical_name:
+            if canonicalize_name(raw_name) != canonical_name:
                 continue
-            if not isinstance(spec, str):
-                continue  # a table form (e.g. {version = ..., extras = [...]})
+            specifier = _poetry_specifier(spec)
             return Declaration(
                 manifest=manifest,
                 raw_name=raw_name,
                 version=None,
-                specifier=spec.strip() or None,
+                specifier=specifier,
                 confidence=VersionConfidence.RANGE,
                 is_lockfile=False,
             )
@@ -176,11 +189,45 @@ def _parse_pyproject(text: str, *, manifest: Manifest, canonical_name: str) -> D
     return None
 
 
+def _poetry_specifier(spec: object) -> str | None:
+    """The raw specifier text for one `[tool.poetry.dependencies]` entry.
+
+    Poetry spells a plain version constraint as a bare string
+    (`pydantic = "^1.10"`), but extras, environment markers, and git/path
+    sources are all spelled as an inline table instead
+    (`pydantic = { version = "^1.10", extras = ["email"] }`,
+    `requests = { git = "...", branch = "main" }`). A parser that only
+    handled the string form used to `continue` past a table-form entry
+    entirely, silently reporting the dependency as not declared at all --
+    a confident wrong answer, not missing data.
+
+    The table form's own `version` key is read when present, since that is
+    the overwhelmingly common case and the file plainly states it. Only a
+    table with no `version` key at all (a pure git/path source pins nothing
+    at this layer) falls back to `specifier=None` -- "declared, but this
+    repository does not pin a version here" is the honest reading, not
+    "not declared".
+    """
+    if isinstance(spec, str):
+        return spec.strip() or None
+    if isinstance(spec, dict):
+        version = spec.get("version")
+        if isinstance(version, str):
+            return version.strip() or None
+        return None
+    return None  # some other shape poetry does not actually produce
+
+
 def _parse_requirements(
     text: str, *, manifest: Manifest, canonical_name: str
-) -> Declaration | None:
+) -> Declaration | None | _Unparseable:
     """Line-oriented. Skip blanks, `#` comments, and any line starting with
-    `-` (covers `-r`, `-e`, `--index-url`, `--find-links`)."""
+    `-` (covers `-r`, `-e`, `--index-url`, `--find-links`).
+
+    Never returns UNPARSEABLE: there is no decode step here to fail -- every
+    line is either a recognised shape or is skipped, so a requirements file
+    genuinely cannot be "unreadable" in the sense the other four kinds can.
+    """
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or stripped.startswith("-"):
@@ -188,7 +235,7 @@ def _parse_requirements(
         match = _REQUIREMENT_LINE.match(stripped)
         if match is None:
             continue
-        if canonicalize(match.group("name")) != canonical_name:
+        if canonicalize_name(match.group("name")) != canonical_name:
             continue
         specifier = match.group("specifier").strip() or None
         version = None
@@ -209,13 +256,15 @@ def _parse_requirements(
     return None
 
 
-def _parse_toml_lock(text: str, *, manifest: Manifest, canonical_name: str) -> Declaration | None:
+def _parse_toml_lock(
+    text: str, *, manifest: Manifest, canonical_name: str
+) -> Declaration | None | _Unparseable:
     """Shared by `poetry.lock` and `uv.lock`: both expose `package` as a list
     of tables with a bare `version` (verified against real lock shapes)."""
     try:
         data = tomllib.loads(text)
     except (tomllib.TOMLDecodeError, ValueError):
-        return None
+        return UNPARSEABLE
 
     packages = data.get("package")
     if not isinstance(packages, list):
@@ -227,7 +276,7 @@ def _parse_toml_lock(text: str, *, manifest: Manifest, canonical_name: str) -> D
         version = entry.get("version")
         if not isinstance(raw_name, str) or not isinstance(version, str):
             continue
-        if canonicalize(raw_name) != canonical_name:
+        if canonicalize_name(raw_name) != canonical_name:
             continue
         return Declaration(
             manifest=manifest,
@@ -242,7 +291,7 @@ def _parse_toml_lock(text: str, *, manifest: Manifest, canonical_name: str) -> D
 
 def _parse_pipfile_lock(
     text: str, *, manifest: Manifest, canonical_name: str
-) -> Declaration | None:
+) -> Declaration | None | _Unparseable:
     """`json.loads`; search `default` then `develop`. Strips the leading
     `==` from `version` -- Pipfile.lock stores it as part of the string, and
     a parser that keeps it produces a version that never string-compares
@@ -250,8 +299,13 @@ def _parse_pipfile_lock(
     try:
         data = json.loads(text)
     except ValueError:
-        return None
+        return UNPARSEABLE
     if not isinstance(data, dict):
+        # Valid JSON, but not shaped like a Pipfile.lock at all (e.g. a bare
+        # JSON array). The *decode* step succeeded, so this is "does not
+        # declare anything", not "could not be parsed" -- the same
+        # distinction `_parse_toml_lock` draws for TOML that decodes fine
+        # but has no `package` list.
         return None
 
     for section in ("default", "develop"):
@@ -259,7 +313,7 @@ def _parse_pipfile_lock(
         if not isinstance(entries, dict):
             continue
         for raw_name, info in entries.items():
-            if not isinstance(raw_name, str) or canonicalize(raw_name) != canonical_name:
+            if not isinstance(raw_name, str) or canonicalize_name(raw_name) != canonical_name:
                 continue
             if not isinstance(info, dict):
                 continue
@@ -284,7 +338,7 @@ class _ManifestParser(Protocol):
 
     def __call__(
         self, text: str, *, manifest: Manifest, canonical_name: str
-    ) -> Declaration | None: ...
+    ) -> Declaration | None | _Unparseable: ...
 
 
 _PARSERS: dict[ManifestKind, _ManifestParser] = {
@@ -296,12 +350,36 @@ _PARSERS: dict[ManifestKind, _ManifestParser] = {
 }
 
 
+def _parse(
+    text: str, *, manifest: Manifest, canonical_name: str
+) -> Declaration | None | _Unparseable:
+    """Dispatch to the parser for `manifest.kind`. Three states, kept apart
+    on purpose:
+
+    - a `Declaration`: the manifest parses and declares `canonical_name`.
+    - `None`: the manifest parses cleanly but does not declare it.
+    - `UNPARSEABLE`: the manifest's text could not be decoded at all.
+
+    `parse_declaration` below collapses the last two into one `None` for
+    callers that only need "is there a Declaration". `scan_manifests` needs
+    the three-way distinction to populate `unreadable` correctly, and calls
+    this directly rather than through that collapsed view.
+    """
+    parser = _PARSERS[manifest.kind]
+    return parser(text, manifest=manifest, canonical_name=canonical_name)
+
+
 def parse_declaration(text: str, *, manifest: Manifest, canonical_name: str) -> Declaration | None:
     """Dispatch to the parser for `manifest.kind` and return what it declares
     for `canonical_name`, or None if the manifest does not declare it or
-    could not be parsed at all."""
-    parser = _PARSERS[manifest.kind]
-    return parser(text, manifest=manifest, canonical_name=canonical_name)
+    could not be parsed at all.
+
+    This two-state view is what every caller other than `scan_manifests`
+    wants, and what the parser-level tests in this package's test suite
+    exercise directly.
+    """
+    result = _parse(text, manifest=manifest, canonical_name=canonical_name)
+    return result if isinstance(result, Declaration) else None
 
 
 def scan_manifests(workspace: Workspace, canonical_name: str) -> ManifestScan:
@@ -329,13 +407,22 @@ def scan_manifests(workspace: Workspace, canonical_name: str) -> ManifestScan:
             continue
 
         bare = Manifest(path=path, kind=kind)
-        declaration = parse_declaration(text, manifest=bare, canonical_name=canonical_name)
-        if declaration is None:
+        result = _parse(text, manifest=bare, canonical_name=canonical_name)
+        if isinstance(result, _Unparseable):
+            # Read fine as bytes, but the manifest FORMAT itself did not
+            # decode: a corrupt pyproject.toml must not read the same as one
+            # that simply does not mention this dependency (CLAUDE.md rule
+            # 20 -- a caught decode error always produces a recorded
+            # outcome, never a silent "not found").
+            unreadable.append(path)
             manifests.append(bare)
             continue
-        filled = Manifest(path=path, kind=kind, declared_specifier=declaration.specifier)
+        if result is None:
+            manifests.append(bare)
+            continue
+        filled = Manifest(path=path, kind=kind, declared_specifier=result.specifier)
         manifests.append(filled)
-        declarations.append(declaration.model_copy(update={"manifest": filled}))
+        declarations.append(result.model_copy(update={"manifest": filled}))
 
     return ManifestScan(
         manifests=tuple(sorted(manifests, key=lambda m: m.path)),

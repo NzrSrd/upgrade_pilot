@@ -128,6 +128,39 @@ def test_poetry_python_entry_is_never_reported_as_a_dependency() -> None:
     assert parse_declaration(text, manifest=manifest, canonical_name="python") is None
 
 
+def test_poetry_table_form_dependency_reads_its_version_key() -> None:
+    """Poetry spells extras, markers, and git/path sources as an inline
+    table rather than a bare string: `pydantic = { version = "^1.10",
+    extras = ["email"] }`. A parser that only handles the string form used
+    to `continue` past this entirely, reporting `pydantic` as not declared
+    at all -- a confident wrong answer. The table's own `version` key is
+    read when present, since that is the overwhelmingly common case and the
+    file plainly states it."""
+    text = (MANIFESTS / "pyproject_poetry_table.toml").read_text(encoding="utf-8")
+    manifest = Manifest(path="pyproject.toml", kind=ManifestKind.PYPROJECT)
+    declaration = parse_declaration(text, manifest=manifest, canonical_name="pydantic")
+    assert declaration is not None
+    assert declaration.specifier == "^1.10"
+    assert declaration.version is None
+    assert declaration.confidence is VersionConfidence.RANGE
+
+
+def test_poetry_table_form_dependency_without_a_version_key_is_still_declared() -> None:
+    """A git/path source table (`requests = { git = "...", branch = "main"
+    }`) has no `version` key at all. Recording `specifier=None` here means
+    "declared, but this repository does not pin a version" -- a different,
+    honest fact from "not declared", which a `canonical_name` mismatch
+    already covers elsewhere. Reporting either a fabricated specifier or a
+    silent absence would both be worse than this."""
+    text = (MANIFESTS / "pyproject_poetry_table.toml").read_text(encoding="utf-8")
+    manifest = Manifest(path="pyproject.toml", kind=ManifestKind.PYPROJECT)
+    declaration = parse_declaration(text, manifest=manifest, canonical_name="requests")
+    assert declaration is not None
+    assert declaration.specifier is None
+    assert declaration.version is None
+    assert declaration.confidence is VersionConfidence.RANGE
+
+
 def test_matching_is_on_the_canonical_name_not_the_written_one() -> None:
     """The poetry fixture writes `Pydantic`, capital P. PEP 503 says that is
     the same distribution as `pydantic`, and the corpus is keyed on the
@@ -250,4 +283,44 @@ def test_scan_manifests_ignores_files_that_merely_look_like_manifests(tmp_path: 
     (root / "notes-requirements.txt.bak").write_text("pydantic==9\n", encoding="utf-8")
 
     scan = scan_manifests(Workspace(root), canonical_name="pydantic")
+    assert tuple(m.path for m in scan.manifests) == ("pyproject.toml", "requirements.txt")
+
+
+def test_scan_manifests_records_a_corrupt_but_readable_manifest_as_unreadable(
+    tmp_path: Path,
+) -> None:
+    """A manifest that reads fine as bytes but whose TOML/JSON does not
+    decode must not take the same branch as one that simply does not
+    declare the dependency -- that collapse is exactly what let a corrupt
+    `pyproject.toml` read as "this repository does not use pydantic"
+    (CLAUDE.md rule 1's failure mode). `requirements.txt` alongside it still
+    parses fine and still declares pydantic, so this also checks the
+    corruption of one manifest does not take the whole scan down with it.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "pyproject.toml").write_text("[project\nname = 'broken'", encoding="utf-8")
+
+    scan = scan_manifests(Workspace(root), canonical_name="pydantic")
+
+    assert scan.unreadable == ("pyproject.toml",)
+    assert {d.manifest.path for d in scan.declarations} == {"requirements.txt"}
+    corrupt = next(m for m in scan.manifests if m.path == "pyproject.toml")
+    assert corrupt.declared_specifier is None
+
+
+def test_scan_manifests_does_not_mark_a_merely_irrelevant_manifest_as_unreadable(
+    tmp_path: Path,
+) -> None:
+    """The other direction: a manifest that parses cleanly but does not
+    declare the queried dependency must NOT land in `unreadable`. Without
+    this, fixing the corrupt-manifest case above by marking every "no
+    declaration" result as unreadable would replace one false claim
+    ("this is fine" when it is corrupt) with another ("this is corrupt"
+    when it plainly is not)."""
+    root = build_sample_repo(tmp_path)
+
+    scan = scan_manifests(Workspace(root), canonical_name="some-package-nobody-declares")
+
+    assert scan.unreadable == ()
+    assert scan.declarations == ()
     assert tuple(m.path for m in scan.manifests) == ("pyproject.toml", "requirements.txt")
