@@ -103,6 +103,8 @@ Rewrite that docstring without the word and `service.py` leaves the candidate se
 
 **Cost if wrong:** one extra byte pass over the non-hit files — bounded by repository size, no parsing. If phase B over-selects, the cost is parsing files that yield no sites; correctness is unaffected because grading is independent of selection.
 
+**Second-order limit, found by the final whole-branch review and since fixed:** phase B searches for the names the *phase-A* index discovered, and the analyzer then rebuilds the index over the expanded set — so a chain of first-party models longer than one link was truncated. `Link0(BaseModel)`, `Link1(Link0)`, and a consumer naming only `Link1` left the consumer unexamined, in neither `analyzed_files` nor `skipped_files` and with no confidence reducer. Phase B and the index rebuild now alternate to a fixed point, capped at `MAX_EXPANSION_PASSES`, with a confidence reducer if the cap is ever reached.
+
 **Documented limitation, carried into the report:** the byte scan uses the distribution name's import root. That is correct for `pydantic` and wrong for distributions whose import name differs (`python-dateutil` → `dateutil`, `PyYAML` → `yaml`). Resolving it properly needs installed package metadata, which a static analysis of a cloned repository does not have. Task 9 records this as an explicit confidence reducer whenever no candidate is found, rather than reporting a clean "no usage".
 
 ---

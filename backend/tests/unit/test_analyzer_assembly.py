@@ -17,11 +17,11 @@ from tests.fixtures.repo_builder import (
     EXPECTED_UNPARSEABLE,
     build_sample_repo,
 )
-from upgradepilot.models.enums import UsageKind
+from upgradepilot.models.enums import Confidence, UsageKind
 from upgradepilot.models.errors import DependencyNotFoundError
 from upgradepilot.models.inputs import DependencySpec
 from upgradepilot.models.repo import RepoAnalysis
-from upgradepilot.services.analysis.analyzer import analyze_repository
+from upgradepilot.services.analysis.analyzer import MAX_EXPANSION_PASSES, analyze_repository
 from upgradepilot.services.repo.workspace import Workspace
 
 
@@ -470,3 +470,82 @@ def test_a_bare_requirement_does_not_hide_a_specifier_declared_elsewhere(
     assert analysis.detected_version.value == ">=1.10,<2"
     assert analysis.detected_version.source_manifest.path == "pyproject.toml"
     assert not any("could not be determined" in r for r in analysis.confidence_reducers)
+
+
+# -- F5: transitive discovery must not stop after one hop -------------------
+
+
+def _write_chain(root: Path, links: int) -> None:
+    """`Link00(BaseModel)`, `Link01(Link00)`, ... one class per module, plus a
+    consumer calling a tracked method on the last link.
+
+    One class per FILE is the point: `build_model_index`'s own fixed point
+    already handles a chain within the candidate set, and phase B is what
+    decides whether a file enters that set at all. A file naming only
+    `LinkNN` is invisible to phase A (no `pydantic` in it) and to a phase B
+    that searched for the phase-A index's names only.
+
+    The index is zero-padded to two digits for a reason found the hard way:
+    phase B is a BYTE-SUBSTRING scan, so an unpadded `Link1` matches
+    `Link10`, `Link11` and `Link12` as well. That admitted most of a long
+    chain in a single pass and made a deliberately-too-deep chain converge in
+    four, quietly turning the cap test green against unfixed code.
+    """
+    package = root / "src" / "chain"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "link00.py").write_text(
+        "from pydantic import BaseModel\n\n\nclass Link00(BaseModel):\n    x: int\n",
+        encoding="utf-8",
+    )
+    for index in range(1, links):
+        (package / f"link{index:02d}.py").write_text(
+            f"from chain.link{index - 1:02d} import Link{index - 1:02d}\n\n\n"
+            f"class Link{index:02d}(Link{index - 1:02d}):\n    y: int\n",
+            encoding="utf-8",
+        )
+    (package / "consumer.py").write_text(
+        f"from chain.link{links - 1:02d} import Link{links - 1:02d}\n\n\n"
+        f"def go(item: Link{links - 1:02d}) -> dict:\n    return item.dict()\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_three_link_model_chain_reaches_its_consumer(tmp_path: Path) -> None:
+    """The analyzer expanded candidates once, rebuilt the index over the
+    expanded set -- and never re-expanded with the names that rebuild
+    discovered. A chain longer than one link was silently truncated: the
+    consumer's `.dict()` was missed with no reducer and no `skipped_files`
+    entry, so the output claimed a completeness it did not have.
+
+    `RepoAnalysis`'s `analyzed + skipped <= total` validator is `<=`, so a
+    file falling into neither bucket does not even trip that.
+    """
+    root = build_sample_repo(tmp_path)
+    _write_chain(root, links=3)
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    consumer = next((a for a in analysis.affected_files if a.path == "src/chain/consumer.py"), None)
+    assert consumer is not None, sorted(a.path for a in analysis.affected_files)
+    calls = [s for s in consumer.usage_sites if s.kind is UsageKind.METHOD_CALL]
+    assert [(s.symbol, s.confidence) for s in calls] == [("dict", Confidence.MEDIUM)]
+    assert not any("converge" in r for r in analysis.confidence_reducers)
+
+
+def test_a_chain_deeper_than_the_expansion_cap_says_so_rather_than_truncating(
+    tmp_path: Path,
+) -> None:
+    """Untrusted input must not be able to make the analyzer either hang or
+    lie. The loop is capped, and hitting the cap is reported: silently
+    stopping would be the same false claim of completeness the one-hop bug
+    made, just further along the chain.
+    """
+    root = build_sample_repo(tmp_path)
+    _write_chain(root, links=MAX_EXPANSION_PASSES + 3)
+    spec = DependencySpec(name="pydantic", current_version="1.10.13", target_version="2.9.0")
+    analysis = analyze_repository(Workspace(root), spec)
+
+    reducer = next((r for r in analysis.confidence_reducers if "converge" in r), None)
+    assert reducer is not None, analysis.confidence_reducers
+    assert str(MAX_EXPANSION_PASSES) in reducer

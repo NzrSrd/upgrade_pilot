@@ -25,6 +25,24 @@ from upgradepilot.services.analysis.usage import detect_usage
 from upgradepilot.services.analysis.versions import resolve_version
 from upgradepilot.services.repo.workspace import Workspace
 
+MAX_EXPANSION_PASSES = 10
+"""How many times candidate expansion and index rebuilding may alternate.
+
+Each pass is one LINK of a first-party inheritance chain, not one module: a
+single pass admits every remaining file naming any known model, so the count
+bounds the chain's DEPTH. A depth above ten across separate modules is not a
+shape real projects have, while the cost of a pass is a byte scan of the
+unhandled files plus a full index rebuild -- and the analyzer's input is an
+untrusted repository that must not be able to make it quadratic.
+
+Convergence does not depend on this number: `expand_candidates` only ever
+considers files in `scanned_files` that are not already handled, a finite
+set that strictly shrinks whenever a pass adds anything, so the loop
+terminates on its own. The cap bounds COST, and hitting it is reported as a
+confidence reducer -- untrusted input must not be able to make the analyzer
+either hang or claim a completeness it does not have.
+"""
+
 
 def analyze_repository(
     workspace: Workspace, dependency: DependencySpec, *, history_limit: int = 100
@@ -46,13 +64,37 @@ def analyze_repository(
     detected = resolve_version(scan.declarations, canonical_name=canonical)
 
     # -- Steps 4-8: which files use it, and how. ------------------------------
-    phase_a = select_candidates(workspace, import_root=import_root)
-    index = build_model_index(phase_a.modules, import_root=import_root)
-    candidates = expand_candidates(workspace, phase_a, model_names=index.names())
-    # Rebuilt over the EXPANDED module set: phase B can add a module that
-    # itself defines a model (a consumer that subclasses one). Rebuilding is
-    # cheap -- the modules are already parsed.
+    #
+    # Expand-then-reindex to a FIXED POINT, not once. Rebuilding the index
+    # over the expanded set is what discovers a model defined in a module
+    # phase B admitted (a consumer that subclasses one) -- and those newly
+    # discovered names are exactly what the NEXT expansion has to search
+    # for. Expanding once truncated every chain longer than one link:
+    # `Link0(BaseModel)` in one module, `Link1(Link0)` in a second and a
+    # third module using `Link1` meant the third module was never searched
+    # for, landing in neither `analyzed_files` nor `skipped_files` and
+    # drawing no reducer, so the report claimed a completeness it did not
+    # have. (`RepoAnalysis`'s `analyzed + skipped <= total` validator is
+    # `<=`, so it does not catch that either.)
+    #
+    # Termination is the same argument `build_model_index`'s own fixed point
+    # makes: `expand_candidates` only ever considers files in
+    # `scanned_files` that are not already handled, a finite set that
+    # strictly shrinks whenever a pass adds anything. `MAX_EXPANSION_PASSES`
+    # therefore bounds COST rather than guaranteeing termination, and
+    # hitting it is reported below rather than silently truncating.
+    candidates = select_candidates(workspace, import_root=import_root)
     index = build_model_index(candidates.modules, import_root=import_root)
+    expansion_converged = False
+    for _ in range(MAX_EXPANSION_PASSES):
+        expanded = expand_candidates(workspace, candidates, model_names=index.names())
+        if len(expanded.modules) == len(candidates.modules) and len(expanded.skipped) == len(
+            candidates.skipped
+        ):
+            expansion_converged = True
+            break
+        candidates = expanded
+        index = build_model_index(candidates.modules, import_root=import_root)
 
     sites = [
         site
@@ -167,6 +209,22 @@ def analyze_repository(
             f"{dependency.name!r} and the two differ for some distributions, "
             f"so this may mean the dependency was not found rather than that "
             f"it is unused."
+        )
+
+    # F5: candidate expansion did not reach a fixed point within
+    # `MAX_EXPANSION_PASSES`. Every remaining link of the inheritance chain,
+    # and every module using one, is unexamined -- the same "we could not
+    # find it" gap the no-candidates reducer above records, at the far end
+    # of a chain instead of at the root. Reported rather than silently
+    # truncated: untrusted input must not be able to make the analyzer claim
+    # a completeness it does not have.
+    if not expansion_converged:
+        confidence_reducers.append(
+            f"This repository's first-party model inheritance chain is deeper "
+            f"than the {MAX_EXPANSION_PASSES} discovery passes this analysis "
+            f"makes, so candidate selection did not converge. Modules that "
+            f"use only the deepest links of that chain were not examined, and "
+            f"usage in them is missing from this report."
         )
 
     # RULING 17: `resolve_version` returns None -- not raises -- when the
