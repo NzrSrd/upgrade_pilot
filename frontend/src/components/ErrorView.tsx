@@ -118,8 +118,8 @@ export function ErrorView({
                   are already recorded.
                 </p>
                 <p className="text-sm text-ink-muted">
-                  Resuming continues from where it stopped — it does not re-run the work already
-                  done, and it does not charge for it again.
+                  Resuming continues from where it stopped — work already recorded is not
+                  repeated, but the step that was interrupted starts over.
                 </p>
               </>
             )}

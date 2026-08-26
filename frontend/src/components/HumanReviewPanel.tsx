@@ -225,8 +225,16 @@ function OptionCard({
           <span className="rounded border border-edge px-1.5 py-0.5 text-ink-muted">
             {option.effort} effort
           </span>
+          {/* `DecisionOption.downtime` (`models/decision.py`) is a fact
+              about the option, not a verdict -- it carries no severity of
+              its own, and `option.risk_level` two spans to the left is the
+              field that is actually graded. Styling this `risk-medium`
+              would invent a severity nothing assigned, right beside a real
+              one -- the same defect `PlanTab.tsx`'s `requires_downtime`
+              badge was corrected to avoid (fix round 2, finding 2). Neutral
+              chrome. */}
           {option.downtime && (
-            <span className="rounded border border-risk-medium/50 px-1.5 py-0.5 text-risk-medium">
+            <span className="rounded border border-edge px-1.5 py-0.5 text-ink-muted">
               requires downtime
             </span>
           )}

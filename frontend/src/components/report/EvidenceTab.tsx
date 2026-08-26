@@ -70,7 +70,15 @@ export function EvidenceTab({
         <Panel title="Retrieval">
           <dl className="grid grid-cols-2 gap-4 sm:grid-cols-5">
             <Field label="Rounds" value={String(ragContext.iterations)} />
-            <Field label="Considered" value={String(ragContext.sources_considered)} />
+            {/* Minor fix (honesty ones): `sources_considered` is
+                `len(candidates)` (`graph/rag/nodes.py`), a count of chunks --
+                the backend's own prose calls them "chunk(s)"
+                (`graph/nodes/evidence.py`). Two panels below "Retrieved
+                documents", a bare number reads as a document count. */}
+            <Field
+              label="Considered"
+              value={`${ragContext.sources_considered} chunk${ragContext.sources_considered === 1 ? "" : "s"}`}
+            />
             <Field
               label="Retrieval stopped because"
               value={ragContext.stop_reason.replace(/_/g, " ")}
@@ -98,10 +106,18 @@ export function EvidenceTab({
               <p className="text-[11px] tracking-wide text-ink-faint uppercase">
                 What retrieval could not establish
               </p>
+              {/* Minor fix (honesty ones): `RagContext.unknowns`
+                  (`models/knowledge.py`) is "symbols the repository uses
+                  that no retrieved document documents", every confidence
+                  tier, "not just high confidence" -- it carries no severity,
+                  so `text-risk-medium` graded something the backend did not.
+                  Neutral chrome. These are symbol names, not prose, so
+                  `Mono` (`DESIGN.md` requires monospace for symbols) rather
+                  than a bullet of sentence text. */}
               <ul className="mt-1 space-y-0.5">
                 {(ragContext.unknowns ?? []).map((unknown) => (
-                  <li key={unknown} className="text-xs text-risk-medium">
-                    — {unknown}
+                  <li key={unknown} className="text-xs text-ink-muted">
+                    — <Mono>{unknown}</Mono>
                   </li>
                 ))}
               </ul>

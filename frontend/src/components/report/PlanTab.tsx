@@ -155,50 +155,63 @@ export function PlanTab({ report }: { report: FinalReport }) {
       </Panel>
 
       <Panel title="Not addressed by any step">
-        {unaddressedWithReason.length > 0 ? (
-          <ul className="space-y-1.5">
-            {unaddressedWithReason.map((file) => (
-              <li key={file.path} className="text-sm">
-                <Mono>{file.path}</Mono>
-                {/* Fix round 2, finding 1: `UnaddressedFile` carries only
-                    `path` and `reason` -- no grade, no severity, nothing
-                    that ranks one unaddressed file against another.
-                    `text-risk-medium` invented a rank the backend never
-                    assigned (third instance of this defect in the phase,
-                    after Task 11's `consequences_if_unanswered` and Task
-                    12's clamp/ceiling text). This is an explanation, not a
-                    graded finding, so it gets neutral ink/edge chrome. */}
-                <span className="mt-0.5 block text-xs text-ink-muted">{file.reason}</span>
-              </li>
-            ))}
-          </ul>
-        ) : coverageOutcome !== null ? (
-          // Sourced from the check that actually decides coverage, not
-          // inferred from the empty array above (see the CRITICAL comment on
-          // `coverageOutcome`). `detail` is the backend's own sentence,
-          // mirrored rather than re-derived (rule 19); `offenders` names the
-          // files this panel would otherwise have gone silent about.
-          <div>
-            <p
-              className={`text-sm ${coverageOutcome.passed ? "text-ink-faint" : "text-risk-high"}`}
-            >
-              {coverageOutcome.detail}
-            </p>
-            {(coverageOutcome.offenders ?? []).length > 0 && (
-              <ul className="mt-1.5 space-y-0.5">
-                {(coverageOutcome.offenders ?? []).map((path) => (
-                  <li key={path}>
-                    <Mono>{path}</Mono>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        ) : (
-          // No validation to source a coverage claim from -- state only what
-          // the empty array itself supports, which is not full coverage.
-          <EmptyState>No files were listed as unaddressed with a reason.</EmptyState>
-        )}
+        <div className="space-y-3">
+          {unaddressedWithReason.length > 0 && (
+            <ul className="space-y-1.5">
+              {unaddressedWithReason.map((file) => (
+                <li key={file.path} className="text-sm">
+                  <Mono>{file.path}</Mono>
+                  {/* Fix round 2, finding 1: `UnaddressedFile` carries only
+                      `path` and `reason` -- no grade, no severity, nothing
+                      that ranks one unaddressed file against another.
+                      `text-risk-medium` invented a rank the backend never
+                      assigned (third instance of this defect in the phase,
+                      after Task 11's `consequences_if_unanswered` and Task
+                      12's clamp/ceiling text). This is an explanation, not a
+                      graded finding, so it gets neutral ink/edge chrome. */}
+                  <span className="mt-0.5 block text-xs text-ink-muted">{file.reason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {coverageOutcome !== null && (
+            // Fix round 3, finding I7: rendered unconditionally rather than
+            // only in the `unaddressedWithReason.length === 0` branch. A
+            // file with a documented reason (above) is not the same claim as
+            // "check 8 passed" -- check 8 can still fail on *other* files
+            // that have no step and no reason, which is exactly the silence
+            // check 8's own docstring refuses to allow: "a file that is
+            // neither addressed nor mentioned, which is how a partial plan
+            // reads as a complete one." Sourced from the check that actually
+            // decides coverage, not inferred from the reasoned list above
+            // (see the CRITICAL comment on `coverageOutcome`). `detail` is
+            // the backend's own sentence, mirrored rather than re-derived
+            // (rule 19); `offenders` names the files this panel would
+            // otherwise have gone silent about.
+            <div>
+              <p
+                className={`text-sm ${coverageOutcome.passed ? "text-ink-faint" : "text-risk-high"}`}
+              >
+                {coverageOutcome.detail}
+              </p>
+              {(coverageOutcome.offenders ?? []).length > 0 && (
+                <ul className="mt-1.5 space-y-0.5">
+                  {(coverageOutcome.offenders ?? []).map((path) => (
+                    <li key={path}>
+                      <Mono>{path}</Mono>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {unaddressedWithReason.length === 0 && coverageOutcome === null && (
+            // No validation to source a coverage claim from -- state only
+            // what the empty array itself supports, which is not full
+            // coverage.
+            <EmptyState>No files were listed as unaddressed with a reason.</EmptyState>
+          )}
+        </div>
       </Panel>
 
       {mitigations.length > 0 && (

@@ -39,7 +39,11 @@ export function aBreakingChange(overrides: Partial<BreakingChange> = {}): Breaki
     title: "Validators must be class methods",
     description: "`@validator` is replaced by `@field_validator`.",
     severity: "medium",
-    affected_symbols: [],
+    // `BreakingChange.affected_symbols` is `Field(min_length=1)`
+    // (`models/evidence.py`) -- the backend cannot construct an empty
+    // tuple here, so a fixture default of `[]` would describe a response
+    // the API is incapable of sending (the module docstring's own rule).
+    affected_symbols: ["User.validate"],
     old_form: null,
     new_form: null,
     source: aSourceRef(),
@@ -61,13 +65,20 @@ export function aTraceEvent(overrides: Partial<TraceEvent> = {}): TraceEvent {
 
 export function anUsageView(overrides: Partial<UsageView> = {}): UsageView {
   return {
-    calls: 0,
-    input_tokens: 0,
-    output_tokens: 0,
-    total_tokens: 0,
+    // `_totalled([])` (`models/usage.py`) returns `None`, never `0.0`, for
+    // zero calls -- `calls: 0` paired with `estimated_cost_usd: 0` is a
+    // state `UsageSummary.from_calls` cannot produce, which is exactly the
+    // shape this module's own docstring forbids describing. `calls: 4`
+    // here is an arbitrary genuinely-priced run; callers that want the
+    // zero-call state pass `{ calls: 0, estimated_cost_usd: null }`
+    // explicitly.
+    calls: 4,
+    input_tokens: 320,
+    output_tokens: 40,
+    total_tokens: 360,
     estimated: false,
     pricing_complete: true,
-    estimated_cost_usd: 0,
+    estimated_cost_usd: 0.00042,
     by_node: [],
     by_model: [],
     ...overrides,

@@ -15,6 +15,7 @@
 import type { RunSnapshot } from "../api/types";
 import { costLabel } from "../derive/cost";
 import { recordedSpan } from "../derive/recordedSpan";
+import { STEPS } from "../derive/steps";
 import { EmptyState, Field, Panel } from "./ui";
 
 const integer = new Intl.NumberFormat("en-US");
@@ -75,9 +76,14 @@ export function RunMetrics({ snapshot }: { snapshot: RunSnapshot | null }) {
         <p className={`font-mono text-lg ${cost.lowerBound ? "text-risk-medium" : "text-ink"}`}>
           {cost.text}
         </p>
-        {cost.note !== null && <p className="mt-1 text-[11px] text-risk-medium">{cost.note}</p>}
+        {/* Minor fix (honesty ones): these are caveats about how to read the
+            figure above, not graded findings -- DESIGN.md's cost-card table
+            specifies this text and assigns it no color token. Neutral
+            chrome, the same class of fix as the "requires downtime" and
+            clamp-explanation text elsewhere in this phase. */}
+        {cost.note !== null && <p className="mt-1 text-[11px] text-ink-muted">{cost.note}</p>}
         {cost.estimated && (
-          <p className="mt-1 text-[11px] text-risk-medium">
+          <p className="mt-1 text-[11px] text-ink-muted">
             Token counts partly estimated by a local tokenizer.
           </p>
         )}
@@ -102,7 +108,12 @@ export function RunMetrics({ snapshot }: { snapshot: RunSnapshot | null }) {
             label="Current node"
             value={<span className="font-mono text-[13px]">{snapshot.current_step ?? "—"}</span>}
           />
-          <Field label="Completed" value={`${completedSteps.length} of 8`} />
+          {/* `STEPS.length`, not a literal `8`: same fix as
+              `ErrorView.tsx`'s "N of 8 steps" sentence, and the exact
+              second-source drift CLAUDE.md rule 21 warns about -- one of
+              this fact's two call sites was converted in commit `ec07997`
+              ("one source for the step count") and this one was not. */}
+          <Field label="Completed" value={`${completedSteps.length} of ${STEPS.length}`} />
           {/* "Recorded span", never "elapsed time": this measures the gap
               between the first and last recorded trace event, not
               wall-clock time since the run started. This client cannot

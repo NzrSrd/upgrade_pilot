@@ -11,11 +11,19 @@
 import { Circle } from "lucide-react";
 
 import type { RunSnapshot } from "../api/types";
+import { STEPS } from "../derive/steps";
 import { EvidencePanel, selectedSourceIds } from "./EvidencePanel";
 import { EmptyState, Field, LevelBadge, Mono, Panel } from "./ui";
 
 export function ActivityTimeline({ snapshot }: { snapshot: RunSnapshot | null }) {
   if (snapshot === null || snapshot.status === "queued") {
+    // `queued` alone does not distinguish a fresh run behind the
+    // concurrency cap from a resumed orphan re-queued while its earlier
+    // work is already recorded (`api/registry.py` sets `waiting=True`
+    // before the task starts, for both). `completed_steps` does: it is the
+    // same count `ErrorView` showed on the screen before this one, so a
+    // resumed run never reads as having started from nothing.
+    const completedSteps = snapshot?.completed_steps ?? [];
     return (
       <Panel title="Queued">
         <p className="flex items-center gap-2 text-sm text-ink-muted">
@@ -24,7 +32,9 @@ export function ActivityTimeline({ snapshot }: { snapshot: RunSnapshot | null })
               `Circle`). A spinner here would imply work in progress on a
               run that, by definition, has not started. */}
           <Circle className="size-4" aria-hidden />
-          Waiting for a run slot. Nothing has started yet.
+          {completedSteps.length > 0
+            ? `Waiting for a run slot to resume — ${completedSteps.length} of ${STEPS.length} steps are already recorded.`
+            : "Waiting for a run slot. Nothing has started yet."}
         </p>
       </Panel>
     );
@@ -39,6 +49,7 @@ export function ActivityTimeline({ snapshot }: { snapshot: RunSnapshot | null })
   const breakingChanges = snapshot.breaking_changes ?? [];
   const retrievedSources = snapshot.retrieved_sources ?? [];
   const riskAnalysis = snapshot.risk_analysis ?? null;
+  const confidenceCeilings = riskAnalysis?.confidence_ceilings ?? [];
   const selected = selectedSourceIds(breakingChanges);
 
   return (
@@ -103,6 +114,20 @@ export function ActivityTimeline({ snapshot }: { snapshot: RunSnapshot | null })
             <Field label="Verdict" value={<LevelBadge level={riskAnalysis.overall_risk} />} />
             <Field label="Confidence" value={`${Math.round(riskAnalysis.confidence * 100)}%`} />
           </dl>
+          {/* DESIGN.md: "Confidence renders with its reason or not at all."
+              `confidenceCeilings` is empty precisely when nothing capped the
+              figure, which is itself an honest state -- mirrors
+              `OverviewTab.tsx`'s `VerdictDetail` rendering of the same
+              field. */}
+          {confidenceCeilings.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {confidenceCeilings.map((ceiling) => (
+                <li key={ceiling.reason} className="text-xs text-ink-muted">
+                  Capped at {Math.round(ceiling.ceiling * 100)}% — {ceiling.reason}
+                </li>
+              ))}
+            </ul>
+          )}
         </Panel>
       )}
     </div>

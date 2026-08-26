@@ -40,6 +40,24 @@ describe("ErrorView", () => {
     expect(screen.getByText(/continues from where it stopped/i)).toBeInTheDocument();
   });
 
+  it("does not promise the resumed step is free, because tracked.py documents that it is billed again", () => {
+    // `services/llm/tracked.py`: "a node re-executing after a resume makes a
+    // second real call that is really billed." Only the *completed* steps
+    // are guaranteed not to repeat -- the interrupted one starts over, and
+    // this view must never claim otherwise.
+    render(
+      <ErrorView
+        snapshot={aSnapshot({ status: "orphaned", completed_steps: ["analyze_repo", "inspect_dependency"] })}
+        pollError={null}
+        onRetry={() => {}}
+        onResumed={() => {}}
+      />,
+    );
+
+    expect(screen.queryByText(/charge/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/free|no charge|does not cost/i)).not.toBeInTheDocument();
+  });
+
   it("resumes without a decision, because an abandoned run is not waiting for one", async () => {
     // Spec 9.1: asking the client to invent a decision for an orphaned run
     // would be asking for a lie.

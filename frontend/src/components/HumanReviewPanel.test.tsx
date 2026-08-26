@@ -232,6 +232,18 @@ describe("HumanReviewPanel", () => {
     expect(screen.getByRole("radiogroup", { name: /scope tradeoff/i })).toBeInTheDocument();
   });
 
+  it('does not grade the "requires downtime" badge with a severity colour', () => {
+    // Sibling of the fix in `PlanTab.test.tsx` ("does not grade the
+    // 'requires downtime' badge with a severity colour"). `DecisionOption.downtime`
+    // carries no severity; `option.risk_level` (rendered in its own
+    // `LevelBadge`, two spans to the left) is the only graded field on this
+    // line, so it must be the only source of a `risk-*` class.
+    render(panel());
+
+    const badge = screen.getByText(/requires downtime/i);
+    expect(badge.className).not.toMatch(/risk-/);
+  });
+
   it("shows only one alert at a time, even when a rejection is followed by a conflict", async () => {
     // A rejected-then-resubmitted-then-conflicting answer is a plausible
     // sequence: `validation_error` (the previous rejection) and `problem`

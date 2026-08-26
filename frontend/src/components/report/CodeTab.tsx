@@ -17,6 +17,12 @@ export function CodeTab({ report }: { report: FinalReport }) {
   // Pydantic field carries a default -- `finalize` always populates it (as
   // `[]` when there is nothing). Resolved once here (ruling T10b).
   const affectedFiles = report.affected_files ?? [];
+  // `commit_sha` is REQUIRED-shaped but nullable (ruling N1, same field
+  // `OverviewTab.tsx`'s "Commit" row reads) -- `null` is the ordinary case
+  // for a workspace with no `.git`, not an absence of data. There is no
+  // analyzed commit to name in that case, so the sentence below must not
+  // assert one.
+  const commitSha = report.commit_sha;
 
   if (affectedFiles.length === 0) {
     return (
@@ -29,8 +35,9 @@ export function CodeTab({ report }: { report: FinalReport }) {
   return (
     <div className="space-y-4">
       <p className="text-xs text-ink-faint">
-        Existing code at the cited usage sites, read from the analyzed commit. These are not
-        proposed changes — no patch is generated, so none is shown.
+        Existing code at the cited usage sites
+        {commitSha !== null ? ", read from the analyzed commit" : " in the analyzed workspace"}.
+        These are not proposed changes — no patch is generated, so none is shown.
       </p>
 
       {affectedFiles.map((file) => (

@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
+import { STEPS } from "../derive/steps";
 import { aSnapshot, aTraceEvent, anUsageView } from "../test/fixtures";
 import { RunMetrics } from "./RunMetrics";
 
@@ -97,6 +98,26 @@ describe("RunMetrics", () => {
     expect(screen.getByText(/not recorded yet/i)).toBeInTheDocument();
   });
 
+  it("does not name a pricing gap for a model that was never called", () => {
+    // Finding I2. With zero calls, `estimated_cost_usd` is `null`
+    // (`_totalled([])` in `models/usage.py`) for the same reason `by_model`
+    // is empty: no model has been used yet. The old wording ("no price is
+    // known for the model used") sat directly beneath "Model in use: Not
+    // recorded yet" and asserted a model had been priced that was never
+    // called.
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({
+          usage: anUsageView({ calls: 0, estimated_cost_usd: null, by_model: [] }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/not recorded yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no model has been used yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no price is known for the model used/i)).not.toBeInTheDocument();
+  });
+
   it("shows a compact recorded span between the first and last trace event", () => {
     render(
       <RunMetrics
@@ -118,5 +139,18 @@ describe("RunMetrics", () => {
 
     expect(screen.queryByText("0s")).not.toBeInTheDocument();
     expect(screen.queryByText("0.0s")).not.toBeInTheDocument();
+  });
+
+  it("reads the step total from derive/steps, not a hardcoded 8", () => {
+    // M2: this call site hardcoded `8` while `ErrorView.tsx` already read
+    // `STEPS.length`, the exact second-source-for-one-fact CLAUDE.md rule 21
+    // warns drifts silently.
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({ completed_steps: ["analyze_repo", "inspect_dependency"] })}
+      />,
+    );
+
+    expect(screen.getByText(`2 of ${STEPS.length}`)).toBeInTheDocument();
   });
 });

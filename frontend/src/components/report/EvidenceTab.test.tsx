@@ -91,10 +91,28 @@ describe("EvidenceTab", () => {
     render(<EvidenceTab report={aReport({ rag_context: sufficientRag })} snapshot={aSnapshot()} />);
 
     expect(screen.getByText("2")).toBeInTheDocument(); // iterations
-    expect(screen.getByText("5")).toBeInTheDocument(); // sources_considered
+    expect(screen.getByText("5 chunks")).toBeInTheDocument(); // sources_considered, with its unit (minor fix)
     expect(screen.getByText(/sufficient/i)).toBeInTheDocument(); // stop_reason
     expect(screen.getByText(/evidence found/i)).toBeInTheDocument();
     expect(screen.getByText(/enough evidence to answer on/i)).toBeInTheDocument();
+  });
+
+  it("does not grade an unretrieved symbol with a severity colour, and sets it in monospace", () => {
+    // Minor fix (honesty ones). `RagContext.unknowns` (`models/knowledge.py`)
+    // carries every confidence tier, not just the high-confidence ones the
+    // gate blocks on, and no severity of its own -- `text-risk-medium`
+    // graded a fact the backend did not. These are symbol names, which
+    // `DESIGN.md` requires in monospace.
+    const { container } = render(
+      <EvidenceTab
+        report={aReport({ rag_context: { ...sufficientRag, unknowns: ["User.legacy_validate"] } })}
+        snapshot={aSnapshot()}
+      />,
+    );
+
+    expect(screen.getByText("User.legacy_validate")).toBeInTheDocument();
+    expect(screen.getByText("User.legacy_validate").tagName).toBe("SPAN");
+    expect(container.querySelectorAll('[class*="risk-"]')).toHaveLength(0);
   });
 
   it("visibly reports an insufficient retrieval as such, not by colour alone", () => {

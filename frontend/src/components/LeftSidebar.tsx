@@ -16,7 +16,28 @@ import type { HealthResponse } from "../api/types";
 import type { SessionRun } from "../hooks/useSessionRuns";
 import { EmptyState, Field } from "./ui";
 
-function Check({ ok, label }: { ok: boolean; label: string }) {
+/**
+ * `ok` renders exactly what `api/routes/health.py` measured, no more:
+ * "the readiness of the store *locations* and the presence of a key, which
+ * is exactly what the field names say and no more" -- it "deliberately
+ * does not open the Chroma store, connect to the checkpointer database, or
+ * call the model provider." A never-ingested Chroma directory is a writable
+ * location and reads `true` here; that is correct, because a writable
+ * location is all this checked. `readyLabel`/`unreadyLabel` are passed per
+ * call site rather than hardcoded, because "storage location writable" and
+ * "configured" back different fields and neither would be honest for both.
+ */
+function Check({
+  ok,
+  label,
+  readyLabel,
+  unreadyLabel,
+}: {
+  ok: boolean;
+  label: string;
+  readyLabel: string;
+  unreadyLabel: string;
+}) {
   return (
     <li className="flex items-center gap-2 text-xs">
       {ok ? (
@@ -25,7 +46,7 @@ function Check({ ok, label }: { ok: boolean; label: string }) {
         <ShieldAlert className="size-3.5 text-risk-high" aria-hidden />
       )}
       <span className={ok ? "text-ink-muted" : "text-risk-high"}>
-        {label}: {ok ? "ready" : "unavailable"}
+        {label}: {ok ? readyLabel : unreadyLabel}
       </span>
     </li>
   );
@@ -118,9 +139,24 @@ export function LeftSidebar({
           <EmptyState>Checking…</EmptyState>
         ) : (
           <ul className="space-y-1.5">
-            <Check ok={health.checks.chroma_dir} label="Knowledge base" />
-            <Check ok={health.checks.checkpoint_dir} label="Checkpoints" />
-            <Check ok={health.checks.llm_configured} label="Model key" />
+            <Check
+              ok={health.checks.chroma_dir}
+              label="Knowledge base"
+              readyLabel="storage location writable"
+              unreadyLabel="storage location not writable"
+            />
+            <Check
+              ok={health.checks.checkpoint_dir}
+              label="Checkpoints"
+              readyLabel="storage location writable"
+              unreadyLabel="storage location not writable"
+            />
+            <Check
+              ok={health.checks.llm_configured}
+              label="Model key"
+              readyLabel="configured"
+              unreadyLabel="missing"
+            />
           </ul>
         )}
       </section>

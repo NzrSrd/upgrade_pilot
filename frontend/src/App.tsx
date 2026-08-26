@@ -11,6 +11,7 @@ import { LeftSidebar } from "./components/LeftSidebar";
 import { ReportView } from "./components/report/ReportView";
 import { RunMetrics } from "./components/RunMetrics";
 import { TopBar } from "./components/TopBar";
+import { Panel } from "./components/ui";
 import { WorkflowTimeline } from "./components/WorkflowTimeline";
 import { viewFor } from "./derive/view";
 import { useHealth } from "./hooks/useHealth";
@@ -117,22 +118,39 @@ export default function App() {
           />
         )}
         {view === "activity" && <ActivityTimeline snapshot={snapshot} />}
-        {view === "human-review" && snapshot?.pending_decision != null && (
-          // Keyed by question id: guard two deliberately never clears
-          // `submitting` after a successful answer, and without a key React
-          // reuses this component instance -- and that leftover state -- for
-          // the next question at the same tree position. `human_decisions` is
-          // an append channel precisely so interrupts fire in sequence; a
-          // stale `submitting=true` from question 1 would permanently block
-          // question 2's button. The key makes a new question mount fresh.
-          <HumanReviewPanel
-            key={snapshot.pending_decision.question_id}
-            threadId={snapshot.thread_id}
-            decision={snapshot.pending_decision}
-            answered={answeredCount}
-            onSubmitted={() => undefined}
-          />
-        )}
+        {view === "human-review" &&
+          (snapshot?.pending_decision != null ? (
+            // Keyed by question id: guard two deliberately never clears
+            // `submitting` after a successful answer, and without a key React
+            // reuses this component instance -- and that leftover state -- for
+            // the next question at the same tree position. `human_decisions` is
+            // an append channel precisely so interrupts fire in sequence; a
+            // stale `submitting=true` from question 1 would permanently block
+            // question 2's button. The key makes a new question mount fresh.
+            <HumanReviewPanel
+              key={snapshot.pending_decision.question_id}
+              threadId={snapshot.thread_id}
+              decision={snapshot.pending_decision}
+              answered={answeredCount}
+              onSubmitted={() => undefined}
+            />
+          ) : (
+            // `graph/inspect.py`'s `pending_payload` returns `None` on
+            // purpose when the interrupt's value is not an
+            // `InterruptPayload` -- "guessing at its shape would put an
+            // unvalidated object in front of the person answering." That
+            // state is real and reachable (`is_awaiting_human` only checks
+            // that an interrupt exists, not what it carries), and the
+            // `TopBar` pill and `WorkflowTimeline` both already say a
+            // decision is pending, so this workspace must say something
+            // rather than render nothing under them. It does not guess why
+            // the question is missing -- only that it is.
+            <Panel title="Waiting for your decision">
+              <p className="text-sm text-ink-muted">
+                This run is waiting for a decision, but the question has not been received.
+              </p>
+            </Panel>
+          ))}
         {view === "report" && snapshot !== null && <ReportView snapshot={snapshot} />}
         {view === "error" && (
           <ErrorView

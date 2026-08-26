@@ -105,4 +105,25 @@ describe("CodeTab", () => {
 
     expect(screen.getByText(/12 commits? in the scanned history/i)).toBeInTheDocument();
   });
+
+  it("does not claim an analyzed commit when commit_sha is null", () => {
+    // Minor fix (honesty ones). `FinalReport.commit_sha` is nullable, and
+    // `null` is the ordinary case for a workspace with no `.git`
+    // (`OverviewTab.tsx`'s "Commit" row renders "—" for the same field).
+    // There is no analyzed commit to name in that case.
+    render(<CodeTab report={aReport({ affected_files: [file], commit_sha: null })} />);
+
+    expect(screen.queryByText(/read from the analyzed commit/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/analyzed workspace/i)).toBeInTheDocument();
+  });
+
+  it("names the analyzed commit when one exists", () => {
+    render(
+      <CodeTab
+        report={aReport({ affected_files: [file], commit_sha: "a".repeat(40) })}
+      />,
+    );
+
+    expect(screen.getByText(/read from the analyzed commit/i)).toBeInTheDocument();
+  });
 });

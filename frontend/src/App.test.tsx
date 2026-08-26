@@ -471,3 +471,53 @@ describe("App — a poll error before any snapshot ever loads", () => {
     expect(pill).not.toHaveTextContent(/could not load this run/i);
   });
 });
+
+/**
+ * `graph/inspect.py`'s `pending_payload` returns `None` on purpose when an
+ * interrupt exists but its value is not an `InterruptPayload` --
+ * `is_awaiting_human` only checks that *an* interrupt exists, so the two can
+ * disagree. Before this fix, `App` rendered nothing at all in that state
+ * while the `TopBar` pill kept announcing a decision was pending -- a screen
+ * reader would hear "waiting for your decision" over an empty workspace.
+ */
+describe("App — awaiting_human with no payload", () => {
+  it("says the question has not been received, instead of rendering nothing", async () => {
+    const user = userEvent.setup({ delay: null });
+
+    server.use(
+      http.get(HEALTH, () =>
+        HttpResponse.json({
+          status: "ok",
+          version: "test",
+          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+        }),
+      ),
+      http.post(START, () =>
+        HttpResponse.json(
+          { thread_id: "t-1", status: "queued", poll_url: "/api/agent/status/t-1" },
+          { status: 202 },
+        ),
+      ),
+      http.get(STATUS, () =>
+        HttpResponse.json(aSnapshot({ status: "awaiting_human", pending_decision: null })),
+      ),
+    );
+
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/repository url/i), "https://example.com/repo.git");
+    await user.type(screen.getByLabelText(/^dependency$/i), "pydantic");
+    await user.type(screen.getByLabelText(/current version/i), "1.10.13");
+    await user.type(screen.getByLabelText(/target version/i), "2.9.2");
+    await user.click(screen.getByRole("button", { name: /start migration audit/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/question has not been received/i)).toBeInTheDocument(),
+    );
+
+    // The pill says a decision is pending; the workspace must not be silent
+    // underneath it.
+    const pill = document.querySelector("[aria-live]");
+    expect(pill).toHaveTextContent(/waiting for your decision/i);
+  });
+});

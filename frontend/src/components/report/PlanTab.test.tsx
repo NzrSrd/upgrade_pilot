@@ -184,6 +184,50 @@ describe("PlanTab", () => {
     },
   );
 
+  it(
+    "names check 8's offenders even when unaddressed_with_reason also has entries",
+    () => {
+      // Fix round 3, finding I7. Round 1's fix covered only the *empty*
+      // `unaddressed_with_reason` branch; this is the other one. Two files
+      // carry a documented reason (from `plan.unaddressed_with_reason`) and
+      // a *third* file has no step and no reason, which is exactly the
+      // silence check 8's own docstring refuses: "a file that is neither
+      // addressed nor mentioned, which is how a partial plan reads as a
+      // complete one." Before this fix the panel rendered the two reasoned
+      // files and said nothing about the third -- the offender was visible
+      // only in the Validation panel below, under a check id.
+      render(
+        <PlanTab
+          report={aReport({
+            migration_plan: plan, // unaddressed_with_reason: [tests/test_legacy.py]
+            validation: {
+              attempt: 1,
+              outcomes: [
+                {
+                  check_id: "affected_files_addressed",
+                  passed: false,
+                  detail:
+                    "1 file(s) with high-confidence usage are neither addressed by a step " +
+                    "nor explained, so the plan reads as complete while leaving them out.",
+                  offenders: ["src/app/legacy.py"],
+                },
+              ],
+              passed: false,
+            },
+          })}
+        />,
+      );
+
+      // The reasoned file is still there.
+      expect(screen.getByText("tests/test_legacy.py")).toBeInTheDocument();
+      // And the check-8 offender is no longer silent -- it appears in this
+      // panel now, as well as in the Validation panel below (which already
+      // named it).
+      expect(screen.getAllByText("src/app/legacy.py")).toHaveLength(2);
+      expect(screen.getAllByText(/neither addressed by a step/i)).toHaveLength(2);
+    },
+  );
+
   it("asserts full coverage only by reading the backend's own check, when it passed", () => {
     render(
       <PlanTab
