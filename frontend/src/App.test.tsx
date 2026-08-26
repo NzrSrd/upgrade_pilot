@@ -324,13 +324,21 @@ describe("App — a poll error while a snapshot already exists", () => {
 });
 
 /**
- * Fix round 3: `App.tsx`'s `status = snapshot?.status ?? "queued"` used to
- * feed straight into `viewFor`, so a poll that came back refused with no
- * snapshot ever loaded rendered `ActivityTimeline`'s own "Queued" panel --
- * a status the backend never reported, for a run that may not exist at
- * all. `viewFor` stays pure and exhaustive (its missing `default` is
- * deliberate); the override lives at the `App` call site instead:
- * `error !== null && snapshot === null` routes to `"error"` directly.
+ * `App.tsx`'s `status = snapshot?.status ?? "queued"` used to feed straight
+ * into `viewFor`, so a poll that came back refused with no snapshot ever
+ * loaded rendered `ActivityTimeline`'s own "Queued" panel -- a status the
+ * backend never reported, for a run that may not exist at all.
+ *
+ * Round 3 first fixed this with an override at the `App` call site, kept
+ * `viewFor` pure. Round 4 corrected that shape: `unavailable` is now a real
+ * `ViewStatus` member (the same reasoning as `idle` -- a genuine frontend
+ * view state, not a backend status), so `status` itself carries the truth
+ * and every surface that switches on it -- `viewFor` *and* `TopBar`'s
+ * `WORDING`, both exhaustive -- has to say what it does with the new state.
+ * That is why these tests check the pill as well as the view: round 3 fixed
+ * the panel below while `TopBar`'s pill kept announcing "Queued" -- to a
+ * screen-reader user, *spoken* -- for a run the panel said could not be
+ * loaded. Round 4 is what makes both checks below pass at once.
  *
  * This is also where round 1's `ErrorView` `snapshot === null` copy branch
  * and round 2's banner-ownership guard both stop being dead code -- both
@@ -400,6 +408,15 @@ describe("App — a poll error before any snapshot ever loads", () => {
     // raises one on a *failed resume*, and there is no snapshot to resume.
     expect(screen.getAllByText(/no run with that id exists/i)).toHaveLength(1);
     expect(screen.queryAllByRole("alert")).toHaveLength(0);
+
+    // Round 4's decisive assertion: `TopBar`'s pill -- the app's
+    // `aria-live` region -- must not announce "Queued" for a run the panel
+    // says could not be loaded. Under round 3 alone, `status` (unlike
+    // `view`) still fell back to `"queued"`, so this would have failed here
+    // even though the panel-level assertions above already passed.
+    const pill = document.querySelector("[aria-live]");
+    expect(pill).toHaveTextContent(/could not load this run/i);
+    expect(pill).not.toHaveTextContent(/queued/i);
   });
 
   it("still shows activity before the first poll returns -- silence is not yet a refusal", async () => {
@@ -445,5 +462,12 @@ describe("App — a poll error before any snapshot ever loads", () => {
     expect(
       screen.queryByRole("heading", { name: /could not load this run/i }),
     ).not.toBeInTheDocument();
+
+    // The distinction the whole fix turns on, checked in the pill too:
+    // silence is not yet a refusal, so the pill must still say "Queued",
+    // not the new wording.
+    const pill = document.querySelector("[aria-live]");
+    expect(pill).toHaveTextContent(/queued/i);
+    expect(pill).not.toHaveTextContent(/could not load this run/i);
   });
 });

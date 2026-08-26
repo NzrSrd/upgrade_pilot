@@ -17,6 +17,18 @@ import type { SessionRun } from "../hooks/useSessionRuns";
  * `orphaned` gets the longest one because it is the status a user has no
  * intuition for: their run's process is gone, the work it did survives, and
  * the thing to do is resume it.
+ *
+ * `unavailable` (fix round 4) says only what this client actually knows: a
+ * request for this run came back refused. It does not say why -- the run
+ * may never have existed, may have been pruned, or the thread id may be
+ * mistyped, and the frontend cannot tell those apart -- so it does not
+ * guess. The backend's own message for *why* is in the error view's panel,
+ * not repeated here; this pill exists so a screen-reader user is not told
+ * something different from what the panel says (before this fix, this
+ * status fell back to `queued` here, so `aria-live` announced "Queued" for
+ * a run the panel below was, at the same moment, reporting as unreadable --
+ * the false claim spoken aloud to the one user least able to cross-check it
+ * against the panel at a glance).
  */
 const WORDING: Record<ViewStatus, { text: string; className: string }> = {
   idle: { text: "No run started", className: "text-ink-faint border-edge" },
@@ -36,8 +48,18 @@ const WORDING: Record<ViewStatus, { text: string; className: string }> = {
     text: "Interrupted by a restart",
     className: "text-risk-medium border-risk-medium/50",
   },
+  unavailable: { text: "Could not load this run", className: "text-risk-high border-risk-high/50" },
 };
 
+// `unavailable` is deliberately absent, not merely forgotten: by the time a
+// poll refusal reaches this status, `useRunPolling`'s own loop has already
+// stopped scheduling a next tick (an `ApiFailure` returns without calling
+// `schedule()`, the same way a `POLLING_STOPS_ON` status does) -- so there
+// is no live 1-second poll left to describe. Including it here would show
+// "Live · 1s poll" (or "Reconnecting…") beside a pill that, in the same
+// breath, says the run could not be loaded: exactly the kind of
+// self-contradicting claim this fix exists to remove, just aimed at the
+// connection indicator instead of the status word.
 const LIVE = new Set<ViewStatus>(["queued", "running", "awaiting_human"]);
 
 export function TopBar({

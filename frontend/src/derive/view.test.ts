@@ -65,6 +65,16 @@ describe("viewFor", () => {
     expect(viewFor("orphaned")).toBe("error");
   });
 
+  it("shows an error view for the frontend's own \"unavailable\" state too", () => {
+    // Fix round 4: `unavailable` is not a status the backend can derive --
+    // like `idle`, it describes what this client knows (a poll already came
+    // back refused, with no snapshot ever loaded), not a checkpoint. It
+    // routes to the same view a `failed` run does because `ErrorView`
+    // already handles a `null` snapshot -- that is the copy branch fix
+    // round 1 built for exactly this.
+    expect(viewFor("unavailable")).toBe("error");
+  });
+
   it("maps every status the backend can derive", () => {
     // Guards the case the table cannot: a status added to the backend enum and
     // regenerated into the schema, with no view chosen for it.

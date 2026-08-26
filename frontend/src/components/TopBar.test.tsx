@@ -66,4 +66,39 @@ describe("TopBar", () => {
 
     expect(screen.getByRole("button", { name: /agent trace/i })).toBeInTheDocument();
   });
+
+  it("says the run could not be loaded for its own \"unavailable\" state, not queued", () => {
+    // Fix round 4: before this state existed, a poll that already refused
+    // fell back to `queued` here, so this pill -- the app's `aria-live`
+    // region -- announced "Queued" for a run the panel below was, at the
+    // same moment, reporting as unreadable.
+    render(<TopBar status="unavailable" reconnecting={false} summary={summary} onOpenTrace={() => {}} />);
+
+    expect(screen.getByText(/could not load this run/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^queued$/i)).not.toBeInTheDocument();
+  });
+
+  it("shows no connection indicator for \"unavailable\": polling has already stopped", () => {
+    // `useRunPolling`'s loop does not schedule another tick after an
+    // `ApiFailure` -- the same way it does not for any other status that
+    // stops polling -- so "Live · 1s poll" or "Reconnecting…" beside this
+    // pill would claim an ongoing poll that no longer exists.
+    render(<TopBar status="unavailable" reconnecting={false} summary={summary} onOpenTrace={() => {}} />);
+
+    expect(screen.queryByText(/1s poll/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+  });
+
+  it("shows no connection indicator for \"unavailable\" even mid-reconnect from a prior status", () => {
+    // Guards the same claim across a transition, not just a fresh render:
+    // `reconnecting` is a leftover flag from the *previous* status, and
+    // `unavailable` must not inherit its indicator.
+    const { rerender } = render(
+      <TopBar status="running" reconnecting summary={summary} onOpenTrace={() => {}} />,
+    );
+    expect(screen.getByText(/reconnecting/i)).toBeInTheDocument();
+
+    rerender(<TopBar status="unavailable" reconnecting summary={summary} onOpenTrace={() => {}} />);
+    expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+  });
 });

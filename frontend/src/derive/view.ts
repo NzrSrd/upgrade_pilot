@@ -25,6 +25,12 @@ export function viewFor(status: ViewStatus): View {
       return "report";
     case "failed":
     case "orphaned":
+    // Fix round 4: a status poll that came back and refused, with no
+    // snapshot ever loaded, is not a backend status -- it is the client's
+    // own knowledge that the run cannot be read -- but it still routes to
+    // the same view a `failed` run does: `ErrorView` already handles a
+    // `null` snapshot, that is the branch fix round 1 built for it.
+    case "unavailable":
       return "error";
   }
 }

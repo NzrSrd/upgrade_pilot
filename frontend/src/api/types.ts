@@ -95,8 +95,28 @@ export const POLLING_STOPS_ON: ReadonlySet<RunStatus> = new Set([
 ]);
 
 /**
- * The frontend's own extra state: no run has been started, so there is no
- * status to read. The backend enum has seven members and no `idle` — status is
- * derived from a checkpoint, and a run that does not exist has no checkpoint.
+ * The frontend's own extra states, neither of which the backend enum has a
+ * member for, and for the same reason: each describes what the *client*
+ * knows rather than a status derived from a checkpoint.
+ *
+ * `idle` — no run has been started, so there is no status to read at all.
+ *
+ * `unavailable` — a status poll came back and refused (fix round 4):
+ * `getStatus` resolved to a definite answer, and the answer was that this
+ * run cannot be read (an unknown thread id, most often). This is not a
+ * backend status — the backend never emits it, because from the backend's
+ * side there is no run object to report a status *for* — so it cannot live
+ * in `RunStatus`, only here, exactly where `idle` already lives for the
+ * identical reason.
+ *
+ * Both are added as real members rather than handled by an override at a
+ * call site (fix round 3's original, now-corrected approach) precisely to
+ * put `viewFor`'s missing `default` to work: adding a member for a genuine
+ * frontend view state *uses* the exhaustiveness check, forcing every surface
+ * that switches on status — `viewFor`, `TopBar`'s `WORDING` — to say what it
+ * does with the new state, rather than leaving one caller patched and the
+ * rest silently unaware. Adding a `case` to `viewFor` for a status the
+ * *backend* invented would erode that guarantee; adding one for a status
+ * the *frontend* genuinely has is what the guarantee is for.
  */
-export type ViewStatus = RunStatus | "idle";
+export type ViewStatus = RunStatus | "idle" | "unavailable";
