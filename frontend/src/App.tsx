@@ -25,7 +25,20 @@ export default function App() {
   const { runs, remember } = useSessionRuns();
 
   const status: ViewStatus = threadId === null ? "idle" : (snapshot?.status ?? "queued");
-  const view = viewFor(status);
+  // `viewFor` stays a pure, exhaustive mapping over real backend statuses --
+  // its missing `default` clause is deliberate, so a new status stays a
+  // compile error there rather than silently falling through here. That is
+  // exactly why this override lives at the call site instead of inside it:
+  // a poll that has already come back refused, with no snapshot ever loaded
+  // (a stale run picked from session history whose checkpoint the backend no
+  // longer has, say), is not a status at all -- there is nothing to derive
+  // `queued` from, and `viewFor("queued")` would render an activity timeline
+  // implying a run in progress that may not exist. Before the first poll
+  // returns, `error` is still `null` and this falls through to
+  // `viewFor(status)` unchanged: "we have not heard back yet" is honestly
+  // different from "we asked and were told no", and only the second is an
+  // error.
+  const view = error !== null && snapshot === null ? "error" : viewFor(status);
   const summary = runs.find((run) => run.threadId === threadId) ?? null;
   // `RunSnapshot` declares fourteen of its seventeen fields optional in the
   // generated types (every Pydantic field has a default) even though the API
@@ -79,6 +92,14 @@ export default function App() {
          * `errors`, not this live poll error, once a snapshot exists), so
          * suppressing the banner there would silently drop information
          * rather than deduplicate it.
+         *
+         * Fix round 3: `view === "error"` with `snapshot === null` used to be
+         * unreachable (the routing bug this same round fixed above meant a
+         * failed poll with no snapshot fell through to `"activity"`, never
+         * `"error"`). Now that the override makes it reachable, this
+         * suppression is live rather than dead code -- re-verified by an
+         * `App`-level test that reaches it through a real poll failure, not
+         * only through a direct `ErrorView` render.
          */}
         {error !== null && !(view === "error" && snapshot === null) && (
           <p className="rounded-md border border-risk-high/50 bg-risk-high/10 px-3 py-2 text-sm text-risk-high">

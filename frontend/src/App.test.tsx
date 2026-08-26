@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HttpResponse, http } from "msw";
+import { HttpResponse, delay, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -320,5 +320,130 @@ describe("App — a poll error while a snapshot already exists", () => {
     expect(
       screen.getByRole("heading", { name: /interrupted by a restart/i }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * Fix round 3: `App.tsx`'s `status = snapshot?.status ?? "queued"` used to
+ * feed straight into `viewFor`, so a poll that came back refused with no
+ * snapshot ever loaded rendered `ActivityTimeline`'s own "Queued" panel --
+ * a status the backend never reported, for a run that may not exist at
+ * all. `viewFor` stays pure and exhaustive (its missing `default` is
+ * deliberate); the override lives at the `App` call site instead:
+ * `error !== null && snapshot === null` routes to `"error"` directly.
+ *
+ * This is also where round 1's `ErrorView` `snapshot === null` copy branch
+ * and round 2's banner-ownership guard both stop being dead code -- both
+ * are reached here through a real poll failure inside `App`, not only
+ * through a direct `ErrorView` render.
+ */
+describe("App — a poll error before any snapshot ever loads", () => {
+  it("renders the error view rather than an activity timeline that claims the run is queued", async () => {
+    const user = userEvent.setup({ delay: null });
+
+    server.use(
+      http.get(HEALTH, () =>
+        HttpResponse.json({
+          status: "ok",
+          version: "test",
+          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+        }),
+      ),
+      http.post(START, () =>
+        HttpResponse.json(
+          { thread_id: "t-1", status: "queued", poll_url: "/api/agent/status/t-1" },
+          { status: 202 },
+        ),
+      ),
+    );
+
+    // The very first status poll refuses outright: no snapshot is ever
+    // loaded for this thread -- e.g. a stale run whose checkpoint the
+    // backend no longer has. `thread_not_found` is a real code for exactly
+    // that.
+    server.use(
+      http.get(STATUS, () =>
+        HttpResponse.json(
+          { error: { code: "thread_not_found", message: "No run with that id exists.", retryable: false, node: null } },
+          { status: 404 },
+        ),
+      ),
+    );
+
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/repository url/i), "https://example.com/repo.git");
+    await user.type(screen.getByLabelText(/^dependency$/i), "pydantic");
+    await user.type(screen.getByLabelText(/current version/i), "1.10.13");
+    await user.type(screen.getByLabelText(/target version/i), "2.9.2");
+    await user.click(screen.getByRole("button", { name: /start migration audit/i }));
+
+    // Decisive: `ErrorView`'s own title for exactly this case (round 1's
+    // copy branch), reached for the first time through `App` rather than a
+    // direct render.
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: /could not load this run/i }),
+      ).toBeInTheDocument(),
+    );
+
+    // The fabricated claim this fix removes. Under the bug, `status` fell
+    // back to `"queued"` and `ActivityTimeline` rendered its own "Queued"
+    // panel -- "waiting for a run slot" for a run that was, in fact,
+    // refused outright.
+    expect(screen.queryByRole("heading", { name: /^queued$/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/waiting for a run slot/i)).not.toBeInTheDocument();
+
+    // Round 2's banner cedes ownership to `ErrorView` for exactly this
+    // case: the message renders once, not twice, and at most one
+    // `role="alert"` is live -- there is none here, since `ErrorView` only
+    // raises one on a *failed resume*, and there is no snapshot to resume.
+    expect(screen.getAllByText(/no run with that id exists/i)).toHaveLength(1);
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
+  });
+
+  it("still shows activity before the first poll returns -- silence is not yet a refusal", async () => {
+    const user = userEvent.setup({ delay: null });
+
+    server.use(
+      http.get(HEALTH, () =>
+        HttpResponse.json({
+          status: "ok",
+          version: "test",
+          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+        }),
+      ),
+      http.post(START, () =>
+        HttpResponse.json(
+          { thread_id: "t-1", status: "queued", poll_url: "/api/agent/status/t-1" },
+          { status: 202 },
+        ),
+      ),
+    );
+
+    // The status poll never returns within this test: there is no error
+    // yet, only silence, and "we have not heard back yet" must not be
+    // routed to the error view the way "we asked and were told no" is.
+    server.use(
+      http.get(STATUS, async () => {
+        await delay("infinite");
+        return HttpResponse.json(aSnapshot({ status: "queued" }));
+      }),
+    );
+
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/repository url/i), "https://example.com/repo.git");
+    await user.type(screen.getByLabelText(/^dependency$/i), "pydantic");
+    await user.type(screen.getByLabelText(/current version/i), "1.10.13");
+    await user.type(screen.getByLabelText(/target version/i), "2.9.2");
+    await user.click(screen.getByRole("button", { name: /start migration audit/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: /^queued$/i })).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByRole("heading", { name: /could not load this run/i }),
+    ).not.toBeInTheDocument();
   });
 });
