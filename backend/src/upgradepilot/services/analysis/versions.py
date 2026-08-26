@@ -67,7 +67,10 @@ def _rank(declaration: Declaration) -> tuple[int, int, int, str]:
 
 
 def resolve_version(
-    declarations: tuple[Declaration, ...], *, canonical_name: str
+    declarations: tuple[Declaration, ...],
+    *,
+    canonical_name: str,
+    unread: tuple[str, ...] = (),
 ) -> DetectedVersion | None:
     """Pick the most precise true statement about the installed version.
 
@@ -92,10 +95,30 @@ def resolve_version(
     overstating it.
     """
     if not declarations:
+        # The message says what was READ, not what exists. It used to claim
+        # absence from "any dependency manifest in this repository" on the
+        # strength of five Python filenames, which is false the moment the
+        # repository is a JavaScript one -- `react` declared in
+        # `package.json`, three lines from where the scan stopped. An error
+        # message is a claim like any other (CLAUDE.md rule 1), and
+        # `scan.unread` is what lets this one distinguish "not declared"
+        # from "not looked at".
+        read = "pyproject.toml, requirements*.txt, poetry.lock, uv.lock, Pipfile.lock"
+        message = (
+            f"{canonical_name!r} is not declared in any Python dependency manifest in "
+            f"this repository ({read}), so there is no current version to upgrade from."
+        )
+        if unread:
+            message += (
+                f" This repository does have {', '.join(unread)}, which this analyzer "
+                "does not read: it analyses Python only."
+            )
         raise DependencyNotFoundError(
-            f"{canonical_name!r} is not declared in any dependency manifest in this "
-            f"repository, so there is no current version to upgrade from.",
-            detail=f"canonical_name={canonical_name!r} declarations=0",
+            message,
+            detail=(
+                f"canonical_name={canonical_name!r} declarations=0 "
+                f"unread={','.join(unread) if unread else '-'}"
+            ),
         )
 
     best = min(declarations, key=_rank)

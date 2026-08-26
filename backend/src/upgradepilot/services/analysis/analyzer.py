@@ -61,7 +61,7 @@ def analyze_repository(
     # Not caught: see the docstring above and versions.py's own docstring --
     # a dependency this repository does not declare anywhere has no current
     # version to report, and DependencyNotFoundError is the honest answer.
-    detected = resolve_version(scan.declarations, canonical_name=canonical)
+    detected = resolve_version(scan.declarations, canonical_name=canonical, unread=scan.unread)
 
     # -- Steps 4-8: which files use it, and how. ------------------------------
     #

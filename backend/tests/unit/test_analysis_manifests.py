@@ -382,3 +382,31 @@ def test_an_unreadable_manifest_becomes_a_confidence_reducer(tmp_path: Path) -> 
     assert any("pyproject.toml" in reducer for reducer in analysis.confidence_reducers), (
         analysis.confidence_reducers
     )
+
+
+def test_scan_manifests_records_a_package_json_it_does_not_read(tmp_path: Path) -> None:
+    """A manifest this analyzer deliberately does not read is still worth
+    knowing about.
+
+    ADR-001 records that the analyzer is Python-only. `package.json` is
+    therefore not classified as a manifest and never parsed -- but its mere
+    presence is the difference between "this dependency is not declared here"
+    and "this is a JavaScript project", and only the second is true of a
+    repository whose dependencies all live in a file this scan skips.
+    """
+    root = build_sample_repo(tmp_path)
+    (root / "package.json").write_text('{"dependencies": {"react": "^19.2.8"}}', encoding="utf-8")
+
+    scan = scan_manifests(Workspace(root), canonical_name="react")
+
+    assert scan.unread == ("package.json",)
+    # And it is still not a manifest: nothing was parsed out of it.
+    assert scan.declarations == ()
+    assert tuple(m.path for m in scan.manifests) == ("pyproject.toml", "requirements.txt")
+
+
+def test_scan_manifests_reports_no_unread_manifest_when_there_is_none(tmp_path: Path) -> None:
+    """A Python repository has nothing to disclaim."""
+    scan = scan_manifests(Workspace(build_sample_repo(tmp_path)), canonical_name="pydantic")
+
+    assert scan.unread == ()

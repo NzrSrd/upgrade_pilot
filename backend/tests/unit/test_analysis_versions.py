@@ -289,3 +289,44 @@ def test_an_exact_pin_outranks_a_range_of_the_same_kind_whatever_the_path() -> N
     assert detected.value == "1.10.13"
     assert detected.source_manifest.path == "requirements-b.txt"
     assert detected.confidence is VersionConfidence.EXACT
+
+
+def test_the_not_found_message_does_not_claim_more_than_was_read() -> None:
+    """CLAUDE.md rule 1, applied to an error message.
+
+    The message said "not declared in any dependency manifest in this
+    repository" after reading five Python filenames. Pointed at a JavaScript
+    project -- which this product's own frontend is -- that sentence was
+    simply false: `react` was declared in `package.json`, three lines from
+    where the scan stopped looking. An error is a claim like any other.
+    """
+    with pytest.raises(DependencyNotFoundError) as caught:
+        resolve_version((), canonical_name="react")
+    message = caught.value.args[0]
+
+    assert "react" in message
+    # It may say "Python dependency manifest"; it may not say "any manifest".
+    assert "any dependency manifest" not in message
+    assert "Python" in message
+
+
+def test_the_not_found_message_names_a_manifest_it_deliberately_did_not_read() -> None:
+    """The useful half. "Not found" and "not looked for" are different
+    answers, and only one of them tells a user pointed at a JavaScript
+    repository what is actually wrong (ADR-001: the analyzer is Python-only).
+    """
+    with pytest.raises(DependencyNotFoundError) as caught:
+        resolve_version((), canonical_name="react", unread=("package.json",))
+    message = caught.value.args[0]
+
+    assert "package.json" in message
+    assert "react" in message
+
+
+def test_an_unread_manifest_is_only_mentioned_when_one_is_there() -> None:
+    """A Python repository that genuinely does not declare the dependency
+    must not be told about a `package.json` it does not have."""
+    with pytest.raises(DependencyNotFoundError) as caught:
+        resolve_version((), canonical_name="pydantic")
+
+    assert "package.json" not in caught.value.args[0]

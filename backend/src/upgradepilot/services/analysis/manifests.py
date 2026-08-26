@@ -50,6 +50,24 @@ _FILENAMES: tuple[tuple[str, ManifestKind], ...] = (
     ("Pipfile.lock", ManifestKind.PIPFILE_LOCK),
 )
 
+_UNREAD_MANIFESTS: frozenset[str] = frozenset({"package.json"})
+"""Manifests this analyzer knows exist and deliberately does not read.
+
+ADR-001 records the analyzer as Python-only, and that is not only the manifest
+reader: `layout.py` collects `.py` and `.pyi`, and `imports.py` parses with
+Python's `ast`. Reading `package.json` for meaning would remove the only
+honest signal a JavaScript repository produces and replace it with a report of
+zeroes carrying no error at all -- worse than the error, because it would look
+like an answer.
+
+So this records presence and nothing else. It is what lets
+`resolve_version` say "not read" instead of "not declared", which are
+different claims and only one of them is true of a repository whose
+dependencies all live in a file this scan skips. `package.json` alone because
+it is the one ecosystem the product is actually pointed at by mistake; the set
+is the place to add another when that changes.
+"""
+
 _REQUIREMENTS_NAME = re.compile(r"^[A-Za-z0-9._-]*requirements[A-Za-z0-9._-]*\.txt$")
 """A filename *containing* "requirements" and ending `.txt`.
 
@@ -98,6 +116,10 @@ class ManifestScan(HonestModel):
     unreadable: tuple[RepoRelativePath, ...] = ()
     """Manifests that exist but could not be parsed. Task 9 turns each into
     a confidence reducer."""
+    unread: tuple[RepoRelativePath, ...] = ()
+    """Manifests for an ecosystem this analyzer does not read, found but never
+    opened -- see `_UNREAD_MANIFESTS`. Not a confidence reducer: it does not
+    make the Python analysis less certain, it explains an absence."""
 
 
 def classify_manifest(path: str) -> ManifestKind | None:
@@ -393,11 +415,16 @@ def scan_manifests(workspace: Workspace, canonical_name: str) -> ManifestScan:
     manifests: list[Manifest] = []
     declarations: list[Declaration] = []
     unreadable: list[str] = []
+    unread: list[str] = []
 
     for relative in workspace.iter_files(""):
         path = relative.as_posix()
         kind = classify_manifest(path)
         if kind is None:
+            # Presence only, and only for the ones we can name. The file is
+            # never opened: see `_UNREAD_MANIFESTS`.
+            if path.rsplit("/", 1)[-1] in _UNREAD_MANIFESTS:
+                unread.append(path)
             continue
         try:
             text = workspace.read_text(relative)
@@ -428,4 +455,5 @@ def scan_manifests(workspace: Workspace, canonical_name: str) -> ManifestScan:
         manifests=tuple(sorted(manifests, key=lambda m: m.path)),
         declarations=tuple(sorted(declarations, key=lambda d: d.manifest.path)),
         unreadable=tuple(sorted(unreadable)),
+        unread=tuple(sorted(unread)),
     )
