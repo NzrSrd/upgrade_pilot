@@ -190,6 +190,22 @@ settle the choice, no interrupt fires and the trace records "resolved by
 constraints, no human input required". Without a skipped state a correct run
 looks like it lost a step.
 
+**The reason is part of the state, and it is checked rather than assumed.**
+"Skipped, resolved by constraints" is a claim about a question that existed.
+A run whose analysis failed never produced an assessment, so it had no
+question for the constraints to settle, and that step reads **not reached**
+instead. One word for both cases presented a broken run as a normal one —
+which is the failure the narrow skipped rule above exists to prevent.
+
+**Failed outranks completed, and is not read from `completed_steps`.** The
+graph continues after a node fails so the report can say what *was*
+established, which means a failed node still appears in `completed_steps` and
+every later node still runs. A step is Failed when it recorded an error **and
+produced nothing** — the second half matters, because `assess_risk` records an
+error when only its narrative call fails while every factor and level it
+measured survives. An error alone is not failure; an error with nothing to
+show for the step is.
+
 The stepper shows these eight user-facing steps. The retrieval subgraph's
 nodes run several times each and do not appear here; a progress list that
 grew to fourteen entries for a three-round loop would read as a stalled run
@@ -471,6 +487,16 @@ past an unanswered question or reach a report that does not exist yet.
   that cannot check it against the first.
 - `TRANSITIVE_ONLY` role, when detected — the user does not control this pin
 - Warnings banner when the status is `completed_with_warnings`
+- **Recorded-error banner whenever `RunSnapshot.errors` is non-empty**, each
+  error named by the step that recorded it rather than by its node id. This is
+  not the same banner as the one above: validation failing and a node erroring
+  are different events, and a run can have either without the other. It is
+  listed here because `ErrorView` was the only reader of `errors` and renders
+  for `failed` and `orphaned` only — so a run that finished *with warnings*
+  had no route to its own errors, and a repository path that did not exist
+  reached the user as a report of zeroes with no stated cause.
+  `AppError.message` is the user-facing half; `detail` stays server-side
+  (rule 27).
 
 ### Risk Factors
 
