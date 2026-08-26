@@ -14,38 +14,8 @@
 import { useState } from "react";
 
 import type { RiskAnalysis, RiskFactor } from "../../api/types";
-import { describeEvidenceRef, evidenceRefKey } from "../../derive/evidence";
-import { EmptyState, LevelBadge, Mono, Panel } from "../ui";
-
-/**
- * The single renderer for an `EvidenceRef[]` (ruling T11b) -- used here and
- * by `HumanReviewPanel`, so the product has exactly one way to render a
- * citation rather than two free to disagree.
- *
- * The formatting itself (`describeEvidenceRef`) lives in `derive/` because it
- * is a pure function of the ref; this component's own job is the list
- * chrome and the one thing the formatter cannot show -- a repo ref's
- * snippet, when it carries one.
- */
-export function EvidenceRefList({ refs }: { refs: RiskFactor["evidence"] }) {
-  return (
-    <ul className="mt-2 space-y-1 border-l border-edge pl-3">
-      {refs.map((ref) => (
-        <li key={evidenceRefKey(ref)} className="text-xs text-ink-muted">
-          <Mono>{describeEvidenceRef(ref)}</Mono>
-          {/* `snippet` is optional and nullable on `RepoEvidence`; loose
-              (`!= null`), not strict, or the common case of no snippet sent
-              would render an empty `<pre>` (ruling N1). */}
-          {"file" in ref && ref.snippet != null && (
-            <pre className="mt-1 overflow-x-auto rounded bg-surface-sunken p-2 font-mono text-[12px] text-ink-muted">
-              {ref.snippet}
-            </pre>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
-}
+import { EvidenceRefList } from "../EvidenceRefList";
+import { EmptyState, LevelBadge, Panel } from "../ui";
 
 function FactorRow({ factor }: { factor: RiskFactor }) {
   const [open, setOpen] = useState(false);

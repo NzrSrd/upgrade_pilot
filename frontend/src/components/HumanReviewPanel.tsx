@@ -25,7 +25,7 @@ import { useState } from "react";
 
 import { ApiFailure, resumeRun } from "../api/client";
 import type { DecisionOption, InterruptPayload } from "../api/types";
-import { EvidenceRefList } from "./report/RiskFactorsTab";
+import { EvidenceRefList } from "./EvidenceRefList";
 import { Card, LevelBadge, Panel } from "./ui";
 
 /** `DecisionKind` read aloud, for the group's accessible name and the header. */
