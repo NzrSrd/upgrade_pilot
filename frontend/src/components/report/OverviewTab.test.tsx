@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { aReport, aRiskAnalysis } from "../../test/fixtures";
+import { aDetectedVersion, aReport, aRepoAnalysis, aRiskAnalysis } from "../../test/fixtures";
 import { OverviewTab } from "./OverviewTab";
 
 describe("OverviewTab", () => {
@@ -9,7 +9,10 @@ describe("OverviewTab", () => {
     render(<OverviewTab report={aReport()} />);
 
     expect(screen.getByText(/four breaking changes reach code/i)).toBeInTheDocument();
-    expect(screen.getByText("high")).toBeInTheDocument();
+    // Fix-round-1 finding 4 adds an "Aggregate risk" field beside "Overall
+    // risk"; the default fixture has both at "high", so two badges now
+    // legitimately render that word rather than one.
+    expect(screen.getAllByText("high")).toHaveLength(2);
   });
 
   it("never shows a confidence figure without its ceilings", () => {
@@ -49,10 +52,35 @@ describe("OverviewTab", () => {
     expect(screen.getByText(/raised from low/i)).toBeInTheDocument();
   });
 
+  it("does not fabricate a raise when the floor is below the aggregate", () => {
+    // Critical fix-round-1 finding: `overall_risk` is exactly
+    // `max(aggregate_risk, clamp_floor)` (backend/src/upgradepilot/models/risk.py:107),
+    // so a floor BELOW the aggregate raises nothing even though it is
+    // present and differs from the aggregate. The old condition
+    // (`clampFloor !== null && clampFloor !== aggregate_risk`) rendered
+    // "Raised from high to high" here. The floor is still disclosed as a
+    // value -- disclosure and the raise claim are separate conditions.
+    render(
+      <OverviewTab
+        report={aReport({
+          risk_analysis: aRiskAnalysis({
+            aggregate_risk: "high",
+            overall_risk: "high",
+            clamp_floor: "low",
+          }),
+        })}
+      />,
+    );
+
+    expect(screen.queryByText(/raised from/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/clamp floor/i)).toBeInTheDocument();
+  });
+
   it("does not mention a clamp when there was none", () => {
     render(<OverviewTab report={aReport()} />);
 
     expect(screen.queryByText(/raised from/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/clamp floor/i)).not.toBeInTheDocument();
   });
 
   it("shows a version discrepancy as both values, side by side", () => {
@@ -98,5 +126,34 @@ describe("OverviewTab", () => {
 
     expect(screen.getByText(/affected files/i)).toBeInTheDocument();
     expect(screen.getByText(/usage sites/i)).toBeInTheDocument();
+  });
+
+  it("flags a transitive-only pin as one the user does not control", () => {
+    // Fix-round-1 finding 6. DESIGN.md's framing is actionability, not
+    // confidence -- worded so it is never mistaken for the unrelated
+    // `TRANSITIVE_ONLY` confidence ceiling that can also appear.
+    render(
+      <OverviewTab
+        report={aReport({
+          repo_analysis: aRepoAnalysis({
+            detected_version: aDetectedVersion({ role: "transitive_only" }),
+          }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/do not control this pin/i)).toBeInTheDocument();
+  });
+
+  it("says nothing about control for a directly-declared pin", () => {
+    render(
+      <OverviewTab
+        report={aReport({
+          repo_analysis: aRepoAnalysis({ detected_version: aDetectedVersion({ role: "direct" }) }),
+        })}
+      />,
+    );
+
+    expect(screen.queryByText(/do not control this pin/i)).not.toBeInTheDocument();
   });
 });

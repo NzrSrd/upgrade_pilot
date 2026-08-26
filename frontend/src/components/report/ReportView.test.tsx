@@ -61,4 +61,46 @@ describe("ReportView", () => {
 
     expect(screen.getByText(/no report was produced/i)).toBeInTheDocument();
   });
+
+  it("moves the selection and focus with arrow keys, not just click", async () => {
+    // Fix-round-1 finding 3: native buttons make the tabs minimally
+    // operable (Tab + Enter/Space) but that is not the ARIA tabs pattern —
+    // arrow keys must move the selection, and focus must follow it (roving
+    // tabindex), which a handler that merely exists without observably
+    // moving the selection would not prove.
+    const user = userEvent.setup();
+    render(<ReportView snapshot={aSnapshot({ status: "completed", final_report: aReport() })} />);
+
+    screen.getByRole("tab", { name: "Overview" }).focus();
+
+    await user.keyboard("{ArrowRight}");
+    const risk = screen.getByRole("tab", { name: "Risk Factors" });
+    expect(risk).toHaveAttribute("aria-selected", "true");
+    expect(risk).toHaveFocus();
+
+    await user.keyboard("{End}");
+    const code = screen.getByRole("tab", { name: "Code" });
+    expect(code).toHaveAttribute("aria-selected", "true");
+    expect(code).toHaveFocus();
+
+    await user.keyboard("{ArrowRight}");
+    const overview = screen.getByRole("tab", { name: "Overview" });
+    expect(overview).toHaveAttribute("aria-selected", "true"); // wraps past the last tab
+
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "Code" })).toHaveAttribute("aria-selected", "true"); // wraps the other way
+
+    await user.keyboard("{Home}");
+    expect(screen.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("gives the selected panel real tabpanel semantics, wired to its tab", () => {
+    render(<ReportView snapshot={aSnapshot({ status: "completed", final_report: aReport() })} />);
+
+    const tab = screen.getByRole("tab", { name: "Overview" });
+    const panel = screen.getByRole("tabpanel");
+
+    expect(tab).toHaveAttribute("aria-controls", panel.id);
+    expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+  });
 });

@@ -15,7 +15,8 @@
  * cannot create anything offers a capability the product does not have.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 
 import type { RunSnapshot } from "../../api/types";
 import { EmptyState, Panel } from "../ui";
@@ -35,8 +36,23 @@ const TABS: { id: ReportTab; label: string }[] = [
   { id: "code", label: "Code" },
 ];
 
+/** `id`s that tie a tab button to the panel it discloses, for `aria-controls`/`aria-labelledby`. */
+function tabId(id: ReportTab): string {
+  return `report-tab-${id}`;
+}
+function panelId(id: ReportTab): string {
+  return `report-panel-${id}`;
+}
+
 export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
   const [tab, setTab] = useState<ReportTab>("overview");
+  // Roving tabindex (fix-round-1 finding 3): only the selected tab is a
+  // stop on the page's Tab order; arrow keys move both the selection and
+  // DOM focus among the others, per the ARIA APG tabs pattern. Refs are
+  // used rather than an effect so focus moves synchronously with the
+  // keypress that caused it, not on every render (which would steal focus
+  // on mount).
+  const tabButtonRefs = useRef<(HTMLButtonElement | null)[]>([]);
   // `final_report` is optional in the generated type only because every
   // Pydantic field carries a default -- it is genuinely `None` until the run
   // finishes, and `snapshot_response` never sends `undefined` in its place.
@@ -58,9 +74,11 @@ export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
   return (
     <div className="space-y-4">
       {report.completed_with_warnings && (
+        // Fix-round-1 finding 2: DESIGN.md's token table assigns "failed
+        // validation checks" to `risk-high` explicitly, not `risk-medium`.
         <p
           role="alert"
-          className="rounded-md border border-risk-medium/50 bg-risk-medium/10 px-3 py-2 text-sm text-risk-medium"
+          className="rounded-md border border-risk-high/50 bg-risk-high/10 px-3 py-2 text-sm text-risk-high"
         >
           Validation did not pass. The failed checks are listed under Plan — the plan below is
           reported with them rather than without them.
@@ -68,13 +86,41 @@ export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
       )}
 
       <div role="tablist" aria-label="Report sections" className="flex gap-1 border-b border-edge">
-        {TABS.map((each) => (
+        {TABS.map((each, index) => (
           <button
             key={each.id}
+            ref={(el) => {
+              tabButtonRefs.current[index] = el;
+            }}
             type="button"
             role="tab"
+            id={tabId(each.id)}
             aria-selected={tab === each.id}
+            aria-controls={panelId(each.id)}
+            tabIndex={tab === each.id ? 0 : -1}
             onClick={() => setTab(each.id)}
+            onKeyDown={(event: KeyboardEvent<HTMLButtonElement>) => {
+              let nextIndex: number | null = null;
+              switch (event.key) {
+                case "ArrowRight":
+                  nextIndex = (index + 1) % TABS.length;
+                  break;
+                case "ArrowLeft":
+                  nextIndex = (index - 1 + TABS.length) % TABS.length;
+                  break;
+                case "Home":
+                  nextIndex = 0;
+                  break;
+                case "End":
+                  nextIndex = TABS.length - 1;
+                  break;
+                default:
+                  return;
+              }
+              event.preventDefault();
+              setTab(TABS[nextIndex].id);
+              tabButtonRefs.current[nextIndex]?.focus();
+            }}
             className={`-mb-px border-b-2 px-3 py-2 text-sm ${
               tab === each.id
                 ? "border-ink text-ink"
@@ -86,15 +132,17 @@ export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
         ))}
       </div>
 
-      {tab === "overview" && <OverviewTab report={report} />}
-      {/* `risk_analysis` is optional in the generated type for the same
-          reason `final_report` is above; normalised to `null` at this call
-          site so `RiskFactorsTab`'s own `analysis === null` check stays
-          strict and correct (ruling N1/T10b). */}
-      {tab === "risk" && <RiskFactorsTab analysis={report.risk_analysis ?? null} />}
-      {tab === "evidence" && <EvidenceTab report={report} snapshot={snapshot} />}
-      {tab === "plan" && <PlanTab report={report} />}
-      {tab === "code" && <CodeTab report={report} />}
+      <div role="tabpanel" id={panelId(tab)} aria-labelledby={tabId(tab)} tabIndex={0}>
+        {tab === "overview" && <OverviewTab report={report} />}
+        {/* `risk_analysis` is optional in the generated type for the same
+            reason `final_report` is above; normalised to `null` at this call
+            site so `RiskFactorsTab`'s own `analysis === null` check stays
+            strict and correct (ruling N1/T10b). */}
+        {tab === "risk" && <RiskFactorsTab analysis={report.risk_analysis ?? null} />}
+        {tab === "evidence" && <EvidenceTab report={report} snapshot={snapshot} />}
+        {tab === "plan" && <PlanTab report={report} />}
+        {tab === "code" && <CodeTab report={report} />}
+      </div>
     </div>
   );
 }

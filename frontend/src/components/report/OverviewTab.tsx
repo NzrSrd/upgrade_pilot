@@ -35,6 +35,15 @@ export function OverviewTab({ report }: { report: FinalReport }) {
 
   const usageSites = affectedFiles.reduce((total, file) => total + file.usage_sites.length, 0);
 
+  // `repo_analysis` and `detected_version` are both REQUIRED keys with
+  // nullable values, so both stay strict (`=== null`) -- fix-round-1 finding
+  // 6, mirroring the same rule finding 1's own commit_sha/version_discrepancy
+  // checks already follow. `role` is required and non-nullable once the
+  // object is known to exist.
+  const detectedVersion =
+    report.repo_analysis === null ? null : report.repo_analysis.detected_version;
+  const isTransitiveOnly = detectedVersion !== null && detectedVersion.role === "transitive_only";
+
   return (
     <div className="space-y-4">
       <Panel title="Verdict">
@@ -60,6 +69,18 @@ export function OverviewTab({ report }: { report: FinalReport }) {
             }
           />
         </dl>
+        {isTransitiveOnly && (
+          // Fix-round-1 finding 6: an actionability claim ("you do not
+          // control this pin"), not a confidence caveat -- worded so it is
+          // never mistaken for the unrelated `TRANSITIVE_ONLY` confidence
+          // ceiling that can also appear in the ceilings list below. Neutral
+          // ink/edge tokens, same reasoning as finding 5: this is
+          // explanatory text, not a severity finding.
+          <p className="mt-3 text-xs text-ink-muted">
+            This dependency's target version is pinned transitively, through another package —
+            you do not control this pin directly.
+          </p>
+        )}
       </Panel>
 
       {
@@ -74,7 +95,10 @@ export function OverviewTab({ report }: { report: FinalReport }) {
                 value={<Mono>{report.version_discrepancy[1]}</Mono>}
               />
             </dl>
-            <p className="mt-2 text-xs text-risk-medium">
+            {/* Explanatory chrome, not a severity finding -- same reasoning
+                as fix-round-1 finding 5, applied here even though the order
+                named only the clamp banner and ceiling text by line number. */}
+            <p className="mt-2 text-xs text-ink-muted">
               Neither was silently preferred. Every claim below is resolved against the analyzed
               tree.
             </p>
@@ -128,16 +152,47 @@ function VerdictDetail({ risk }: { risk: RiskAnalysis }) {
   const qualitativeNotes = risk.qualitative_notes ?? [];
   const factorCount = (risk.factors ?? []).length;
 
+  // Fix-round-1 finding 1 (CRITICAL): the *claim* that the verdict was
+  // raised is a separate condition from the *disclosure* of the floor.
+  // `overall_risk` is exactly `max(aggregate_risk, clamp_floor)` --
+  // `backend/src/upgradepilot/models/risk.py:107` refuses both directions --
+  // so a floor BELOW the aggregate raises nothing even though it is present
+  // and differs from the aggregate. Mirrored from the backend's own
+  // condition at `graph/nodes/judgment.py:244`
+  // (`clamp_floor is not None and overall_risk is not aggregate_risk`)
+  // rather than re-derived, per rule 19: a rule re-implemented in
+  // TypeScript is a second implementation nothing can check against the
+  // first, and that is exactly how this defect shipped.
+  const wasRaised = clampFloor !== null && risk.overall_risk !== risk.aggregate_risk;
+
   return (
     <div className="space-y-3">
       <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
         <Field label="Overall risk" value={<LevelBadge level={risk.overall_risk} />} />
+        {/* Fix-round-1 finding 4: shown on every run, not only a clamped
+            one -- DESIGN.md lists it as its own bullet ("the value before
+            the clamp"), and it was previously reachable only inside the
+            raise-claim sentence, which made it invisible on an unclamped
+            run. */}
+        <Field label="Aggregate risk" value={<LevelBadge level={risk.aggregate_risk} />} />
         <Field label="Confidence" value={`${Math.round(risk.confidence * 100)}%`} />
         <Field label="Factors measured" value={String(factorCount)} />
+        {clampFloor !== null && (
+          // Disclosure, independent of `wasRaised`: a floor present but
+          // lower than the aggregate is still shown as a value and still
+          // says nothing about a raise (fix-round-1 finding 1's second
+          // bullet, and finding 4's "do these together" note).
+          <Field label="Clamp floor" value={<LevelBadge level={clampFloor} />} />
+        )}
       </dl>
 
-      {clampFloor !== null && clampFloor !== risk.aggregate_risk && (
-        <p className="rounded-md border border-risk-medium/40 bg-risk-medium/10 px-3 py-2 text-xs text-risk-medium">
+      {wasRaised && (
+        // Fix-round-1 finding 5: this is an explanation of the verdict, not
+        // a finding with a severity of its own -- a clamp raising a verdict
+        // TO high rendered in `risk-medium` would misstate what it is (the
+        // same collision that moved `consequences_if_unanswered` off
+        // `risk-medium` in Task 11). Neutral ink/edge tokens instead.
+        <p className="rounded-md border border-edge bg-surface-sunken px-3 py-2 text-xs text-ink-muted">
           Raised from {risk.aggregate_risk} to {risk.overall_risk} by a floor the factors cannot
           lower.
         </p>
@@ -146,7 +201,7 @@ function VerdictDetail({ risk }: { risk: RiskAnalysis }) {
       {confidenceCeilings.length > 0 && (
         <ul className="space-y-1">
           {confidenceCeilings.map((ceiling) => (
-            <li key={ceiling.reason} className="text-xs text-risk-medium">
+            <li key={ceiling.reason} className="text-xs text-ink-muted">
               Capped at {Math.round(ceiling.ceiling * 100)}% — {ceiling.reason}
             </li>
           ))}

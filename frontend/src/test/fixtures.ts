@@ -9,8 +9,10 @@
 import type {
   BreakingChange,
   DecisionOption,
+  DetectedVersion,
   FinalReport,
   InterruptPayload,
+  RepoAnalysis,
   RiskAnalysis,
   RiskFactor,
   RunSnapshot,
@@ -154,6 +156,35 @@ export function aRiskAnalysis(overrides: Partial<RiskAnalysis> = {}): RiskAnalys
     factors: [aFactor()],
     summary: "Four breaking changes reach code this repository executes.",
     qualitative_notes: [],
+    ...overrides,
+  };
+}
+
+export function aDetectedVersion(overrides: Partial<DetectedVersion> = {}): DetectedVersion {
+  return {
+    value: "1.10.13",
+    specifier: "==1.10.13",
+    confidence: "exact",
+    role: "direct",
+    source_manifest: { kind: "pyproject", path: "pyproject.toml", declared_specifier: "==1.10.13" },
+    ...overrides,
+  };
+}
+
+export function aRepoAnalysis(overrides: Partial<RepoAnalysis> = {}): RepoAnalysis {
+  return {
+    analyzed_files: 42,
+    total_python_files: 42,
+    commit_sha: null,
+    detected_version: aDetectedVersion(),
+    symbol_inventory: { entries: [] },
+    affected_files: [],
+    commit_records: [],
+    confidence_reducers: [],
+    languages: [],
+    manifests: [],
+    skipped_files: [],
+    test_paths: [],
     ...overrides,
   };
 }
