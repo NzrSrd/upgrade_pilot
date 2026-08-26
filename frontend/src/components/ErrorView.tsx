@@ -2,16 +2,21 @@
  * The `failed` and `orphaned` views, plus the defensive case of no snapshot
  * at all (a poll that never returned one, e.g. an unknown thread id).
  *
- * `orphaned` is the reason the derived-status ladder exists at all
- * (ADR-001:410): a checkpoint that outlived its process, which a spinner
- * cannot represent and which the design pack gave no view. The wording matters
- * as much as the button — the user needs to know the work already done
- * survived, and that resuming *continues* rather than restarts, because
- * offering "start again" would discard a live checkpoint and bill for the same
- * work twice.
+ * `orphaned` is the reason the derived-status ladder exists at all (ADR-001,
+ * decision D10, "Status is derived, never stored" -- cited by name rather
+ * than line: a line number in a comment goes stale silently, and this one
+ * already had): a checkpoint that outlived its process, which a spinner
+ * cannot represent and which the design pack gave no view. The wording
+ * matters as much as the button — the user needs to know the work already
+ * done survived, and that resuming *continues* rather than restarts, because
+ * offering "start again" would discard a live checkpoint and bill for the
+ * same work twice.
  *
- * The resume carries no decision. Spec §9.1: an abandoned run is not waiting
- * for an answer, and asking the client to invent one would be asking for a lie.
+ * The resume carries no decision, and that is not this component's own
+ * call: `ResumeRequest.decision`'s docstring
+ * (`backend/src/upgradepilot/api/schemas.py`) says why -- an abandoned run
+ * is not waiting for an answer, and asking the client to invent one would be
+ * asking for a lie.
  */
 
 import { AlertTriangle, RotateCcw } from "lucide-react";
@@ -19,6 +24,7 @@ import { useState } from "react";
 
 import { ApiFailure, resumeRun } from "../api/client";
 import type { ApiError, RunSnapshot } from "../api/types";
+import { STEPS } from "../derive/steps";
 import { Mono, Panel } from "./ui";
 
 export function ErrorView({
@@ -39,9 +45,18 @@ export function ErrorView({
   // because every Pydantic field carries a default -- `snapshot_response`
   // always populates them (as `[]` when there is nothing). Resolved once
   // here (ruling T10b) rather than at each use below, following Task 12's
-  // pattern (`ReportView.tsx:46`, `OverviewTab.tsx:31-34`).
+  // `?? null`/`?? []` boundary-normalisation pattern: `ReportView.tsx`'s
+  // `report = snapshot.final_report ?? null` (line 62) and the block of
+  // `??` defaults at the top of `OverviewTab.tsx` (lines 31-34).
   const completedSteps = snapshot?.completed_steps ?? [];
   const done = completedSteps.length;
+  // `STEPS.length`, not a literal `8`: `derive/steps.ts` already owns the
+  // step count, and a hardcoded number here would be the exact kind of
+  // second source for one fact CLAUDE.md rule 21 warns drifts silently --
+  // a ninth step would leave a literal quietly wrong with no compiler
+  // signal. `STEPS` only, not `stepStates`: this view needs the count, not
+  // a per-step derivation (ruling P7).
+  const totalSteps = STEPS.length;
 
   // `snapshot` and `pollError` are props typed `T | null` (not optional JSON
   // fields), so both comparisons stay strict (ruling N1). When a snapshot
@@ -97,7 +112,10 @@ export function ErrorView({
               <>
                 <p className="text-sm">
                   The process running this migration is gone, but its checkpoint survived.{" "}
-                  <span className="font-medium">{done} of 8 steps</span> are already recorded.
+                  <span className="font-medium">
+                    {done} of {totalSteps} steps
+                  </span>{" "}
+                  are already recorded.
                 </p>
                 <p className="text-sm text-ink-muted">
                   Resuming continues from where it stopped — it does not re-run the work already

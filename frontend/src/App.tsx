@@ -64,7 +64,23 @@ export default function App() {
     >
       <div className="space-y-5">
         {threadId !== null && <WorkflowTimeline snapshot={snapshot} />}
-        {error !== null && (
+        {/*
+         * Suppressed only in the one case where it would repeat `ErrorView`
+         * verbatim: `view === "error"` with `snapshot === null` is exactly
+         * the condition under which `ErrorView` renders its own echo of this
+         * same `error` as `pollError` (its "no snapshot to describe" branch).
+         * `ErrorView` is the better owner there -- it is specifically about
+         * the error, this banner is generic chrome above whichever view is
+         * showing -- so this is the one case ceded to it, not every case
+         * where `view === "error"`: if a snapshot already exists (e.g. this
+         * poll failed while the previous one still holds an `orphaned`
+         * snapshot on screen), this `error` is not necessarily anything
+         * `ErrorView` shows on its own (it renders the *snapshot's* own
+         * `errors`, not this live poll error, once a snapshot exists), so
+         * suppressing the banner there would silently drop information
+         * rather than deduplicate it.
+         */}
+        {error !== null && !(view === "error" && snapshot === null) && (
           <p className="rounded-md border border-risk-high/50 bg-risk-high/10 px-3 py-2 text-sm text-risk-high">
             {error.message}
           </p>

@@ -238,3 +238,87 @@ describe("App — resuming an orphaned run", () => {
     expect(statusCalls).toBeGreaterThanOrEqual(2);
   });
 });
+
+/**
+ * Fix round 2, finding 4: the generic top banner and `ErrorView`'s own echo
+ * of a poll error could render the same text twice, when `snapshot === null`
+ * -- exactly `ErrorView`'s own "no snapshot to describe" branch. The fix
+ * cedes that one case to `ErrorView`, the more specific owner, by suppressing
+ * the banner only when `view === "error"` *and* `snapshot === null`.
+ *
+ * That exact combination cannot be produced through `App`'s own status
+ * derivation (`status = snapshot?.status ?? "queued"` routes a null
+ * snapshot to `"activity"`, never `"error"`), so there is no honest
+ * full-stack test for the literal duplicate -- see task-14-report.md,
+ * "Fix round 2", for why. What *is* both reachable and worth guarding
+ * against is the fix over-reaching: this test proves the banner still
+ * shows a poll error that arises with a snapshot already on screen, which
+ * is not redundant with anything `ErrorView` says on its own.
+ */
+describe("App — a poll error while a snapshot already exists", () => {
+  it("still shows the banner when the error is not one ErrorView already displays", async () => {
+    const user = userEvent.setup({ delay: null });
+
+    server.use(
+      http.get(HEALTH, () =>
+        HttpResponse.json({
+          status: "ok",
+          version: "test",
+          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+        }),
+      ),
+      http.post(START, () =>
+        HttpResponse.json(
+          { thread_id: "t-1", status: "queued", poll_url: "/api/agent/status/t-1" },
+          { status: 202 },
+        ),
+      ),
+      http.post(RESUME, () =>
+        HttpResponse.json(
+          { thread_id: "t-1", status: "running", poll_url: "/api/agent/status/t-1" },
+          { status: 202 },
+        ),
+      ),
+    );
+
+    // First poll: orphaned. Second poll -- the one `restart` fires after a
+    // successful resume -- fails outright, a different problem from
+    // anything the still-`orphaned` snapshot's own (empty) `errors` says.
+    let statusCalls = 0;
+    server.use(
+      http.get(STATUS, () => {
+        statusCalls += 1;
+        if (statusCalls === 1) {
+          return HttpResponse.json(aSnapshot({ status: "orphaned", completed_steps: ["analyze_repo"] }));
+        }
+        return HttpResponse.json(
+          { error: { code: "thread_not_found", message: "No run with that id exists.", retryable: false, node: null } },
+          { status: 404 },
+        );
+      }),
+    );
+
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/repository url/i), "https://example.com/repo.git");
+    await user.type(screen.getByLabelText(/^dependency$/i), "pydantic");
+    await user.type(screen.getByLabelText(/current version/i), "1.10.13");
+    await user.type(screen.getByLabelText(/target version/i), "2.9.2");
+    await user.click(screen.getByRole("button", { name: /start migration audit/i }));
+
+    const resumeButton = await screen.findByRole("button", { name: /resume/i });
+    await user.click(resumeButton);
+
+    // The restart's own poll comes back 404. The last real snapshot still
+    // reads `orphaned` (a failed poll preserves the previous snapshot), so
+    // the orphan panel is still showing -- but the banner's message is new
+    // information, not an echo, and must not have been suppressed by the
+    // fix for the actual duplicate case.
+    await waitFor(() =>
+      expect(screen.getByText(/no run with that id exists/i)).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("heading", { name: /interrupted by a restart/i }),
+    ).toBeInTheDocument();
+  });
+});
