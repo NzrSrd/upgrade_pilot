@@ -5,12 +5,13 @@ import { ActivityTimeline } from "./components/ActivityTimeline";
 import { AgentTraceDrawer } from "./components/AgentTraceDrawer";
 import { AppShell } from "./components/AppShell";
 import { ConfigurationForm } from "./components/ConfigurationForm";
+import { ErrorView } from "./components/ErrorView";
 import { HumanReviewPanel } from "./components/HumanReviewPanel";
 import { LeftSidebar } from "./components/LeftSidebar";
+import { ReportView } from "./components/report/ReportView";
 import { RunMetrics } from "./components/RunMetrics";
 import { TopBar } from "./components/TopBar";
 import { WorkflowTimeline } from "./components/WorkflowTimeline";
-import { EmptyState, Panel } from "./components/ui";
 import { viewFor } from "./derive/view";
 import { useHealth } from "./hooks/useHealth";
 import { useRunPolling } from "./hooks/useRunPolling";
@@ -93,10 +94,14 @@ export default function App() {
             onSubmitted={() => undefined}
           />
         )}
-        {view !== "configuration" && view !== "activity" && view !== "human-review" && (
-          <Panel title={view}>
-            <EmptyState>This view arrives in a later task.</EmptyState>
-          </Panel>
+        {view === "report" && snapshot !== null && <ReportView snapshot={snapshot} />}
+        {view === "error" && (
+          <ErrorView
+            snapshot={snapshot}
+            pollError={error}
+            onRetry={() => setThreadId(null)}
+            onResumed={() => undefined}
+          />
         )}
       </div>
     </AppShell>
