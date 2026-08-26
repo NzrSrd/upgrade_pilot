@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { aReport, aSnapshot } from "../../test/fixtures";
+import { anApiError, aReport, aSnapshot } from "../../test/fixtures";
 import { ReportView } from "./ReportView";
 
 describe("ReportView", () => {
@@ -102,5 +102,62 @@ describe("ReportView", () => {
 
     expect(tab).toHaveAttribute("aria-controls", panel.id);
     expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+  });
+  it("shows the errors a run recorded, by the step that recorded them", () => {
+    // The defect this exists for: `snapshot.errors` was read by `ErrorView`
+    // alone, and `ErrorView` renders for `failed` and `orphaned` only. A run
+    // that finished *with warnings* therefore had no route to its own error --
+    // so a repository path that did not exist produced a report of zeroes and
+    // no way to find out why. `AppError.message` is the user-facing half
+    // (CLAUDE.md rule 27), and it is the most useful sentence in the run.
+    render(
+      <ReportView
+        snapshot={aSnapshot({
+          status: "completed_with_warnings",
+          final_report: aReport({ completed_with_warnings: true }),
+          errors: [anApiError()],
+        })}
+      />,
+    );
+
+    const alerts = screen.getAllByRole("alert");
+    expect(alerts.map((alert) => alert.textContent).join(" ")).toContain(
+      "That repository path does not exist.",
+    );
+    // Named by the step a user can see in the timeline, not by the node id.
+    expect(alerts.map((alert) => alert.textContent).join(" ")).toContain("Repository Analysis");
+  });
+
+  it("distinguishes two runs that failed for different reasons", () => {
+    // Both of these rendered as the same blank report. The dependency case is
+    // not a bad path and the remedy is different, so the report has to say
+    // which one happened.
+    render(
+      <ReportView
+        snapshot={aSnapshot({
+          status: "completed_with_warnings",
+          final_report: aReport({ completed_with_warnings: true }),
+          errors: [
+            anApiError({
+              code: "dependency_not_found",
+              message:
+                "'react' is not declared in any dependency manifest in this repository, so there is no current version to upgrade from.",
+            }),
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getAllByRole("alert").map((alert) => alert.textContent).join(" ")).toContain(
+      "is not declared in any dependency manifest",
+    );
+  });
+
+  it("banners nothing when a run recorded no error", () => {
+    render(
+      <ReportView snapshot={aSnapshot({ status: "completed", final_report: aReport() })} />,
+    );
+
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

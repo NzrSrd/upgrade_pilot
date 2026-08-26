@@ -7,6 +7,7 @@
  */
 
 import type {
+  ApiError,
   BreakingChange,
   DecisionOption,
   DetectedVersion,
@@ -47,6 +48,19 @@ export function aBreakingChange(overrides: Partial<BreakingChange> = {}): Breaki
     old_form: null,
     new_form: null,
     source: aSourceRef(),
+    ...overrides,
+  };
+}
+
+export function anApiError(overrides: Partial<ApiError> = {}): ApiError {
+  return {
+    // `analyze_repo` is the default node because it is the one whose failure
+    // leaves every later step with nothing to work from -- the shape that
+    // produced a report of zeroes with eight green checkmarks.
+    code: "local_path_forbidden",
+    message: "That repository path does not exist.",
+    retryable: false,
+    node: "analyze_repo",
     ...overrides,
   };
 }

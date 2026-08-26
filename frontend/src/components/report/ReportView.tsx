@@ -19,6 +19,7 @@ import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 
 import type { RunSnapshot } from "../../api/types";
+import { STEPS } from "../../derive/steps";
 import { EmptyState, Panel } from "../ui";
 import { CodeTab } from "./CodeTab";
 import { EvidenceTab } from "./EvidenceTab";
@@ -42,6 +43,61 @@ function tabId(id: ReportTab): string {
 }
 function panelId(id: ReportTab): string {
   return `report-panel-${id}`;
+}
+
+/**
+ * The errors a run recorded, on the report that was produced despite them.
+ *
+ * This exists because `snapshot.errors` had exactly one reader — `ErrorView`,
+ * which renders for `failed` and `orphaned` only. A run that finished *with
+ * warnings* therefore had no route to its own errors at all: the graph
+ * continues after a node fails so the report can say what was established
+ * (`graph/nodes/base.py`), and the report then said nothing about why the
+ * rest was missing. A repository path that did not exist and a dependency
+ * absent from every manifest both arrived here as a page of zeroes.
+ *
+ * `AppError.message` is the user-facing half by rule 27, and `detail` never
+ * leaves the server. The step label comes from `STEPS`, so a user reads the
+ * same name here as on the timeline rather than a node id.
+ *
+ * It does not say what is missing from the report as a result. Some of these
+ * are fatal to a whole stage and some cost only a sentence — `assess_risk`
+ * keeps every factor and level when its narrative call fails — and the honest
+ * thing is to report the error and let the tabs below show what survived.
+ */
+function RecordedErrors({ snapshot }: { snapshot: RunSnapshot }) {
+  const errors = snapshot.errors ?? [];
+  if (errors.length === 0) {
+    return null;
+  }
+
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-risk-high/50 bg-risk-high/10 px-3 py-2 text-sm text-risk-high"
+    >
+      <p className="font-medium">
+        {errors.length === 1 ? "1 error was recorded" : `${errors.length} errors were recorded`}{" "}
+        during this run.
+      </p>
+      <ul className="mt-1.5 space-y-1">
+        {errors.map((error, index) => (
+          <li key={`${error.node ?? "run"}:${error.code}:${index}`}>
+            <span className="text-ink-muted">{labelFor(error.node)} — </span>
+            {error.message}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** A node id as the user's own step name. Unattributed errors are the run's. */
+function labelFor(node: string | null | undefined): string {
+  if (node === null || node === undefined) {
+    return "This run";
+  }
+  return STEPS.find((step) => step.node === node)?.label ?? node;
 }
 
 export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
@@ -73,6 +129,8 @@ export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
 
   return (
     <div className="space-y-4">
+      <RecordedErrors snapshot={snapshot} />
+
       {report.completed_with_warnings && (
         // Fix-round-1 finding 2: DESIGN.md's token table assigns "failed
         // validation checks" to `risk-high` explicitly, not `risk-medium`.
