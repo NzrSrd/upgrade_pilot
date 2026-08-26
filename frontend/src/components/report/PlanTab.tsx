@@ -52,6 +52,18 @@ export function PlanTab({ report }: { report: FinalReport }) {
   const outcomes = validation?.outcomes ?? [];
   const passedCount = outcomes.filter((outcome) => outcome.passed).length;
 
+  // Fix round 1, CRITICAL. `unaddressed_with_reason` being empty does NOT
+  // mean every file is covered: `_unaddressed`
+  // (backend/.../graph/nodes/planning.py:258-272) only produces an entry
+  // when there is an honest, documented reason -- a file a documented
+  // change covers, that no step addresses and has no such reason, produces
+  // no entry here and instead fails validate.py's `affected_files_addressed`
+  // check (check 8). Inferring "fully covered" from the empty array is
+  // exactly the re-derivation rule 19 forbids; this reads the backend's own
+  // verdict on that question instead.
+  const coverageOutcome =
+    outcomes.find((outcome) => outcome.check_id === "affected_files_addressed") ?? null;
+
   return (
     <div className="space-y-4">
       <Panel title={`Strategy — ${plan.strategy_id.replace(/_/g, " ")}`}>
@@ -111,9 +123,14 @@ export function PlanTab({ report }: { report: FinalReport }) {
 
       <Panel title="Your decisions, and what they changed">
         {humanDecisionsApplied.length === 0 ? (
-          <EmptyState>
-            No human decision was required — the constraints settled every question.
-          </EmptyState>
+          // Fix round 1, finding 5. The component checks only that this
+          // array is empty; "the constraints settled every question" names
+          // a *cause* nothing here establishes -- it happens to hold by
+          // construction today, but no type or check enforces it, so it is
+          // one backend change from being false with nothing to catch it
+          // (same defect class as Task 12's TRANSITIVE_ONLY bullet). State
+          // only what the empty array says.
+          <EmptyState>No human decision was applied to this plan.</EmptyState>
         ) : (
           <ul className="space-y-2">
             {humanDecisionsApplied.map((applied) => (
@@ -127,9 +144,7 @@ export function PlanTab({ report }: { report: FinalReport }) {
       </Panel>
 
       <Panel title="Not addressed by any step">
-        {unaddressedWithReason.length === 0 ? (
-          <EmptyState>Every affected file is addressed by a step.</EmptyState>
-        ) : (
+        {unaddressedWithReason.length > 0 ? (
           <ul className="space-y-1.5">
             {unaddressedWithReason.map((file) => (
               <li key={file.path} className="text-sm">
@@ -138,6 +153,32 @@ export function PlanTab({ report }: { report: FinalReport }) {
               </li>
             ))}
           </ul>
+        ) : coverageOutcome !== null ? (
+          // Sourced from the check that actually decides coverage, not
+          // inferred from the empty array above (see the CRITICAL comment on
+          // `coverageOutcome`). `detail` is the backend's own sentence,
+          // mirrored rather than re-derived (rule 19); `offenders` names the
+          // files this panel would otherwise have gone silent about.
+          <div>
+            <p
+              className={`text-sm ${coverageOutcome.passed ? "text-ink-faint" : "text-risk-high"}`}
+            >
+              {coverageOutcome.detail}
+            </p>
+            {(coverageOutcome.offenders ?? []).length > 0 && (
+              <ul className="mt-1.5 space-y-0.5">
+                {(coverageOutcome.offenders ?? []).map((path) => (
+                  <li key={path}>
+                    <Mono>{path}</Mono>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : (
+          // No validation to source a coverage claim from -- state only what
+          // the empty array itself supports, which is not full coverage.
+          <EmptyState>No files were listed as unaddressed with a reason.</EmptyState>
         )}
       </Panel>
 

@@ -62,4 +62,47 @@ describe("CodeTab", () => {
 
     expect(screen.getByText(/no affected files/i)).toBeInTheDocument();
   });
+
+  it("does not render usage-site confidence on the severity colour scale", () => {
+    // Fix round 1, finding 4. `Confidence` (`low|medium|high`) is
+    // structurally identical to `RiskLevel`, so `LevelBadge` typechecked --
+    // and mapped a HIGH-confidence site, the most trustworthy evidence in
+    // the report, to `risk-high`, the token DESIGN.md reserves for blocking
+    // issues. Confidence is a certainty axis, not a severity finding, so no
+    // element here may carry a `risk-*` class.
+    const { container } = render(<CodeTab report={aReport({ affected_files: [file] })} />);
+
+    expect(screen.getByText("high")).toBeInTheDocument();
+    expect(screen.getByText("medium")).toBeInTheDocument();
+    expect(container.querySelectorAll('[class*="risk-"]')).toHaveLength(0);
+  });
+
+  it("says plainly when commit history is unknown, distinct from a real zero count", () => {
+    // Fix round 1, finding 2. `models/repo.py:148-162`: `None` means git
+    // history was not available at all -- churn is UNKNOWN -- while `0`
+    // means history WAS read and this file was not touched. Collapsing the
+    // former into rendering nothing "would let 'we did not look' print as
+    // 'this file is stable'".
+    render(<CodeTab report={aReport({ affected_files: [{ ...file, commit_count: null }] })} />);
+
+    expect(screen.getByText(/commit history unknown/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^0 /)).not.toBeInTheDocument();
+  });
+
+  it("shows a real zero-commit count as a zero, not as unknown", () => {
+    render(<CodeTab report={aReport({ affected_files: [{ ...file, commit_count: 0 }] })} />);
+
+    expect(screen.getByText(/0 commits/i)).toBeInTheDocument();
+    expect(screen.queryByText(/unknown/i)).not.toBeInTheDocument();
+  });
+
+  it("names the commit count's scope instead of reading as a total", () => {
+    // Fix round 1, finding 3. The docstring's first line: "Commits touching
+    // this file within the history window, or None." The window is bounded
+    // (`UP_CLONE_DEPTH`), which is not in the API payload -- so the scope is
+    // named without inventing the bound's value.
+    render(<CodeTab report={aReport({ affected_files: [{ ...file, commit_count: 12 }] })} />);
+
+    expect(screen.getByText(/12 commits? in the scanned history/i)).toBeInTheDocument();
+  });
 });

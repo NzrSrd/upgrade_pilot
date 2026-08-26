@@ -100,4 +100,108 @@ describe("PlanTab", () => {
 
     expect(screen.getByText(/no plan was produced/i)).toBeInTheDocument();
   });
+
+  it(
+    "does not claim full coverage when unaddressed_with_reason is empty but the " +
+      "backend's own coverage check failed",
+    () => {
+      // Fix round 1, CRITICAL. `unaddressed_with_reason` empty does not mean
+      // every file is covered -- planning.py's `_unaddressed` only produces an
+      // entry when there is an honest documented reason. A file a documented
+      // change covers, that no step addresses and that has no honest reason,
+      // produces NO entry and instead fails validate.py's
+      // `affected_files_addressed` check. This is exactly that state: the
+      // array is empty, the check failed, and offenders are named. The old
+      // code rendered "Every affected file is addressed by a step" here
+      // regardless -- re-deriving coverage from an empty array is exactly
+      // what rule 19 forbids; the fix reads the backend's own outcome instead.
+      render(
+        <PlanTab
+          report={aReport({
+            migration_plan: { ...plan, unaddressed_with_reason: [] },
+            validation: {
+              attempt: 1,
+              outcomes: [
+                {
+                  check_id: "affected_files_addressed",
+                  passed: false,
+                  detail:
+                    "1 file(s) with high-confidence usage are neither addressed by a step " +
+                    "nor explained, so the plan reads as complete while leaving them out.",
+                  offenders: ["src/app/legacy.py"],
+                },
+              ],
+              passed: false,
+            },
+          })}
+        />,
+      );
+
+      expect(screen.queryByText(/every affected file is addressed/i)).not.toBeInTheDocument();
+      // The check's own detail sentence -- mirrored, not re-derived (rule
+      // 19) -- appears in both the coverage panel and the Validation panel
+      // below, since both read the same outcome.
+      expect(screen.getAllByText(/neither addressed by a step/i)).toHaveLength(2);
+    },
+  );
+
+  it("asserts full coverage only by reading the backend's own check, when it passed", () => {
+    render(
+      <PlanTab
+        report={aReport({
+          migration_plan: { ...plan, unaddressed_with_reason: [] },
+          validation: {
+            attempt: 1,
+            outcomes: [
+              {
+                check_id: "affected_files_addressed",
+                passed: true,
+                detail:
+                  "All 3 file(s) with high-confidence usage are either addressed by a step " +
+                  "or listed with a reason.",
+                offenders: [],
+              },
+            ],
+            passed: true,
+          },
+        })}
+      />,
+    );
+
+    // The rendered claim is the backend's own `detail` sentence, not a
+    // hardcoded generic string re-derived from the empty array -- shown in
+    // both the coverage panel and the Validation panel below.
+    expect(screen.getAllByText(/all 3 file\(s\)/i)).toHaveLength(2);
+  });
+
+  it("makes no coverage claim when there is no validation to source one from", () => {
+    render(
+      <PlanTab
+        report={aReport({
+          migration_plan: { ...plan, unaddressed_with_reason: [] },
+          validation: null,
+        })}
+      />,
+    );
+
+    expect(screen.queryByText(/every affected file is addressed/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/no files were listed as unaddressed/i)).toBeInTheDocument();
+  });
+
+  it("does not name a cause for an empty human-decisions list", () => {
+    // Fix round 1, finding 5. The component checks only that
+    // `human_decisions_applied` is empty; "the constraints settled every
+    // question" is a cause nothing in the component or the types
+    // establishes -- the same defect class as Task 12's TRANSITIVE_ONLY
+    // bullet, a plausible mechanism asserted as fact because it usually
+    // holds.
+    render(
+      <PlanTab
+        report={aReport({ migration_plan: { ...plan, human_decisions_applied: [] } })}
+      />,
+    );
+
+    expect(screen.queryByText(/settled every question/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/no human decision was applied/i)).toBeInTheDocument();
+  });
 });

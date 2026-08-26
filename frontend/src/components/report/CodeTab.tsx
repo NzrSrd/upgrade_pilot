@@ -10,7 +10,7 @@
  */
 
 import type { FinalReport } from "../../api/types";
-import { EmptyState, LevelBadge, Mono, Panel } from "../ui";
+import { EmptyState, Mono, Panel } from "../ui";
 
 export function CodeTab({ report }: { report: FinalReport }) {
   // `affected_files` is optional in the generated type only because every
@@ -44,11 +44,25 @@ export function CodeTab({ report }: { report: FinalReport }) {
               {(file.is_test ?? false) && (
                 <span className="rounded border border-edge px-1.5 py-0.5">test file</span>
               )}
-              {/* `commit_count` is optional AND nullable -- loose, not
-                  strict: the strict form (`!== null`) leaves an absent value
-                  (`undefined`) truthy and prints "undefined commits"
-                  (ruling N1). */}
-              {file.commit_count != null && <span>{file.commit_count} commits</span>}
+              {/* Fix round 1, findings 2 and 3. `commit_count` is optional
+                  AND nullable -- loose, not strict (ruling N1) -- but this
+                  is not merely a truthiness guard: `models/repo.py:148-162`
+                  documents three states that must stay visually distinct.
+                  `null` means git history was not available at all --
+                  churn is UNKNOWN, and rendering nothing here would let "we
+                  did not look" print as "this file is stable", which is the
+                  exact failure the docstring names. `0` means history WAS
+                  read and the file was not touched -- a real, known signal,
+                  never collapsed into the unknown case. And the count is
+                  bounded to a history window (`UP_CLONE_DEPTH`, not itself
+                  in this payload, so no bound value is invented here) --
+                  "in the scanned history" names that scope so the number
+                  does not read as a lifetime total. */}
+              <span>
+                {file.commit_count == null
+                  ? "commit history unknown"
+                  : `${file.commit_count} commit${file.commit_count === 1 ? "" : "s"} in the scanned history`}
+              </span>
               <span>
                 {file.usage_sites.length} site{file.usage_sites.length === 1 ? "" : "s"}
               </span>
@@ -64,7 +78,22 @@ export function CodeTab({ report }: { report: FinalReport }) {
                   </Mono>
                   <span className="font-medium">{site.symbol}</span>
                   <span className="text-xs text-ink-muted">{site.kind.replace(/_/g, " ")}</span>
-                  <LevelBadge level={site.confidence}>{site.confidence}</LevelBadge>
+                  {/* Fix round 1, finding 4. `Confidence` (`low|medium|high`)
+                      is structurally identical to `RiskLevel`, so
+                      `LevelBadge` typechecked here -- and mapped a
+                      high-confidence site, the most trustworthy evidence in
+                      the report, to `risk-high`, the token DESIGN.md
+                      reserves for blocking issues. Confidence is a
+                      certainty axis, not a severity finding, so this is
+                      neutral ink/edge chrome (matching how `OverviewTab`
+                      renders its own confidence figure), never the
+                      severity scale. */}
+                  <span className="flex items-center gap-1 text-[11px]">
+                    <span className="text-ink-faint">confidence</span>
+                    <span className="rounded border border-edge px-1.5 py-0.5 font-semibold text-ink-muted uppercase">
+                      {site.confidence}
+                    </span>
+                  </span>
                 </div>
                 {/* `snippet` is optional AND nullable -- loose, not strict:
                     the strict form (`!== null`) leaves an absent value
