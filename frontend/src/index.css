@@ -1,21 +1,39 @@
 @import "tailwindcss";
 
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
 }
 
 @theme {
-  --color-risk-high: oklch(0.58 0.20 25);
-  --color-risk-medium: oklch(0.75 0.16 75);
-  --color-risk-low: oklch(0.68 0.15 150);
-  --color-pending-input: oklch(0.80 0.15 90);
-  --color-surface: oklch(0.99 0 0);
-  --color-surface-sunken: oklch(0.96 0 0);
+  /* Spec §10's four semantic tokens. Never a raw color at a call site. */
+  --color-risk-high: oklch(0.64 0.20 25);
+  --color-risk-medium: oklch(0.79 0.16 75);
+  --color-risk-low: oklch(0.73 0.15 155);
+  --color-pending-input: oklch(0.82 0.16 92);
+
+  /* Surfaces, sunken to raised. */
+  --color-surface: oklch(0.17 0.012 260);
+  --color-surface-raised: oklch(0.21 0.013 260);
+  --color-surface-sunken: oklch(0.13 0.010 260);
+
+  --color-edge: oklch(0.30 0.012 260);
+  --color-edge-strong: oklch(0.43 0.014 260);
+
+  --color-ink: oklch(0.95 0.005 260);
+  --color-ink-muted: oklch(0.71 0.008 260);
+  --color-ink-faint: oklch(0.57 0.008 260);
+
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-surface: oklch(0.20 0.01 260);
-    --color-surface-sunken: oklch(0.16 0.01 260);
-  }
+body {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+
+/* Status is never communicated by colour alone (DESIGN.md §Accessibility), so
+   focus is never communicated by colour alone either. */
+:focus-visible {
+  outline: 2px solid var(--color-edge-strong);
+  outline-offset: 2px;
 }

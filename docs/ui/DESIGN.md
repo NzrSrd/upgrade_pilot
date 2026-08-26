@@ -99,11 +99,23 @@ Execution observability, visible during a run **and after it completes**:
 
 - Token usage — input, output, total
 - Estimated cost, with its two honesty flags
-- LLM call count, and tokens by node
+- LLM call count
 - Model in use
+- Tokens by node
+- Recorded span — the interval between the first and last recorded trace
+  event, not wall-clock time since the run started; see the Telemetry
+  section below for why
 - Graph execution state
-- Retrieved sources
-- Diagnostics
+
+Two items an earlier version of this list implied belong here and do not:
+
+- **Retrieved sources** are not a sidebar panel. They render in the
+  Activity view (`EvidencePanel`, scoped to the run in progress) and, once a
+  run completes, in the report's Evidence tab — not in this region.
+- **Diagnostics** — latency, internals — is deferred. Nothing computes it,
+  Phase 10 does not implement it, and no field backs it. It is named as out
+  of scope here rather than left looking settled, the same treatment the PR
+  Draft tab gets below.
 
 Telemetry earns a region rather than a block inside the left sidebar because
 token and cost tracking is a graded capability, not a diagnostic: it has to
@@ -249,8 +261,18 @@ The report distinguishes:
 - **Overall risk** — `RiskAnalysis.overall_risk`
 - **Aggregate risk** — `RiskAnalysis.aggregate_risk`, the value before the
   clamp
-- **Clamp floor** — `RiskAnalysis.clamp_floor`, rendered whenever it differs
-  from the aggregate, so a clamped verdict says it was clamped
+- **Clamp floor** — `RiskAnalysis.clamp_floor`, rendered as a labelled value
+  whenever it is present, so a clamped verdict says it was clamped.
+
+  The *claim* that the verdict was raised is a separate condition from the
+  *disclosure* of the floor, and conflating them fabricates. `overall_risk`
+  is exactly `max(aggregate_risk, clamp_floor)` — a model validator in
+  `models/risk.py` refuses both directions — so a floor **below** the
+  aggregate raises nothing. Render "raised from X to Y" only when
+  `overall_risk` differs from `aggregate_risk`, which is the backend's own
+  condition at `graph/nodes/judgment.py:244`. Mirror that condition; do not
+  re-derive it. A floor that is present but lower than the aggregate is
+  still shown as a value, and still says nothing about a raise.
 - **Confidence** — `RiskAnalysis.confidence`
 - **Confidence ceilings** — `RiskAnalysis.confidence_ceilings`, each with its
   reason
@@ -394,10 +416,15 @@ and after execution:
 - Input, output and total tokens
 - Estimated cost
 - LLM call count
+- Model in use, from `UsageSummary.by_model`
 - Tokens by node — "where did the tokens go" is the second question a
   developer asks
-- Model in use, from `UsageSummary.by_model`
-- Elapsed time
+- Recorded span — the interval between the first and last recorded trace
+  event, not wall-clock time since the run started. The server's actual
+  start time is not observable from here, and a checkpointed run can be
+  resumed hours or days later, so wall-clock across a resume would be a
+  number that looks authoritative and is not.
+- Graph execution state
 
 ### The cost card's two flags are not optional
 
@@ -549,6 +576,17 @@ and interaction principles. The two must remain consistent.
 ---
 
 ## Amendments
+
+**2026-08-26 — the clamp floor: disclosure is not the same claim as the raise.**
+The bullet above previously read that the clamp floor is "rendered whenever it
+differs from the aggregate, so a clamped verdict says it was clamped". A builder
+followed it literally and shipped a banner conditioned on
+`clamp_floor !== aggregate_risk` whose text reads "Raised from X to Y" — so a
+floor *below* the aggregate, which raises nothing, rendered "Raised from high to
+high". One sentence doing two jobs: it named a display condition and implied a
+claim, and the two are not the same condition. The bullet now separates them and
+names the backend condition to mirror, per rule 19 — the frontend displays the
+verdict, it never re-derives the rule that produced it.
 
 **2026-08-25 — the three-region layout.** Spec §10 originally specified two
 regions with run metrics inside the left sidebar. It was amended to agree

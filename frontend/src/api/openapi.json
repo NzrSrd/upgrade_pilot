@@ -1,0 +1,2680 @@
+{
+  "components": {
+    "schemas": {
+      "AffectedFile": {
+        "properties": {
+          "commit_count": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit Count"
+          },
+          "is_test": {
+            "default": false,
+            "title": "Is Test",
+            "type": "boolean"
+          },
+          "last_modified": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Modified"
+          },
+          "path": {
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "symbols": {
+            "description": "The distinct symbols used in this file, sorted.\n\nDerived, never stored -- CLAUDE.md rule 21, and the same argument\n`SymbolInventory.by_symbol` makes just above. As a field it could\ndisagree with `usage_sites`, which is the one thing that must never\nhappen here: `usage_sites` carries the file and line the report\ncites, and `symbols` is what the corpus is queried with, so drift\nbetween them means citing evidence for a symbol nobody uses.\n\n`@computed_field` rather than a bare property so it still appears in\n`model_dump()`, keeping the serialised shape it had as a field. It\nrecomputes on access rather than caching: the input is a frozen\ntuple, so there is nothing to invalidate and nothing to go stale.",
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "readOnly": true,
+            "title": "Symbols",
+            "type": "array"
+          },
+          "usage_sites": {
+            "items": {
+              "$ref": "#/components/schemas/UsageSite"
+            },
+            "minItems": 1,
+            "title": "Usage Sites",
+            "type": "array"
+          }
+        },
+        "required": [
+          "path",
+          "usage_sites",
+          "symbols"
+        ],
+        "title": "AffectedFile",
+        "type": "object"
+      },
+      "ApiError": {
+        "description": "One error, as a client is allowed to see it. See the module docstring.",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ApiError",
+        "type": "object"
+      },
+      "BreakingChange": {
+        "description": "A documented change. `source` is required: no citation, no change.",
+        "properties": {
+          "affected_symbols": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Affected Symbols",
+            "type": "array"
+          },
+          "description": {
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "new_form": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Form"
+          },
+          "old_form": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Form"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SourceRef"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "description",
+          "severity",
+          "affected_symbols",
+          "source"
+        ],
+        "title": "BreakingChange",
+        "type": "object"
+      },
+      "CommitRecord": {
+        "properties": {
+          "files": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "sha": {
+            "minLength": 7,
+            "title": "Sha",
+            "type": "string"
+          },
+          "timestamp": {
+            "format": "date-time",
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sha",
+          "timestamp"
+        ],
+        "title": "CommitRecord",
+        "type": "object"
+      },
+      "Confidence": {
+        "description": "Confidence in a detected usage site or symbol.",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "title": "Confidence",
+        "type": "string"
+      },
+      "ConfidenceCeiling": {
+        "description": "One reason this analysis cannot be as confident as its factors suggest.\n\nCarries its reason as a user-facing sentence rather than a code, because\nthe ceiling is the answer to a question the reader is actually asking --\n\"why does this say 30%?\" -- and a code would need a lookup table\nsomewhere else that could disagree with the number beside it.",
+        "properties": {
+          "ceiling": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Ceiling",
+            "type": "number"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "ceiling"
+        ],
+        "title": "ConfidenceCeiling",
+        "type": "object"
+      },
+      "ConstraintEvidence": {
+        "description": "A constraint the user stated, cited as the thing it actually is.\n\nAdded in Phase 6, and the reason is specific: `constraint_pressure` is one\nof spec 8.1's seven risk factors, `RiskFactor.evidence` has\n`min_length=1`, and a constraint is not in the repository or in the\ncorpus. The three ways out were to cite an unrelated repository line\n(a fabricated citation, and exactly what this package exists to prevent),\nto exempt one factor from the evidence rule (a hole the next factor walks\nthrough), or to say what the evidence really is. This is the third.\n\nIt resolves, which is what makes it evidence rather than a label: `field`\nnames a real field of `UserConstraints` and `value` is that field's value\nas the run received it, so a validator can check the citation against the\nrun's own inputs the same way a `RepoEvidence` is checked against the\nanalysis record.",
+        "properties": {
+          "field": {
+            "minLength": 1,
+            "title": "Field",
+            "type": "string"
+          },
+          "kind": {
+            "const": "constraint",
+            "default": "constraint",
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "title": "ConstraintEvidence",
+        "type": "object"
+      },
+      "DecisionApplication": {
+        "description": "How one human decision changed the plan that followed it.\n\nSpec 8.3 makes the human's influence structural rather than claimed: a\nplan that carries a decision must say what the decision *did*, in a\nsentence, and `validate_plan`'s ninth check refuses a plan where a\ndecision exists and this list is empty. \"The human's answer affected the\noutput\" stops being an assertion in a README and becomes a validation\nfailure when it is not true.",
+        "properties": {
+          "decision_id": {
+            "minLength": 1,
+            "title": "Decision Id",
+            "type": "string"
+          },
+          "how_it_changed_the_plan": {
+            "minLength": 1,
+            "title": "How It Changed The Plan",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision_id",
+          "how_it_changed_the_plan"
+        ],
+        "title": "DecisionApplication",
+        "type": "object"
+      },
+      "DecisionInput": {
+        "description": "A human's answer. Validated again inside the graph, deliberately.\n\nThis model checks the *shape*; `human_review` checks that the option\nexists on the question being asked, because only the graph knows which\nquestion that is. Two layers, and the inner one is the one that matters --\nit is reachable however the resume value arrives.",
+        "properties": {
+          "question_id": {
+            "title": "Question Id",
+            "type": "string"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "selected_option_id": {
+            "title": "Selected Option Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question_id",
+          "selected_option_id"
+        ],
+        "title": "DecisionInput",
+        "type": "object"
+      },
+      "DecisionKind": {
+        "description": "The four questions this system is willing to put to a human.\n\nSpec 8.2 fixes the list, and fixing it is the design: an open-ended\n\"ask the user something\" would degenerate into the ceremonial dialog the\nbrief's conditional edge exists to prevent. Each kind below has a\ndeterministic trigger -- a condition in the evidence, not a judgement call\n-- so a run either has a real question or has none.",
+        "enum": [
+          "strategy_choice",
+          "risk_acceptance",
+          "scope_tradeoff",
+          "discrepancy_resolution"
+        ],
+        "title": "DecisionKind",
+        "type": "string"
+      },
+      "DecisionOption": {
+        "description": "One answer a human may give, with what it costs and what it commits to.",
+        "properties": {
+          "consequences": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Consequences",
+            "type": "array"
+          },
+          "downtime": {
+            "title": "Downtime",
+            "type": "boolean"
+          },
+          "effort": {
+            "$ref": "#/components/schemas/EffortLevel"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "risk_level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "supporting_evidence": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "constraint": "#/components/schemas/ConstraintEvidence",
+                  "doc": "#/components/schemas/DocEvidence",
+                  "repo": "#/components/schemas/RepoEvidence"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/RepoEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/DocEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/ConstraintEvidence"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Supporting Evidence",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "summary",
+          "risk_level",
+          "effort",
+          "downtime",
+          "consequences",
+          "supporting_evidence"
+        ],
+        "title": "DecisionOption",
+        "type": "object"
+      },
+      "DependencyInput": {
+        "properties": {
+          "current_version": {
+            "title": "Current Version",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "target_version": {
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "current_version",
+          "target_version"
+        ],
+        "title": "DependencyInput",
+        "type": "object"
+      },
+      "DependencyRole": {
+        "enum": [
+          "direct",
+          "transitive_only"
+        ],
+        "title": "DependencyRole",
+        "type": "string"
+      },
+      "DependencySpec": {
+        "properties": {
+          "canonical_name": {
+            "description": "PEP 503 normalised name. See `canonicalize_name` above for why.\n\nDerived, never stored (CLAUDE.md rule 21): a stored copy could\ndisagree with `name`.",
+            "readOnly": true,
+            "title": "Canonical Name",
+            "type": "string"
+          },
+          "current_version": {
+            "minLength": 1,
+            "title": "Current Version",
+            "type": "string"
+          },
+          "import_root": {
+            "description": "The top-level module name this distribution is expected to provide.\n\nA GUESS, and the honest name for it is a guess: the mapping from\ndistribution name to import name lives in installed package metadata,\nwhich a static analysis of a cloned repository does not have.\n`pydantic` -> `pydantic` is right; `python-dateutil` -> `dateutil` and\n`PyYAML` -> `yaml` are the well-known cases where it is wrong.\n\n`services/analysis/analyzer.py` records an explicit confidence reducer\nwhenever this guess yields no candidate files, so a wrong guess reads\nas \"we could not find it\" rather than as \"this dependency is unused\".",
+            "readOnly": true,
+            "title": "Import Root",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "target_version": {
+            "minLength": 1,
+            "title": "Target Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "current_version",
+          "target_version",
+          "canonical_name",
+          "import_root"
+        ],
+        "title": "DependencySpec",
+        "type": "object"
+      },
+      "DetectedVersion": {
+        "properties": {
+          "confidence": {
+            "$ref": "#/components/schemas/VersionConfidence"
+          },
+          "role": {
+            "$ref": "#/components/schemas/DependencyRole"
+          },
+          "source_manifest": {
+            "$ref": "#/components/schemas/Manifest"
+          },
+          "specifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Specifier"
+          },
+          "value": {
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "specifier",
+          "source_manifest",
+          "confidence",
+          "role"
+        ],
+        "title": "DetectedVersion",
+        "type": "object"
+      },
+      "DocEvidence": {
+        "description": "A specific chunk of a corpus document.",
+        "properties": {
+          "chunk_id": {
+            "minLength": 1,
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "kind": {
+            "const": "doc",
+            "default": "doc",
+            "title": "Kind",
+            "type": "string"
+          },
+          "relevance": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relevance"
+          },
+          "source_id": {
+            "minLength": 1,
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "chunk_id"
+        ],
+        "title": "DocEvidence",
+        "type": "object"
+      },
+      "EffortLevel": {
+        "description": "How much work a strategy is. Three levels, like every other scale here.",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "title": "EffortLevel",
+        "type": "string"
+      },
+      "ErrorCode": {
+        "enum": [
+          "invalid_repo_url",
+          "local_path_forbidden",
+          "repo_unavailable",
+          "repo_too_large",
+          "dependency_not_found",
+          "version_invalid",
+          "kb_unavailable",
+          "llm_unavailable",
+          "llm_rate_limited",
+          "thread_not_found",
+          "thread_not_awaiting_input",
+          "invalid_decision",
+          "internal"
+        ],
+        "title": "ErrorCode",
+        "type": "string"
+      },
+      "ErrorResponse": {
+        "description": "The body of every non-2xx response from this API.\n\nOne shape for every failure, so a client's error handling is written once.\nThe status code carries the class of problem; this carries what to say.",
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ApiError"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "FinalReport": {
+        "description": "Everything the run established, assembled once by `finalize`.\n\nA single object rather than a set of channels the API re-reads, because\nthe report is what a reader is handed and it has to be internally\nconsistent: the usage summary, the risk verdict and the plan all come from\none moment in the run's state. `finalize` is a pure function over that\nstate, so building it twice from the same checkpoint gives the same\nreport.\n\nThere is deliberately **no status field**. Spec 6.5: status is computed\nfrom the checkpoint plus the run registry, and a stored copy would drift\nfrom reality on crash -- which is the very case `ORPHANED` exists for.\n`COMPLETED` versus `COMPLETED_WITH_WARNINGS` is derivable from\n`validation.passed`, so storing it would add nothing but a way to\ndisagree.",
+        "properties": {
+          "affected_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AffectedFile"
+            },
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "agent_trace": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TraceEvent"
+            },
+            "title": "Agent Trace",
+            "type": "array"
+          },
+          "breaking_changes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BreakingChange"
+            },
+            "title": "Breaking Changes",
+            "type": "array"
+          },
+          "commit_sha": {
+            "anyOf": [
+              {
+                "minLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit Sha"
+          },
+          "completed_at": {
+            "format": "date-time",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "completed_with_warnings": {
+            "description": "Whether validation failed after its one repair attempt.\n\nA `@computed_field` because the API's status ladder and the report\nheader both read it; see `ValidationReport.passed` for why derived\nvalues that reach the client must be serialised rather than left as\nbare properties.\n\nDerived here rather than stored so that the report and the status\ncannot disagree -- see the class docstring. A report with no\nvalidation at all is *not* \"with warnings\": the run did not get far\nenough to produce a plan, which is a different and more visible\ncondition already carried by `migration_plan` being `None`.",
+            "readOnly": true,
+            "title": "Completed With Warnings",
+            "type": "boolean"
+          },
+          "constraints": {
+            "$ref": "#/components/schemas/UserConstraints"
+          },
+          "dependency": {
+            "$ref": "#/components/schemas/DependencySpec"
+          },
+          "errors": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "human_decisions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HumanDecision"
+            },
+            "title": "Human Decisions",
+            "type": "array"
+          },
+          "migration_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MigrationPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rag_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RagContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo_analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RepoAnalysis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "repo_ref": {
+            "discriminator": {
+              "mapping": {
+                "local": "#/components/schemas/LocalRepoRef",
+                "remote": "#/components/schemas/RemoteRepoRef"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/RemoteRepoRef"
+              },
+              {
+                "$ref": "#/components/schemas/LocalRepoRef"
+              }
+            ],
+            "title": "Repo Ref"
+          },
+          "risk_analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiskAnalysis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thread_id": {
+            "minLength": 1,
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageSummary"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidationReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version_discrepancy": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`(stated, detected)` when the two disagree, else `None`.\n\nThe rule itself is `RepoAnalysis.version_discrepancy`, which takes\nthe stated version as an argument because the analysis record does\nnot carry it -- the analyzer is told a dependency name, not what the\nuser believed its version to be. That makes it a method rather than a\nfield, and a method reaches no client: `model_dump()` does not call\nit, so the one place in the product that knows the user's stated\nversion disagreed with the manifest was invisible to the report that\nis supposed to say so (`docs/ui/READINESS.md` 3.9).\n\n`FinalReport` is the only model holding both halves, so this is where\nthe rule becomes visible. It delegates rather than reimplements --\nthe comparison, including the strip of raw caller input, stays in one\nplace.\n\nA `@computed_field` for the reason Phase 9 recorded against the four\nit converted: a derived value the frontend cannot see is one the\nfrontend re-derives, which is a second implementation of the rule in\na language that cannot check it against this one.",
+            "readOnly": true,
+            "title": "Version Discrepancy"
+          }
+        },
+        "required": [
+          "thread_id",
+          "repo_ref",
+          "dependency",
+          "constraints",
+          "commit_sha",
+          "completed_at",
+          "repo_analysis",
+          "usage",
+          "completed_with_warnings",
+          "version_discrepancy"
+        ],
+        "title": "FinalReport",
+        "type": "object"
+      },
+      "HealthChecks": {
+        "properties": {
+          "checkpoint_dir": {
+            "title": "Checkpoint Dir",
+            "type": "boolean"
+          },
+          "chroma_dir": {
+            "title": "Chroma Dir",
+            "type": "boolean"
+          },
+          "llm_configured": {
+            "title": "Llm Configured",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "chroma_dir",
+          "checkpoint_dir",
+          "llm_configured"
+        ],
+        "title": "HealthChecks",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "checks": {
+            "$ref": "#/components/schemas/HealthChecks"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "version",
+          "checks"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "HumanDecision": {
+        "description": "One answered question. Validated from untrusted resume input.",
+        "properties": {
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "question_id": {
+            "minLength": 1,
+            "title": "Question Id",
+            "type": "string"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "selected_option_id": {
+            "minLength": 1,
+            "title": "Selected Option Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question_id",
+          "selected_option_id",
+          "decided_at"
+        ],
+        "title": "HumanDecision",
+        "type": "object"
+      },
+      "InterruptPayload": {
+        "description": "Everything a person needs to answer one question without watching the run.",
+        "properties": {
+          "consequences_if_unanswered": {
+            "minLength": 1,
+            "title": "Consequences If Unanswered",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "constraint": "#/components/schemas/ConstraintEvidence",
+                  "doc": "#/components/schemas/DocEvidence",
+                  "repo": "#/components/schemas/RepoEvidence"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/RepoEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/DocEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/ConstraintEvidence"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/DecisionKind"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionOption"
+            },
+            "minItems": 2,
+            "title": "Options",
+            "type": "array"
+          },
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "question_id": {
+            "minLength": 1,
+            "title": "Question Id",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "recommendation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recommendation Id"
+          },
+          "validation_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation Error"
+          }
+        },
+        "required": [
+          "question_id",
+          "kind",
+          "reason",
+          "question",
+          "evidence",
+          "options",
+          "consequences_if_unanswered"
+        ],
+        "title": "InterruptPayload",
+        "type": "object"
+      },
+      "LanguageShare": {
+        "description": "One language's share of the repository's recognised source files.\n\nDefined here in `models/`, not in `services/analysis/layout.py` where it is\nproduced: `RepoAnalysis.languages` is typed as a tuple of these, and\n`models/` must never import `services/` (CLAUDE.md rule 16).",
+        "properties": {
+          "file_count": {
+            "minimum": 1.0,
+            "title": "File Count",
+            "type": "integer"
+          },
+          "language": {
+            "minLength": 1,
+            "title": "Language",
+            "type": "string"
+          },
+          "share": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1.0,
+            "title": "Share",
+            "type": "number"
+          }
+        },
+        "required": [
+          "language",
+          "share",
+          "file_count"
+        ],
+        "title": "LanguageShare",
+        "type": "object"
+      },
+      "LocalRepoRef": {
+        "properties": {
+          "kind": {
+            "const": "local",
+            "default": "local",
+            "title": "Kind",
+            "type": "string"
+          },
+          "path": {
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "LocalRepoRef",
+        "type": "object"
+      },
+      "Manifest": {
+        "properties": {
+          "declared_specifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Declared Specifier"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ManifestKind"
+          },
+          "path": {
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "kind"
+        ],
+        "title": "Manifest",
+        "type": "object"
+      },
+      "ManifestKind": {
+        "enum": [
+          "pyproject",
+          "requirements",
+          "poetry_lock",
+          "uv_lock",
+          "pipfile_lock"
+        ],
+        "title": "ManifestKind",
+        "type": "string"
+      },
+      "MigrationPlan": {
+        "description": "The plan. Ordered steps, the strategy behind them, and what was left out.",
+        "properties": {
+          "human_decisions_applied": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DecisionApplication"
+            },
+            "title": "Human Decisions Applied",
+            "type": "array"
+          },
+          "mitigations": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Mitigations",
+            "type": "array"
+          },
+          "steps": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MigrationStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "strategy_id": {
+            "$ref": "#/components/schemas/StrategyId"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "unaddressed_with_reason": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/UnaddressedFile"
+            },
+            "title": "Unaddressed With Reason",
+            "type": "array"
+          }
+        },
+        "required": [
+          "strategy_id",
+          "summary"
+        ],
+        "title": "MigrationPlan",
+        "type": "object"
+      },
+      "MigrationStep": {
+        "description": "One piece of work, with something behind it.",
+        "properties": {
+          "description": {
+            "minLength": 1,
+            "title": "Description",
+            "type": "string"
+          },
+          "files": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Files",
+            "type": "array"
+          },
+          "order": {
+            "minimum": 1.0,
+            "title": "Order",
+            "type": "integer"
+          },
+          "rationale_evidence": {
+            "default": [],
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "constraint": "#/components/schemas/ConstraintEvidence",
+                  "doc": "#/components/schemas/DocEvidence",
+                  "repo": "#/components/schemas/RepoEvidence"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/RepoEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/DocEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/ConstraintEvidence"
+                }
+              ]
+            },
+            "title": "Rationale Evidence",
+            "type": "array"
+          },
+          "requires_downtime": {
+            "default": false,
+            "title": "Requires Downtime",
+            "type": "boolean"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validation"
+          }
+        },
+        "required": [
+          "order",
+          "title",
+          "description"
+        ],
+        "title": "MigrationStep",
+        "type": "object"
+      },
+      "ModelUsage": {
+        "description": "Usage attributed to one model.",
+        "properties": {
+          "calls": {
+            "minimum": 0.0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "input_tokens": {
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "calls",
+          "input_tokens",
+          "output_tokens"
+        ],
+        "title": "ModelUsage",
+        "type": "object"
+      },
+      "NodeUsage": {
+        "description": "Usage attributed to one graph node.\n\nKept because \"where did the tokens actually go\" is the second question a\ndeveloper asks (\u00a79.4), and answering it from the call list afterwards is\nimpossible once the calls have been summed away.",
+        "properties": {
+          "calls": {
+            "minimum": 0.0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "input_tokens": {
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "node": {
+            "minLength": 1,
+            "title": "Node",
+            "type": "string"
+          },
+          "output_tokens": {
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node",
+          "calls",
+          "input_tokens",
+          "output_tokens"
+        ],
+        "title": "NodeUsage",
+        "type": "object"
+      },
+      "RagContext": {
+        "description": "What the retrieval loop concluded, as the rest of the graph reads it.\n\nSpec 8.1 turns `evidence_available` into a hard confidence ceiling, which\nis why it is **derived from the source count** rather than stored: a\nstored flag is exactly the field a node under time pressure sets to\n`True` beside an empty evidence list, and the ceiling would then never\nengage. Absent evidence must not be able to produce a confident answer,\nand the cheapest way to guarantee that is to make the flag uncomputable\nfrom anything but the count.",
+        "properties": {
+          "evidence_available": {
+            "description": "Whether anything was retrieved at all. See the class docstring.\n\n`@computed_field`, so it appears in `model_dump()` and therefore in\nthe API response: this is the flag the report header renders beside\nthe confidence figure, and a frontend that could not see it would\nre-derive it from a source count it also has to be given.",
+            "readOnly": true,
+            "title": "Evidence Available",
+            "type": "boolean"
+          },
+          "iterations": {
+            "minimum": 0.0,
+            "title": "Iterations",
+            "type": "integer"
+          },
+          "sources_considered": {
+            "minimum": 0.0,
+            "title": "Sources Considered",
+            "type": "integer"
+          },
+          "stop_reason": {
+            "$ref": "#/components/schemas/RagStopReason"
+          },
+          "sufficient": {
+            "title": "Sufficient",
+            "type": "boolean"
+          },
+          "unknowns": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Unknowns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "iterations",
+          "sources_considered",
+          "sufficient",
+          "stop_reason",
+          "evidence_available"
+        ],
+        "title": "RagContext",
+        "type": "object"
+      },
+      "RagStopReason": {
+        "description": "Why the retrieval loop stopped.\n\nSpec 7.3 bounds the loop three ways and skips it entirely a fourth, and\nthe four outcomes are not interchangeable: `SUFFICIENT` says the evidence\nanswered the question, `ITERATION_LIMIT` says we ran out of budget while\nstill short, `NOT_NECESSARY` says there was nothing to ask about, and\n`KB_UNAVAILABLE` says we could not ask at all. Collapsing any two of them\nwould let a run that found nothing read like a run that needed nothing.",
+        "enum": [
+          "sufficient",
+          "iteration_limit",
+          "not_necessary",
+          "kb_unavailable"
+        ],
+        "title": "RagStopReason",
+        "type": "string"
+      },
+      "RemoteRepoRef": {
+        "properties": {
+          "kind": {
+            "const": "remote",
+            "default": "remote",
+            "title": "Kind",
+            "type": "string"
+          },
+          "url": {
+            "minLength": 1,
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "RemoteRepoRef",
+        "type": "object"
+      },
+      "RepoAnalysis": {
+        "properties": {
+          "affected_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AffectedFile"
+            },
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "analyzed_files": {
+            "minimum": 0.0,
+            "title": "Analyzed Files",
+            "type": "integer"
+          },
+          "commit_records": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/CommitRecord"
+            },
+            "title": "Commit Records",
+            "type": "array"
+          },
+          "commit_sha": {
+            "anyOf": [
+              {
+                "minLength": 7,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit Sha"
+          },
+          "confidence_reducers": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Confidence Reducers",
+            "type": "array"
+          },
+          "detected_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DetectedVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "languages": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/LanguageShare"
+            },
+            "title": "Languages",
+            "type": "array"
+          },
+          "manifests": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Manifest"
+            },
+            "title": "Manifests",
+            "type": "array"
+          },
+          "skipped_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SkippedFile"
+            },
+            "title": "Skipped Files",
+            "type": "array"
+          },
+          "symbol_inventory": {
+            "$ref": "#/components/schemas/SymbolInventory"
+          },
+          "test_paths": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Test Paths",
+            "type": "array"
+          },
+          "total_python_files": {
+            "minimum": 0.0,
+            "title": "Total Python Files",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "commit_sha",
+          "detected_version",
+          "total_python_files",
+          "analyzed_files",
+          "symbol_inventory"
+        ],
+        "title": "RepoAnalysis",
+        "type": "object"
+      },
+      "RepoEvidence": {
+        "description": "A specific line of the analyzed repository.",
+        "properties": {
+          "file": {
+            "minLength": 1,
+            "title": "File",
+            "type": "string"
+          },
+          "kind": {
+            "const": "repo",
+            "default": "repo",
+            "title": "Kind",
+            "type": "string"
+          },
+          "line": {
+            "minimum": 1.0,
+            "title": "Line",
+            "type": "integer"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          }
+        },
+        "required": [
+          "file",
+          "line"
+        ],
+        "title": "RepoEvidence",
+        "type": "object"
+      },
+      "RepoInput": {
+        "description": "Where the repository is. Exactly one of `url` or `path`.\n\nTwo nullable fields with a validator rather than a discriminated union,\nbecause this is the shape a form posts: a UI with a radio button and two\ntext inputs sends the one the user filled in, and requiring a `kind`\ndiscriminator alongside would be asking the client to restate what the\npopulated field already says.",
+        "properties": {
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "RepoInput",
+        "type": "object"
+      },
+      "ResumeRequest": {
+        "description": "Continue a run.\n\n`decision` is optional, and its absence means something specific rather\nthan nothing: it is how an `ORPHANED` run -- one whose checkpoint survived\na restart its task did not -- is picked back up. A run awaiting a human\nneeds an answer; a run that lost its process needs only to be driven\nagain, and asking the client to invent a decision for it would be asking\nfor a lie.",
+        "properties": {
+          "decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id"
+        ],
+        "title": "ResumeRequest",
+        "type": "object"
+      },
+      "RiskAnalysis": {
+        "description": "The risk verdict. See the module docstring for what it refuses.",
+        "properties": {
+          "aggregate_risk": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "clamp_floor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiskLevel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "confidence_ceilings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ConfidenceCeiling"
+            },
+            "title": "Confidence Ceilings",
+            "type": "array"
+          },
+          "factors": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RiskFactor"
+            },
+            "title": "Factors",
+            "type": "array"
+          },
+          "overall_risk": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "qualitative_notes": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Qualitative Notes",
+            "type": "array"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "overall_risk",
+          "aggregate_risk",
+          "confidence",
+          "summary"
+        ],
+        "title": "RiskAnalysis",
+        "type": "object"
+      },
+      "RiskCategory": {
+        "enum": [
+          "breaking_change_exposure",
+          "blast_radius",
+          "test_coverage_of_affected",
+          "churn_on_affected",
+          "analysis_coverage",
+          "evidence_coverage",
+          "constraint_pressure"
+        ],
+        "title": "RiskCategory",
+        "type": "string"
+      },
+      "RiskFactor": {
+        "description": "One dimension of risk. `evidence` must be non-empty.",
+        "properties": {
+          "category": {
+            "$ref": "#/components/schemas/RiskCategory"
+          },
+          "detail": {
+            "minLength": 1,
+            "title": "Detail",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "constraint": "#/components/schemas/ConstraintEvidence",
+                  "doc": "#/components/schemas/DocEvidence",
+                  "repo": "#/components/schemas/RepoEvidence"
+                },
+                "propertyName": "kind"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/RepoEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/DocEvidence"
+                },
+                {
+                  "$ref": "#/components/schemas/ConstraintEvidence"
+                }
+              ]
+            },
+            "minItems": 1,
+            "title": "Evidence",
+            "type": "array"
+          },
+          "id": {
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "level": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "weight": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "category",
+          "level",
+          "weight",
+          "detail",
+          "evidence"
+        ],
+        "title": "RiskFactor",
+        "type": "object"
+      },
+      "RiskLevel": {
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "title": "RiskLevel",
+        "type": "string"
+      },
+      "RunSnapshot": {
+        "description": "One response model for every state a run can be in. Spec 9.1.",
+        "properties": {
+          "affected_files": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AffectedFile"
+            },
+            "title": "Affected Files",
+            "type": "array"
+          },
+          "breaking_changes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BreakingChange"
+            },
+            "title": "Breaking Changes",
+            "type": "array"
+          },
+          "completed_steps": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Completed Steps",
+            "type": "array"
+          },
+          "current_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Step"
+          },
+          "errors": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ApiError"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "final_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinalReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "human_decisions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HumanDecision"
+            },
+            "title": "Human Decisions",
+            "type": "array"
+          },
+          "migration_plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MigrationPlan"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_decision": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InterruptPayload"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rag_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RagContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retrieved_sources": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SourceRef"
+            },
+            "title": "Retrieved Sources",
+            "type": "array"
+          },
+          "risk_analysis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RiskAnalysis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "trace": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TraceEvent"
+            },
+            "title": "Trace",
+            "type": "array"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/UsageView"
+          },
+          "validation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ValidationReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "thread_id",
+          "status",
+          "usage"
+        ],
+        "title": "RunSnapshot",
+        "type": "object"
+      },
+      "RunStatus": {
+        "description": "Spec 9.2's run states. Derived from the checkpoint plus the registry.\n\nNever stored (spec 6.5): a stored status drifts from reality on crash,\nwhich is precisely the case `ORPHANED` exists to describe -- and a field\nwritten by the process that then died would say `RUNNING` forever.\n\n`QUEUED` and `ORPHANED` are real states rather than politeness.\n`QUEUED` is what a run beyond the concurrency cap actually is, and\nreporting it as `RUNNING` would be a lie about work that has not started.\n`ORPHANED` is a run whose checkpoint survived a restart that its task did\nnot; the alternative is a spinner that never resolves.",
+        "enum": [
+          "queued",
+          "running",
+          "awaiting_human",
+          "completed",
+          "completed_with_warnings",
+          "failed",
+          "orphaned"
+        ],
+        "title": "RunStatus",
+        "type": "string"
+      },
+      "Severity": {
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "title": "Severity",
+        "type": "string"
+      },
+      "SkippedFile": {
+        "properties": {
+          "path": {
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
+        ],
+        "title": "SkippedFile",
+        "type": "object"
+      },
+      "SourceRef": {
+        "description": "A resolvable pointer into the knowledge base.",
+        "properties": {
+          "chunk_id": {
+            "minLength": 1,
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "relevance": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Relevance",
+            "type": "number"
+          },
+          "source_id": {
+            "minLength": 1,
+            "title": "Source Id",
+            "type": "string"
+          },
+          "source_type": {
+            "$ref": "#/components/schemas/SourceType"
+          },
+          "title": {
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "url_or_reference": {
+            "minLength": 1,
+            "title": "Url Or Reference",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "title",
+          "source_type",
+          "url_or_reference",
+          "chunk_id",
+          "relevance"
+        ],
+        "title": "SourceRef",
+        "type": "object"
+      },
+      "SourceType": {
+        "enum": [
+          "migration_guide",
+          "changelog",
+          "adr",
+          "upgrade_report",
+          "compat_note"
+        ],
+        "title": "SourceType",
+        "type": "string"
+      },
+      "StartResponse": {
+        "description": "202 from both `start` and `resume`: accepted, not finished.",
+        "properties": {
+          "poll_url": {
+            "title": "Poll Url",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "thread_id",
+          "status",
+          "poll_url"
+        ],
+        "title": "StartResponse",
+        "type": "object"
+      },
+      "StartRunRequest": {
+        "properties": {
+          "constraints": {
+            "$ref": "#/components/schemas/UserConstraints"
+          },
+          "dependency": {
+            "$ref": "#/components/schemas/DependencyInput"
+          },
+          "repo": {
+            "$ref": "#/components/schemas/RepoInput"
+          }
+        },
+        "required": [
+          "repo",
+          "dependency"
+        ],
+        "title": "StartRunRequest",
+        "type": "object"
+      },
+      "StrategyId": {
+        "description": "The candidate migration strategies of spec 8.2.\n\nA closed enum rather than free strings, because `MigrationPlan.strategy_id`\nis what the decision-flip test compares: resuming the same checkpoint with\nthe opposite option must yield a *different* strategy, and comparing two\nfree-form strings would pass on a typo.",
+        "enum": [
+          "direct_migration",
+          "compatibility_layer",
+          "staged_rollout"
+        ],
+        "title": "StrategyId",
+        "type": "string"
+      },
+      "SymbolInventory": {
+        "properties": {
+          "entries": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SymbolStat"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "title": "SymbolInventory",
+        "type": "object"
+      },
+      "SymbolStat": {
+        "properties": {
+          "confidence": {
+            "$ref": "#/components/schemas/Confidence"
+          },
+          "count": {
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "files": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Files",
+            "type": "array"
+          },
+          "symbol": {
+            "minLength": 1,
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "count",
+          "files",
+          "confidence"
+        ],
+        "title": "SymbolStat",
+        "type": "object"
+      },
+      "TraceEvent": {
+        "description": "One observable thing the run did.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "event_id": {
+            "minLength": 1,
+            "title": "Event Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/TraceEventKind"
+          },
+          "node": {
+            "minLength": 1,
+            "title": "Node",
+            "type": "string"
+          },
+          "summary": {
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "kind",
+          "node",
+          "at",
+          "summary"
+        ],
+        "title": "TraceEvent",
+        "type": "object"
+      },
+      "TraceEventKind": {
+        "description": "What the agent trace is allowed to report.\n\nCLAUDE.md rule 26 draws the line: the trace shows *observable* events --\nnode boundaries, queries issued, sources retrieved and selected,\ndecisions, validation outcomes -- and never internal prompts or private\nreasoning. Enumerating the kinds is what makes that rule checkable:\nadding one is a deliberate decision about what the product exposes rather\nthan an incidental addition somewhere in a node.",
+        "enum": [
+          "node_started",
+          "node_completed",
+          "query_issued",
+          "sources_retrieved",
+          "sources_selected",
+          "retrieval_evaluated",
+          "agent_decision",
+          "decision_required",
+          "decision_applied",
+          "validation_outcome",
+          "error_recorded"
+        ],
+        "title": "TraceEventKind",
+        "type": "string"
+      },
+      "UnaddressedFile": {
+        "description": "A file the plan does not change, and why not.\n\nThe alternative to this model is silence, and silence is what makes a\npartial plan read as a complete one. Spec 8.4's eighth check requires\nevery high-confidence affected file to be either addressed by a step or\nnamed here -- so \"we did not cover this\" is a thing the report says out\nloud rather than a gap the reader has to find by comparing two lists.",
+        "properties": {
+          "path": {
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "reason": {
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
+        ],
+        "title": "UnaddressedFile",
+        "type": "object"
+      },
+      "UsageKind": {
+        "enum": [
+          "import",
+          "model_definition",
+          "decorator",
+          "nested_config",
+          "optional_field",
+          "method_call"
+        ],
+        "title": "UsageKind",
+        "type": "string"
+      },
+      "UsageSite": {
+        "properties": {
+          "column": {
+            "minimum": 0.0,
+            "title": "Column",
+            "type": "integer"
+          },
+          "confidence": {
+            "$ref": "#/components/schemas/Confidence"
+          },
+          "file": {
+            "minLength": 1,
+            "title": "File",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/UsageKind"
+          },
+          "line": {
+            "minimum": 1.0,
+            "title": "Line",
+            "type": "integer"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          },
+          "symbol": {
+            "minLength": 1,
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "line",
+          "column",
+          "symbol",
+          "kind",
+          "confidence"
+        ],
+        "title": "UsageSite",
+        "type": "object"
+      },
+      "UsageSummary": {
+        "description": "Totals derived from `llm_calls`. Never stored -- see the module docstring.",
+        "properties": {
+          "by_model": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ModelUsage"
+            },
+            "title": "By Model",
+            "type": "array"
+          },
+          "by_node": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/NodeUsage"
+            },
+            "title": "By Node",
+            "type": "array"
+          },
+          "calls": {
+            "minimum": 0.0,
+            "title": "Calls",
+            "type": "integer"
+          },
+          "estimated": {
+            "default": false,
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Usd"
+          },
+          "input_tokens": {
+            "minimum": 0.0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "minimum": 0.0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "pricing_complete": {
+            "default": true,
+            "title": "Pricing Complete",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "calls",
+          "input_tokens",
+          "output_tokens"
+        ],
+        "title": "UsageSummary",
+        "type": "object"
+      },
+      "UsageView": {
+        "description": "Usage, with the two flags that stop a total being misread.\n\n`estimated` says at least one token count came from a local tokenizer.\n`pricing_complete` says every counted call had a price -- when it is false\nthe cost is a **lower bound**, and this flag is the only thing that says\nso. Both are surfaced at the top level of the API rather than left inside\nthe summary, because a UI that has to dig for them is a UI that will print\nthe number alone.",
+        "properties": {
+          "by_model": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "By Model",
+            "type": "array"
+          },
+          "by_node": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "By Node",
+            "type": "array"
+          },
+          "calls": {
+            "title": "Calls",
+            "type": "integer"
+          },
+          "estimated": {
+            "title": "Estimated",
+            "type": "boolean"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Usd"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "pricing_complete": {
+            "title": "Pricing Complete",
+            "type": "boolean"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "calls",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "estimated",
+          "pricing_complete",
+          "estimated_cost_usd",
+          "by_node",
+          "by_model"
+        ],
+        "title": "UsageView",
+        "type": "object"
+      },
+      "UserConstraints": {
+        "description": "Migration constraints. Defaults are permissive so an omitted\nconstraint never silently tightens the recommendation.",
+        "properties": {
+          "deadline": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline"
+          },
+          "minimize_effort": {
+            "default": false,
+            "title": "Minimize Effort",
+            "type": "boolean"
+          },
+          "risk_tolerance": {
+            "$ref": "#/components/schemas/RiskLevel",
+            "default": "medium"
+          },
+          "zero_downtime": {
+            "default": false,
+            "title": "Zero Downtime",
+            "type": "boolean"
+          }
+        },
+        "title": "UserConstraints",
+        "type": "object"
+      },
+      "ValidationCheckId": {
+        "description": "Spec 8.4's ten deterministic checks, named.\n\nAn enum rather than free strings because `ValidationReport` is rendered in\nthe UI and quoted in the final report: a check whose id was a typo would\nrender as a check that passed silently, since nothing would look for it.\nThe membership of this enum is what `test_every_check_runs_on_every_plan`\nasserts against the validator's output, so a check added here without an\nimplementation fails immediately.",
+        "enum": [
+          "sources_resolve",
+          "repo_evidence_resolves",
+          "step_files_exist",
+          "risk_factors_cite_evidence",
+          "risk_clamp_holds",
+          "confidence_ceilings_hold",
+          "plan_is_ordered",
+          "affected_files_addressed",
+          "decisions_applied",
+          "zero_downtime_respected"
+        ],
+        "title": "ValidationCheckId",
+        "type": "string"
+      },
+      "ValidationOutcome": {
+        "description": "One check, its verdict, and what failed it.",
+        "properties": {
+          "check_id": {
+            "$ref": "#/components/schemas/ValidationCheckId"
+          },
+          "detail": {
+            "minLength": 1,
+            "title": "Detail",
+            "type": "string"
+          },
+          "offenders": {
+            "default": [],
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "title": "Offenders",
+            "type": "array"
+          },
+          "passed": {
+            "title": "Passed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "check_id",
+          "passed",
+          "detail"
+        ],
+        "title": "ValidationOutcome",
+        "type": "object"
+      },
+      "ValidationReport": {
+        "description": "Every check's outcome for one attempt at the plan.",
+        "properties": {
+          "attempt": {
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "outcomes": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationOutcome"
+            },
+            "minItems": 1,
+            "title": "Outcomes",
+            "type": "array"
+          },
+          "passed": {
+            "description": "Derived, never stored (CLAUDE.md rule 21). A stored verdict beside\na list of failures is the one shape that can lie about itself, and\n`COMPLETED_WITH_WARNINGS` is exactly where the two would be tempted to\ndisagree.\n\n`@computed_field` rather than a bare property, for the same reason\n`AffectedFile.symbols` is one: it has to appear in `model_dump()`, and\ntherefore in the API response and the generated TypeScript. A derived\nvalue the frontend cannot see is one the frontend re-derives, which is\na second implementation of the rule in a language that cannot check\nit against this one.",
+            "readOnly": true,
+            "title": "Passed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "attempt",
+          "outcomes",
+          "passed"
+        ],
+        "title": "ValidationReport",
+        "type": "object"
+      },
+      "VersionConfidence": {
+        "enum": [
+          "exact",
+          "range"
+        ],
+        "title": "VersionConfidence",
+        "type": "string"
+      }
+    }
+  },
+  "info": {
+    "title": "UpgradePilot",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/agent/resume": {
+      "post": {
+        "operationId": "resume_api_agent_resume_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No run with that id"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The run is not waiting for input"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request could not be accepted"
+          }
+        },
+        "summary": "Resume",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/agent/start": {
+      "post": {
+        "operationId": "start_api_agent_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StartResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No run with that id"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The run is not waiting for input"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request could not be accepted"
+          }
+        },
+        "summary": "Start",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/agent/status/{thread_id}": {
+      "get": {
+        "description": "The one response shape, in every state.\n\nA thread nobody started is a **404** rather than an empty snapshot:\nmeasured against the pinned LangGraph, `aget_state` answers for an unknown\nid with a perfectly ordinary snapshot, so an endpoint that did not check\nwould return 200 and a blank report for any string a client sent.",
+        "operationId": "get_status_api_agent_status__thread_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "No run with that id"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The run is not waiting for input"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "The request could not be accepted"
+          }
+        },
+        "summary": "Get Status",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "description": "Liveness, local-store readiness, and model-provider configuration.\n\n`status` is derived from `checks` by `_derive_status` and is never\nasserted independently of them. It previously was: the endpoint returned\na hardcoded `\"ok\"` alongside whatever the checks happened to say, so a\n200 with `\"ok\"` was demonstrated while both store checks were false --\nand the frontend rendered that as a green tick. A health endpoint that\ncannot be wrong about its own checks is the whole point of this route.\n\nEvery check is a cheap local read: two filesystem stats and one look at\nalready-loaded settings. Nothing here is reported as unknown because\nnothing here is expensive enough to need to be. In particular this\ndeliberately does **not** open the Chroma store, connect to the\ncheckpointer database, or call the model provider -- a health probe must not cost\nmoney or inherit third-party latency, so what it reports is the\nreadiness of the store *locations* and the presence of a key, which is\nexactly what the field names say and no more.\n\n`llm_configured` counts toward `status` like any other check. A\nmissing key means the agent cannot do its job, so reporting `\"ok\"`\nwithout one would be the same class of false claim in a smaller font.",
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    }
+  }
+}

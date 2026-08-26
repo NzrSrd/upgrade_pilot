@@ -1,0 +1,156 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+
+import { STEPS } from "../derive/steps";
+import { aSnapshot, aTraceEvent, anUsageView } from "../test/fixtures";
+import { RunMetrics } from "./RunMetrics";
+
+describe("RunMetrics", () => {
+  it("shows the three token counts and the call count", () => {
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({
+          usage: anUsageView({
+            calls: 4,
+            input_tokens: 320,
+            output_tokens: 40,
+            total_tokens: 360,
+            estimated_cost_usd: 0.00042,
+          }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText("320")).toBeInTheDocument();
+    expect(screen.getByText("40")).toBeInTheDocument();
+    expect(screen.getByText("360")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
+  });
+
+  it("prints a lower bound when some calls have no price", () => {
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({
+          usage: anUsageView({ estimated_cost_usd: 0.00042, pricing_complete: false }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText("≥ $0.00042")).toBeInTheDocument();
+    expect(screen.getByText(/lower bound/i)).toBeInTheDocument();
+  });
+
+  it("says not priced rather than showing zero", () => {
+    render(
+      <RunMetrics snapshot={aSnapshot({ usage: anUsageView({ estimated_cost_usd: null, calls: 3 }) })} />,
+    );
+
+    expect(screen.getByText(/not priced/i)).toBeInTheDocument();
+    expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+  });
+
+  it("flags estimated token counts", () => {
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({ usage: anUsageView({ estimated: true, estimated_cost_usd: 0.001 }) })}
+      />,
+    );
+
+    expect(screen.getByText(/partly estimated/i)).toBeInTheDocument();
+  });
+
+  it("shows where the tokens went", () => {
+    // Spec 9.4: the second question a developer asks.
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({
+          usage: anUsageView({ by_node: [["assess_risk", 210], ["generate_plan", 150]] }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText("assess_risk")).toBeInTheDocument();
+    expect(screen.getByText("210")).toBeInTheDocument();
+  });
+
+  it("shows nothing rather than zeroes before a run exists", () => {
+    render(<RunMetrics snapshot={null} />);
+
+    expect(screen.getByText(/no run started/i)).toBeInTheDocument();
+  });
+
+  it("shows the model in use, from usage.by_model", () => {
+    // The brief's docstring promised this and its code never rendered it --
+    // DESIGN.md's Telemetry section and READINESS.md 2.5 both require it.
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({ usage: anUsageView({ by_model: [["openai/gpt-4.1-mini", 300]] }) })}
+      />,
+    );
+
+    expect(screen.getByText("openai/gpt-4.1-mini")).toBeInTheDocument();
+    expect(screen.getByText("300")).toBeInTheDocument();
+  });
+
+  it("says not recorded yet before any call has a model attached", () => {
+    render(<RunMetrics snapshot={aSnapshot({ usage: anUsageView({ by_model: [] }) })} />);
+
+    expect(screen.getByText(/not recorded yet/i)).toBeInTheDocument();
+  });
+
+  it("does not name a pricing gap for a model that was never called", () => {
+    // Finding I2. With zero calls, `estimated_cost_usd` is `null`
+    // (`_totalled([])` in `models/usage.py`) for the same reason `by_model`
+    // is empty: no model has been used yet. The old wording ("no price is
+    // known for the model used") sat directly beneath "Model in use: Not
+    // recorded yet" and asserted a model had been priced that was never
+    // called.
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({
+          usage: anUsageView({ calls: 0, estimated_cost_usd: null, by_model: [] }),
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/not recorded yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/no model has been used yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no price is known for the model used/i)).not.toBeInTheDocument();
+  });
+
+  it("shows a compact recorded span between the first and last trace event", () => {
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({
+          trace: [
+            aTraceEvent({ event_id: "e-1", at: "2026-08-25T12:00:00.000Z" }),
+            aTraceEvent({ event_id: "e-2", at: "2026-08-25T12:00:03.200Z" }),
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Recorded span")).toBeInTheDocument();
+    expect(screen.getByText("3.2s")).toBeInTheDocument();
+  });
+
+  it("does not render a zero recorded span for an empty trace", () => {
+    render(<RunMetrics snapshot={aSnapshot({ trace: [] })} />);
+
+    expect(screen.queryByText("0s")).not.toBeInTheDocument();
+    expect(screen.queryByText("0.0s")).not.toBeInTheDocument();
+  });
+
+  it("reads the step total from derive/steps, not a hardcoded 8", () => {
+    // M2: this call site hardcoded `8` while `ErrorView.tsx` already read
+    // `STEPS.length`, the exact second-source-for-one-fact CLAUDE.md rule 21
+    // warns drifts silently.
+    render(
+      <RunMetrics
+        snapshot={aSnapshot({ completed_steps: ["analyze_repo", "inspect_dependency"] })}
+      />,
+    );
+
+    expect(screen.getByText(`2 of ${STEPS.length}`)).toBeInTheDocument();
+  });
+});
