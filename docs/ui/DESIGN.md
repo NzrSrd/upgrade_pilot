@@ -261,8 +261,18 @@ The report distinguishes:
 - **Overall risk** — `RiskAnalysis.overall_risk`
 - **Aggregate risk** — `RiskAnalysis.aggregate_risk`, the value before the
   clamp
-- **Clamp floor** — `RiskAnalysis.clamp_floor`, rendered whenever it differs
-  from the aggregate, so a clamped verdict says it was clamped
+- **Clamp floor** — `RiskAnalysis.clamp_floor`, rendered as a labelled value
+  whenever it is present, so a clamped verdict says it was clamped.
+
+  The *claim* that the verdict was raised is a separate condition from the
+  *disclosure* of the floor, and conflating them fabricates. `overall_risk`
+  is exactly `max(aggregate_risk, clamp_floor)` — a model validator in
+  `models/risk.py` refuses both directions — so a floor **below** the
+  aggregate raises nothing. Render "raised from X to Y" only when
+  `overall_risk` differs from `aggregate_risk`, which is the backend's own
+  condition at `graph/nodes/judgment.py:244`. Mirror that condition; do not
+  re-derive it. A floor that is present but lower than the aggregate is
+  still shown as a value, and still says nothing about a raise.
 - **Confidence** — `RiskAnalysis.confidence`
 - **Confidence ceilings** — `RiskAnalysis.confidence_ceilings`, each with its
   reason
@@ -566,6 +576,17 @@ and interaction principles. The two must remain consistent.
 ---
 
 ## Amendments
+
+**2026-08-26 — the clamp floor: disclosure is not the same claim as the raise.**
+The bullet above previously read that the clamp floor is "rendered whenever it
+differs from the aggregate, so a clamped verdict says it was clamped". A builder
+followed it literally and shipped a banner conditioned on
+`clamp_floor !== aggregate_risk` whose text reads "Raised from X to Y" — so a
+floor *below* the aggregate, which raises nothing, rendered "Raised from high to
+high". One sentence doing two jobs: it named a display condition and implied a
+claim, and the two are not the same condition. The bullet now separates them and
+names the backend condition to mirror, per rule 19 — the frontend displays the
+verdict, it never re-derives the rule that produced it.
 
 **2026-08-25 — the three-region layout.** Spec §10 originally specified two
 regions with run metrics inside the left sidebar. It was amended to agree
