@@ -89,9 +89,20 @@ export function PlanTab({ report }: { report: FinalReport }) {
                     {/* `requires_downtime` carries a default (`false`), so
                         the fallback below is defensive, not a fabrication:
                         an absent value and an explicit `false` mean the same
-                        thing here (ruling T10b). */}
+                        thing here (ruling T10b). Fix round 2, finding 2:
+                        `requires_downtime` is a fact about the step, not a
+                        verdict -- whether that fact is a problem is check
+                        10's question (`_check_zero_downtime_respected`),
+                        which passes outright when no zero-downtime
+                        constraint was stated. Styling this `risk-medium`
+                        unconditionally re-derived a severity the backend
+                        may never have assigned, the same rule-19 shape as
+                        round 1's coverage-panel Critical. Neutral chrome
+                        states the fact; check 10's own outcome (rendered
+                        correctly in the Validation panel below) carries the
+                        verdict. */}
                     {(step.requires_downtime ?? false) && (
-                      <span className="rounded border border-risk-medium/50 px-1.5 py-0.5 text-[10px] tracking-wide text-risk-medium uppercase">
+                      <span className="rounded border border-edge px-1.5 py-0.5 text-[10px] tracking-wide text-ink-muted uppercase">
                         Requires downtime
                       </span>
                     )}
@@ -149,7 +160,15 @@ export function PlanTab({ report }: { report: FinalReport }) {
             {unaddressedWithReason.map((file) => (
               <li key={file.path} className="text-sm">
                 <Mono>{file.path}</Mono>
-                <span className="mt-0.5 block text-xs text-risk-medium">{file.reason}</span>
+                {/* Fix round 2, finding 1: `UnaddressedFile` carries only
+                    `path` and `reason` -- no grade, no severity, nothing
+                    that ranks one unaddressed file against another.
+                    `text-risk-medium` invented a rank the backend never
+                    assigned (third instance of this defect in the phase,
+                    after Task 11's `consequences_if_unanswered` and Task
+                    12's clamp/ceiling text). This is an explanation, not a
+                    graded finding, so it gets neutral ink/edge chrome. */}
+                <span className="mt-0.5 block text-xs text-ink-muted">{file.reason}</span>
               </li>
             ))}
           </ul>

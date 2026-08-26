@@ -51,6 +51,22 @@ describe("PlanTab", () => {
     expect(screen.getByText(/test-only; no runtime exposure/i)).toBeInTheDocument();
   });
 
+  it("does not grade an unaddressed file's reason with a severity colour", () => {
+    // Fix round 2, finding 1. `UnaddressedFile` (models/plan.py:84-96)
+    // carries only `path` and `reason` -- no grade, no severity, nothing
+    // that ranks one unaddressed file against another. `text-risk-medium`
+    // invented a rank the backend never assigned (the third instance of
+    // this defect in the phase, after Task 11's `consequences_if_unanswered`
+    // and Task 12's clamp/ceiling text). `validation` is left `null` here
+    // (the fixture's default) so the only risk-relevant text on screen is
+    // this reason -- if it renders neutrally, nothing in this render carries
+    // a `risk-*` class.
+    const { container } = render(<PlanTab report={aReport({ migration_plan: plan })} />);
+
+    expect(screen.getByText(/test-only; no runtime exposure/i)).toBeInTheDocument();
+    expect(container.querySelectorAll('[class*="risk-"]')).toHaveLength(0);
+  });
+
   it("lists every validation check, and names the failures", () => {
     // Ruling F2: `ValidationReport` serialises exactly `attempt`, `outcomes`
     // and `passed` -- `failures` is a bare Pydantic property, not a
@@ -93,6 +109,29 @@ describe("PlanTab", () => {
     );
 
     expect(screen.getByText(/requires downtime/i)).toBeInTheDocument();
+  });
+
+  it('does not grade the "requires downtime" badge with a severity colour', () => {
+    // Fix round 2, finding 2. `requires_downtime` is a fact about the step;
+    // whether that fact is a *problem* is check 10's question
+    // (`_check_zero_downtime_respected`, validate.py:488-515), and with no
+    // zero-downtime constraint stated that check PASSES -- "No zero-downtime
+    // constraint was stated" -- making an unremarkable step. Styling this
+    // badge `risk-medium` unconditionally re-derives a verdict the backend
+    // already owns, one panel above where check 10's own outcome renders
+    // (correctly, in `risk-high` on failure). No `validation` is supplied
+    // here (default `null`), so a neutral badge leaves nothing in this
+    // render with a `risk-*` class.
+    const { container } = render(
+      <PlanTab
+        report={aReport({
+          migration_plan: { ...plan, steps: [{ ...plan.steps[0], requires_downtime: true }] },
+        })}
+      />,
+    );
+
+    expect(screen.getByText(/requires downtime/i)).toBeInTheDocument();
+    expect(container.querySelectorAll('[class*="risk-"]')).toHaveLength(0);
   });
 
   it("says so when no plan was produced", () => {
