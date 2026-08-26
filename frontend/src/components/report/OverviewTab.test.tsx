@@ -128,10 +128,13 @@ describe("OverviewTab", () => {
     expect(screen.getByText(/usage sites/i)).toBeInTheDocument();
   });
 
-  it("flags a transitive-only pin as one the user does not control", () => {
-    // Fix-round-1 finding 6. DESIGN.md's framing is actionability, not
-    // confidence -- worded so it is never mistaken for the unrelated
-    // `TRANSITIVE_ONLY` confidence ceiling that can also appear.
+  it("says a lock-file-only pin cannot be fixed with a manifest edit here", () => {
+    // Fix-round-2: attributed to the *detected* version (never the target
+    // version -- nothing pins that), states only what `role` means (found
+    // only in a lock file), and asserts a phrase that appears in this
+    // bullet ALONE, not in the `TRANSITIVE_ONLY` confidence ceiling text
+    // (`services/risk/aggregate.py:174-178`) that can render on the same
+    // tab -- a match on shared wording could not tell the two apart.
     render(
       <OverviewTab
         report={aReport({
@@ -142,10 +145,10 @@ describe("OverviewTab", () => {
       />,
     );
 
-    expect(screen.getByText(/do not control this pin/i)).toBeInTheDocument();
+    expect(screen.getByText(/will not move this pin/i)).toBeInTheDocument();
   });
 
-  it("says nothing about control for a directly-declared pin", () => {
+  it("says nothing about a manifest edit for a directly-declared pin", () => {
     render(
       <OverviewTab
         report={aReport({
@@ -154,6 +157,6 @@ describe("OverviewTab", () => {
       />,
     );
 
-    expect(screen.queryByText(/do not control this pin/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/will not move this pin/i)).not.toBeInTheDocument();
   });
 });

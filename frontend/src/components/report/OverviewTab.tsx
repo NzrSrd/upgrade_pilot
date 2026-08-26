@@ -70,15 +70,21 @@ export function OverviewTab({ report }: { report: FinalReport }) {
           />
         </dl>
         {isTransitiveOnly && (
-          // Fix-round-1 finding 6: an actionability claim ("you do not
-          // control this pin"), not a confidence caveat -- worded so it is
-          // never mistaken for the unrelated `TRANSITIVE_ONLY` confidence
-          // ceiling that can also appear in the ceilings list below. Neutral
-          // ink/edge tokens, same reasoning as finding 5: this is
-          // explanatory text, not a severity finding.
+          // Fix-round-2: the round-1 wording named the wrong subject (the
+          // *target* version, which the user typed in and nothing pins) and
+          // a cause the analysis never determined ("through another
+          // package" -- plausible, but not what `versions.py:102-106`
+          // measures, which is only that every declaration found is a lock
+          // file). Corrected to attribute this to the *detected* version and
+          // to state only what `role` means, and reworded so it does not
+          // restate the mechanism the `TRANSITIVE_ONLY` confidence ceiling
+          // below already gives -- this bullet's own job is the
+          // consequence for the reader: a manifest edit in this repository
+          // cannot reach this pin. Neutral ink/edge tokens, same reasoning
+          // as finding 5: this is explanatory text, not a severity finding.
           <p className="mt-3 text-xs text-ink-muted">
-            This dependency's target version is pinned transitively, through another package —
-            you do not control this pin directly.
+            This dependency's detected version comes from a lock file, not a hand-written
+            manifest — so a manifest edit in this repository will not move this pin.
           </p>
         )}
       </Panel>
