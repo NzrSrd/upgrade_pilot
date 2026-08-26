@@ -11,6 +11,8 @@ import type {
   DecisionOption,
   FinalReport,
   InterruptPayload,
+  RiskAnalysis,
+  RiskFactor,
   RunSnapshot,
   SourceRef,
   TraceEvent,
@@ -125,6 +127,84 @@ export function anOption(overrides: Partial<DecisionOption> = {}): DecisionOptio
     downtime: false,
     consequences: ["Two code paths coexist for several weeks."],
     supporting_evidence: [{ kind: "doc", source_id: "s-1", chunk_id: "s-1#0", relevance: 0.82 }],
+    ...overrides,
+  };
+}
+
+export function aFactor(overrides: Partial<RiskFactor> = {}): RiskFactor {
+  return {
+    id: "breaking_change_exposure",
+    name: "Breaking change exposure",
+    category: "breaking_change_exposure",
+    level: "high",
+    weight: 0.25,
+    detail: "Four breaking changes touch symbols this repository uses.",
+    evidence: [{ kind: "repo", file: "src/app/models.py", line: 12, snippet: null }],
+    ...overrides,
+  };
+}
+
+export function aRiskAnalysis(overrides: Partial<RiskAnalysis> = {}): RiskAnalysis {
+  return {
+    overall_risk: "high",
+    aggregate_risk: "high",
+    clamp_floor: null,
+    confidence: 0.62,
+    confidence_ceilings: [],
+    factors: [aFactor()],
+    summary: "Four breaking changes reach code this repository executes.",
+    qualitative_notes: [],
+    ...overrides,
+  };
+}
+
+/**
+ * A full report, for the tabs task 12/13 build. Deliberately a second
+ * builder rather than an extension of `aFinalReport` above: that one is
+ * minimal (used where only usage/thread-id matter to `recordedSpan`), and
+ * widening it here would force every existing call site to reason about the
+ * risk/plan/validation fields it now has to carry.
+ */
+export function aReport(overrides: Partial<FinalReport> = {}): FinalReport {
+  return {
+    thread_id: "t-1",
+    repo_ref: { kind: "local", path: "/srv/repo" },
+    dependency: {
+      name: "pydantic",
+      // Ruling F4: both are `@computed_field`s the schema requires --
+      // `canonical_name` is the PEP-503 normalised name, `import_root` is the
+      // guessed top-level module name.
+      canonical_name: "pydantic",
+      current_version: "1.10.13",
+      target_version: "2.9.2",
+      import_root: "pydantic",
+    },
+    constraints: { zero_downtime: false, minimize_effort: false, deadline: null, risk_tolerance: "medium" },
+    commit_sha: null,
+    completed_at: "2026-08-25T12:00:00Z",
+    repo_analysis: null,
+    affected_files: [],
+    breaking_changes: [],
+    rag_context: null,
+    risk_analysis: aRiskAnalysis(),
+    migration_plan: null,
+    validation: null,
+    human_decisions: [],
+    usage: {
+      calls: 4,
+      input_tokens: 320,
+      output_tokens: 40,
+      // Ruling F3: `UsageSummary` has no `total_tokens` property at all.
+      by_model: [],
+      by_node: [],
+      estimated: false,
+      pricing_complete: true,
+      estimated_cost_usd: 0.00042,
+    },
+    agent_trace: [],
+    errors: [],
+    completed_with_warnings: false,
+    version_discrepancy: null,
     ...overrides,
   };
 }

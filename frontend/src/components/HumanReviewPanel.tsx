@@ -24,26 +24,9 @@ import { AlertTriangle, UserCheck } from "lucide-react";
 import { useState } from "react";
 
 import { ApiFailure, resumeRun } from "../api/client";
-import type { DecisionOption, EvidenceRef, InterruptPayload } from "../api/types";
-import { Card, LevelBadge, Mono, Panel } from "./ui";
-
-/**
- * One line per evidence ref, in the shape that fits its kind.
- *
- * Discriminated on a required, kind-unique field (`file`, then `chunk_id`)
- * rather than on `.kind` itself: `RepoEvidence["kind"]` and its siblings are
- * typed `"repo" | undefined` because the backend field carries a default, so
- * a `switch` on `.kind` alone cannot eliminate the other two shapes from the
- * type and would need a cast to reach `.file` or `.field`. `in` narrows
- * cleanly with no cast, on a field every real payload actually has.
- */
-function describeEvidence(ref: EvidenceRef): string {
-  if ("file" in ref) return `${ref.file}:${ref.line}`;
-  if ("chunk_id" in ref) {
-    return ref.relevance != null ? `${ref.source_id} — similarity ${ref.relevance.toFixed(2)}` : ref.source_id;
-  }
-  return `${ref.field} = ${ref.value}`;
-}
+import type { DecisionOption, InterruptPayload } from "../api/types";
+import { EvidenceRefList } from "./report/RiskFactorsTab";
+import { Card, LevelBadge, Panel } from "./ui";
 
 /** `DecisionKind` read aloud, for the group's accessible name and the header. */
 function readKind(kind: InterruptPayload["kind"]): string {
@@ -145,13 +128,9 @@ export function HumanReviewPanel({
             {decision.evidence.length > 0 && (
               <div className="mt-2">
                 <p className="text-[11px] tracking-wide text-ink-faint uppercase">Evidence</p>
-                <ul className="mt-1 space-y-0.5">
-                  {decision.evidence.map((ref) => (
-                    <li key={describeEvidence(ref)} className="text-xs text-ink-muted">
-                      <Mono>{describeEvidence(ref)}</Mono>
-                    </li>
-                  ))}
-                </ul>
+                {/* `EvidenceRefList` is the one renderer for `EvidenceRef[]`
+                    (ruling T11b) -- this panel no longer keeps its own copy. */}
+                <EvidenceRefList refs={decision.evidence} />
               </div>
             )}
             {/* `pending-input`, not `risk-medium`: this is information about
