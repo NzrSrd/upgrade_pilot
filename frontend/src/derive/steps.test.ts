@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { aSnapshot } from "../test/fixtures";
+import { anApiError, aRiskAnalysis, aSnapshot } from "../test/fixtures";
 import { STEPS, stepStates } from "./steps";
 
 const stateOf = (steps: ReturnType<typeof stepStates>, node: string) =>
   steps.find((step) => step.node === node)?.state;
+
+const reasonOf = (steps: ReturnType<typeof stepStates>, node: string) =>
+  steps.find((step) => step.node === node)?.reason;
 
 describe("stepStates", () => {
   it("always reports all eight steps, in workflow order", () => {
@@ -72,6 +75,7 @@ describe("stepStates", () => {
           "generate_plan",
         ],
         current_step: "validate_plan",
+        risk_analysis: aRiskAnalysis(),
       }),
     );
 
@@ -93,6 +97,7 @@ describe("stepStates", () => {
           "finalize",
         ],
         current_step: null,
+        risk_analysis: aRiskAnalysis(),
       }),
     );
 
@@ -163,5 +168,103 @@ describe("stepStates", () => {
 
     expect(stateOf(steps, "inspect_dependency")).toBe("pending");
     expect(steps.filter((step) => step.state === "skipped")).toHaveLength(0);
+  });
+  it("marks a step failed when it recorded an error and produced nothing", () => {
+    // The run this test exists for: `analyze_repo` refused a path that does
+    // not exist, every later node ran and honestly skipped its work, and the
+    // run finished with warnings. `traced()` records an error only on the
+    // path where the body produced no update at all, so a step with an error
+    // and no output did not "complete" -- and rendering it green is how a run
+    // of zeroes came to carry eight checkmarks.
+    const steps = stepStates(
+      aSnapshot({
+        status: "completed_with_warnings",
+        completed_steps: [
+          "analyze_repo",
+          "inspect_dependency",
+          "agentic_rag",
+          "assess_risk",
+          "generate_plan",
+          "validate_plan",
+          "finalize",
+        ],
+        current_step: null,
+        errors: [anApiError()],
+      }),
+    );
+
+    expect(stateOf(steps, "analyze_repo")).toBe("failed");
+  });
+
+  it("leaves a degraded step completed when it recorded an error but still produced its output", () => {
+    // `assess_risk` records an error when the narrative call fails and says
+    // so itself: "the risk factors and levels are unaffected; only the
+    // written narrative is missing" (`graph/nodes/judgment.py`). The
+    // assessment exists. Marking that step failed would report a working
+    // measurement as a broken one, which is the mirror image of the defect
+    // above and just as wrong.
+    const steps = stepStates(
+      aSnapshot({
+        status: "completed",
+        completed_steps: ["analyze_repo", "inspect_dependency", "agentic_rag", "assess_risk"],
+        current_step: "generate_plan",
+        risk_analysis: aRiskAnalysis(),
+        errors: [anApiError({ code: "llm_unavailable", node: "assess_risk" })],
+      }),
+    );
+
+    expect(stateOf(steps, "assess_risk")).toBe("completed");
+  });
+
+  it("says human review was resolved by constraints only when a risk analysis exists", () => {
+    // The claim needs the thing it is a claim about. A question could only
+    // have been settled by constraints if there was an assessment to settle,
+    // so the reason is carried by the step rather than assumed by whatever
+    // renders it.
+    const settled = stepStates(
+      aSnapshot({
+        status: "completed",
+        completed_steps: [
+          "analyze_repo",
+          "inspect_dependency",
+          "agentic_rag",
+          "assess_risk",
+          "generate_plan",
+          "validate_plan",
+          "finalize",
+        ],
+        current_step: null,
+        risk_analysis: aRiskAnalysis(),
+      }),
+    );
+
+    expect(stateOf(settled, "human_review")).toBe("skipped");
+    expect(reasonOf(settled, "human_review")).toBe("resolved-by-constraints");
+  });
+
+  it("does not claim constraints resolved a question the run never got to ask", () => {
+    // The degraded run again. `human_review` was skipped because there was
+    // no analysis to build a question from -- nothing about the constraints
+    // decided anything, and saying they did invents a reason the snapshot
+    // contradicts.
+    const degraded = stepStates(
+      aSnapshot({
+        status: "completed_with_warnings",
+        completed_steps: [
+          "analyze_repo",
+          "inspect_dependency",
+          "agentic_rag",
+          "assess_risk",
+          "generate_plan",
+          "validate_plan",
+          "finalize",
+        ],
+        current_step: null,
+        errors: [anApiError()],
+      }),
+    );
+
+    expect(stateOf(degraded, "human_review")).toBe("skipped");
+    expect(reasonOf(degraded, "human_review")).toBe("not-reached");
   });
 });

@@ -12,7 +12,7 @@ import type { ReactNode } from "react";
 
 import type { RunSnapshot } from "../api/types";
 import { stepStates } from "../derive/steps";
-import type { StepState } from "../derive/steps";
+import type { SkipReason, Step, StepState } from "../derive/steps";
 
 /**
  * The word for each state, and its icon.
@@ -40,7 +40,10 @@ const APPEARANCE: Record<StepState, { word: string; icon: ReactNode; className: 
   skipped: {
     // The reason travels with the word. Without it "skipped" reads as an
     // omission rather than a decision the constraints already made (spec 8.2).
-    word: "skipped, resolved by constraints",
+    // Which reason it is comes from `derive/steps.ts`, never from this
+    // component: the constraints only settle a question that existed, and a
+    // run that produced no assessment had none. See `SKIP_REASON` below.
+    word: "skipped",
     icon: <MinusCircle className="size-3.5" aria-hidden />,
     className: "text-ink-faint",
   },
@@ -56,13 +59,32 @@ const APPEARANCE: Record<StepState, { word: string; icon: ReactNode; className: 
   },
 };
 
+/**
+ * The whole phrase for each skip reason, not a suffix bolted onto "skipped".
+ *
+ * "Resolved by constraints" is a claim, and it is only true of a run that got
+ * far enough to have a question — so it keeps the word "skipped", which is
+ * what it is: a step the constraints decided not to need. A step the run
+ * never got to is not a skipped step at all, and "skipped, not reached" would
+ * be two answers to one question. It reads as the gap it is.
+ */
+const SKIP_REASON: Record<SkipReason, string> = {
+  "resolved-by-constraints": "skipped, resolved by constraints",
+  "not-reached": "not reached",
+};
+
+function wordFor(step: Step, base: string): string {
+  return step.reason === undefined ? base : SKIP_REASON[step.reason];
+}
+
 export function WorkflowTimeline({ snapshot }: { snapshot: RunSnapshot | null }) {
   const steps = stepStates(snapshot);
 
   return (
     <ol className="flex flex-wrap items-stretch gap-1.5" aria-label="Workflow progress">
       {steps.map((step) => {
-        const { word, icon, className } = APPEARANCE[step.state];
+        const { word: base, icon, className } = APPEARANCE[step.state];
+        const word = wordFor(step, base);
         return (
           <li
             key={step.node}

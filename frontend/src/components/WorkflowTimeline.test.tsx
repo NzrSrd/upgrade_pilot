@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { aSnapshot } from "../test/fixtures";
+import { anApiError, aRiskAnalysis, aSnapshot } from "../test/fixtures";
 import { WorkflowTimeline } from "./WorkflowTimeline";
 
 describe("WorkflowTimeline", () => {
@@ -74,6 +74,7 @@ describe("WorkflowTimeline", () => {
             "finalize",
           ],
           current_step: null,
+          risk_analysis: aRiskAnalysis(),
         })}
       />,
     );
@@ -95,5 +96,55 @@ describe("WorkflowTimeline", () => {
     );
 
     expect(screen.getByRole("listitem", { name: /Dependency Analysis: failed/i })).toBeInTheDocument();
+  });
+  it("does not credit the constraints for a step the run never reached", () => {
+    // The degraded run: `analyze_repo` failed, so there was never a question
+    // for the constraints to settle. Saying they settled one would present a
+    // broken run as a normal one -- the exact thing the narrow `skipped` rule
+    // in `derive/steps.ts` exists to prevent.
+    render(
+      <WorkflowTimeline
+        snapshot={aSnapshot({
+          status: "completed_with_warnings",
+          completed_steps: [
+            "analyze_repo",
+            "inspect_dependency",
+            "agentic_rag",
+            "assess_risk",
+            "generate_plan",
+            "validate_plan",
+            "finalize",
+          ],
+          current_step: null,
+          errors: [anApiError()],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("listitem", { name: /Human Review: not reached/i })).toBeInTheDocument();
+    expect(screen.queryByRole("listitem", { name: /resolved by constraints/i })).toBeNull();
+  });
+
+  it("marks a step that errored and produced nothing, even on a run that finished", () => {
+    render(
+      <WorkflowTimeline
+        snapshot={aSnapshot({
+          status: "completed_with_warnings",
+          completed_steps: [
+            "analyze_repo",
+            "inspect_dependency",
+            "agentic_rag",
+            "assess_risk",
+            "generate_plan",
+            "validate_plan",
+            "finalize",
+          ],
+          current_step: null,
+          errors: [anApiError()],
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("listitem", { name: /Repository Analysis: failed/i })).toBeInTheDocument();
   });
 });
