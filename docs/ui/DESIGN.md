@@ -497,6 +497,17 @@ past an unanswered question or reach a report that does not exist yet.
   reached the user as a report of zeroes with no stated cause.
   `AppError.message` is the user-facing half; `detail` stays server-side
   (rule 27).
+- **A `Start a corrected run` button inside that banner**, when at least one
+  recorded error's code appears in `FIELD_FOR_CODE` — the form's own map from
+  an error code to the input it belongs beside, and therefore the existing
+  definition of "this error is about something the user typed". It seeds the
+  configuration form from `FinalReport`'s `repo_ref`, `dependency` and
+  `constraints`, so correcting a mistyped path costs the path rather than the
+  dependency, both versions and four constraints as well. Seeded, never
+  locked. The button stays away from an error nothing in the form can fix, such
+  as `kb_unavailable`, where a prefilled form would point at a field that was
+  never wrong. `failed` and `orphaned` runs cannot offer this: they have no
+  `final_report`, and their inputs stay in the checkpoint.
 
 ### Risk Factors
 

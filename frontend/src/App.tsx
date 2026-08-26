@@ -13,6 +13,8 @@ import { RunMetrics } from "./components/RunMetrics";
 import { TopBar } from "./components/TopBar";
 import { Panel } from "./components/ui";
 import { WorkflowTimeline } from "./components/WorkflowTimeline";
+import { prefillFrom } from "./derive/prefill";
+import type { FormPrefill } from "./derive/prefill";
 import { viewFor } from "./derive/view";
 import { useHealth } from "./hooks/useHealth";
 import { useRunPolling } from "./hooks/useRunPolling";
@@ -20,6 +22,11 @@ import { useSessionRuns } from "./hooks/useSessionRuns";
 
 export default function App() {
   const [threadId, setThreadId] = useState<string | null>(null);
+  // The inputs a finished run was started with, held so the configuration form
+  // can be seeded from them. Lives here rather than in the form because the
+  // form unmounts the moment a run starts, and here because `App` already owns
+  // the only thing that decides which view is on screen.
+  const [prefill, setPrefill] = useState<{ fromThread: string; values: FormPrefill } | null>(null);
   const [traceOpen, setTraceOpen] = useState(false);
   const { snapshot, error, reconnecting, restart } = useRunPolling(threadId);
   const { health } = useHealth();
@@ -66,7 +73,13 @@ export default function App() {
           current={threadId}
           summary={summary}
           health={health}
-          onNewRun={() => setThreadId(null)}
+          onNewRun={() => {
+            // Clearing is not optional: a new run means a blank form, and the
+            // prefill outliving the retry that set it would make this button
+            // silently reopen the last correction.
+            setPrefill(null);
+            setThreadId(null);
+          }}
           onSelectRun={setThreadId}
         />
       }
@@ -111,6 +124,15 @@ export default function App() {
         )}
         {view === "configuration" && (
           <ConfigurationForm
+            // Keyed on the run the correction came from. The fields read
+            // `prefill` in their `useState` initialisers, so a form that
+            // stayed mounted across a change would keep the old values --
+            // today it cannot, because a retry is only reachable from the
+            // report view and the form unmounts to get there, but a key that
+            // tracks the actual source costs nothing and does not depend on
+            // that remaining true.
+            key={prefill?.fromThread ?? "blank"}
+            prefill={prefill?.values}
             onStarted={(run) => {
               remember(run);
               setThreadId(run.threadId);
@@ -151,7 +173,15 @@ export default function App() {
               </p>
             </Panel>
           ))}
-        {view === "report" && snapshot !== null && <ReportView snapshot={snapshot} />}
+        {view === "report" && snapshot !== null && (
+          <ReportView
+            snapshot={snapshot}
+            onRetry={(report) => {
+              setPrefill({ fromThread: report.thread_id, values: prefillFrom(report) });
+              setThreadId(null);
+            }}
+          />
+        )}
         {view === "error" && (
           <ErrorView
             snapshot={snapshot}

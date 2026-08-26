@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 
+import type { FormPrefill } from "../derive/prefill";
 import { server } from "../test/server";
 import { ConfigurationForm } from "./ConfigurationForm";
 
@@ -266,5 +267,71 @@ describe("ConfigurationForm", () => {
         to: "2.9.2",
       }),
     );
+  });
+  it("starts empty when given no prefill", () => {
+    render(<ConfigurationForm onStarted={() => {}} />);
+
+    expect(screen.getByLabelText(/repository url/i)).toHaveValue("");
+    expect(screen.getByLabelText(/dependency/i)).toHaveValue("");
+    expect(screen.getByLabelText(/risk tolerance/i)).toHaveValue("medium");
+  });
+
+  it("seeds every field from a prefill, so correcting one costs only that one", () => {
+    // A mistyped path should cost the path, not the dependency, both versions
+    // and four constraints as well.
+    const prefill: FormPrefill = {
+      source: "local",
+      url: "",
+      path: "/Users/me/Code/payments-service",
+      name: "pydantic",
+      from: "1.10.13",
+      to: "2.9.2",
+      zeroDowntime: true,
+      minimizeEffort: true,
+      deadline: "2026-09-15",
+      riskTolerance: "low",
+    };
+
+    render(<ConfigurationForm onStarted={() => {}} prefill={prefill} />);
+
+    // The source radio follows the ref kind, so the path input is the one on
+    // screen rather than the URL input the run never used.
+    expect(screen.getByRole("radio", { name: /local/i })).toBeChecked();
+    expect(screen.getByLabelText(/local path/i)).toHaveValue("/Users/me/Code/payments-service");
+    expect(screen.getByLabelText(/dependency/i)).toHaveValue("pydantic");
+    expect(screen.getByLabelText(/current version/i)).toHaveValue("1.10.13");
+    expect(screen.getByLabelText(/target version/i)).toHaveValue("2.9.2");
+    expect(screen.getByLabelText(/zero downtime/i)).toBeChecked();
+    expect(screen.getByLabelText(/minimize effort/i)).toBeChecked();
+    expect(screen.getByLabelText(/deadline/i)).toHaveValue("2026-09-15");
+    expect(screen.getByLabelText(/risk tolerance/i)).toHaveValue("low");
+  });
+
+  it("leaves a prefilled field editable", async () => {
+    // Seeded, not locked: the whole point is to correct one of these.
+    const user = userEvent.setup();
+    render(
+      <ConfigurationForm
+        onStarted={() => {}}
+        prefill={{
+          source: "local",
+          url: "",
+          path: "/User/Code/payments-service",
+          name: "pydantic",
+          from: "1.10.13",
+          to: "2.9.2",
+          zeroDowntime: false,
+          minimizeEffort: false,
+          deadline: "",
+          riskTolerance: "medium",
+        }}
+      />,
+    );
+
+    const input = screen.getByLabelText(/local path/i);
+    await user.clear(input);
+    await user.type(input, "/Users/me/Code/payments-service");
+
+    expect(input).toHaveValue("/Users/me/Code/payments-service");
   });
 });

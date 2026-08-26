@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { anApiError, aReport, aSnapshot } from "../../test/fixtures";
 import { ReportView } from "./ReportView";
@@ -159,5 +159,80 @@ describe("ReportView", () => {
     );
 
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+  it("offers a corrected run when an error names something the user typed", () => {
+    // `local_path_forbidden` is in `FIELD_FOR_CODE`, the map the form already
+    // uses to decide which input an error belongs beside. That map is the
+    // definition of "about something the user typed", so it decides this too
+    // rather than a second list free to disagree with it.
+    render(
+      <ReportView
+        snapshot={aSnapshot({
+          status: "completed_with_warnings",
+          final_report: aReport({ completed_with_warnings: true }),
+          errors: [anApiError()],
+        })}
+        onRetry={() => {}}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /corrected run/i })).toBeInTheDocument();
+  });
+
+  it("offers nothing to correct when the error was not about an input", () => {
+    // A knowledge base that was unreachable is not a typo. A prefilled form
+    // would tell the user to fix something they got right.
+    render(
+      <ReportView
+        snapshot={aSnapshot({
+          status: "completed_with_warnings",
+          final_report: aReport({ completed_with_warnings: true }),
+          errors: [
+            anApiError({
+              code: "kb_unavailable",
+              message: "The knowledge base could not be reached.",
+              node: "agentic_rag",
+            }),
+          ],
+        })}
+        onRetry={() => {}}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /corrected run/i })).toBeNull();
+  });
+
+  it("offers no corrected run on a clean report", () => {
+    render(
+      <ReportView
+        snapshot={aSnapshot({ status: "completed", final_report: aReport() })}
+        onRetry={() => {}}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /corrected run/i })).toBeNull();
+  });
+
+  it("hands the report's own inputs back on click", async () => {
+    const user = userEvent.setup();
+    const onRetry = vi.fn();
+    const report = aReport({
+      completed_with_warnings: true,
+      repo_ref: { kind: "local", path: "/User/Code/payments-service" },
+    });
+    render(
+      <ReportView
+        snapshot={aSnapshot({
+          status: "completed_with_warnings",
+          final_report: report,
+          errors: [anApiError()],
+        })}
+        onRetry={onRetry}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /corrected run/i }));
+
+    expect(onRetry).toHaveBeenCalledWith(report);
   });
 });

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import { POLL_MS } from "./hooks/useRunPolling";
-import { anInterrupt, aSnapshot } from "./test/fixtures";
+import { anApiError, anInterrupt, aReport, aSnapshot } from "./test/fixtures";
 import { server } from "./test/server";
 
 const HEALTH = "http://localhost/api/health";
@@ -519,5 +519,62 @@ describe("App — awaiting_human with no payload", () => {
     // underneath it.
     const pill = document.querySelector("[aria-live]");
     expect(pill).toHaveTextContent(/waiting for your decision/i);
+  });
+  it("carries a failed run's inputs into a corrected run, and clears them for a new one", async () => {
+    // The whole feature, end to end through the composition: a mistyped path
+    // is the only thing that should need retyping, and "New migration run"
+    // must still mean a blank form afterwards -- App holds the prefill, so
+    // without clearing it the sidebar's blank-form button is not blank.
+    const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
+    server.use(
+      http.get(HEALTH, () =>
+        HttpResponse.json({ status: "ok", version: "0.1.0", checks: { chroma_dir: true, checkpoint_dir: true, llm_configured: true } }),
+      ),
+      http.post(START, () =>
+        HttpResponse.json({ thread_id: "t-1", status: "running", poll_url: "/api/agent/status/t-1" }, { status: 202 }),
+      ),
+      http.get(STATUS, () =>
+        HttpResponse.json(
+          aSnapshot({
+            status: "completed_with_warnings",
+            errors: [anApiError()],
+            final_report: aReport({
+              completed_with_warnings: true,
+              repo_ref: { kind: "local", path: "/User/Code/payments-service" },
+              constraints: { zero_downtime: true, minimize_effort: false, deadline: null, risk_tolerance: "low" },
+            }),
+          }),
+        ),
+      ),
+    );
+
+    render(<App />);
+
+    await user.click(screen.getByRole("radio", { name: /local/i }));
+    await user.type(screen.getByLabelText(/local path/i), "/User/Code/payments-service");
+    await user.type(screen.getByLabelText(/^dependency$/i), "pydantic");
+    await user.type(screen.getByLabelText(/current version/i), "1.10.13");
+    await user.type(screen.getByLabelText(/target version/i), "2.9.2");
+    await user.click(screen.getByRole("button", { name: /start migration audit/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /corrected run/i })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: /corrected run/i }));
+
+    // Back on the form, holding the run's own inputs -- including the
+    // constraints, which the user would otherwise have to remember.
+    expect(screen.getByLabelText(/local path/i)).toHaveValue("/User/Code/payments-service");
+    expect(screen.getByLabelText(/^dependency$/i)).toHaveValue("pydantic");
+    expect(screen.getByLabelText(/current version/i)).toHaveValue("1.10.13");
+    expect(screen.getByLabelText(/zero downtime/i)).toBeChecked();
+    expect(screen.getByLabelText(/risk tolerance/i)).toHaveValue("low");
+
+    // And a new run means new: the prefill does not outlive the retry.
+    await user.click(screen.getByRole("button", { name: /new migration run/i }));
+
+    expect(screen.getByLabelText(/repository url/i)).toHaveValue("");
+    expect(screen.getByLabelText(/^dependency$/i)).toHaveValue("");
+    expect(screen.getByLabelText(/risk tolerance/i)).toHaveValue("medium");
   });
 });

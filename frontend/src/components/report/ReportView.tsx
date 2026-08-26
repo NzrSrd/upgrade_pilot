@@ -18,8 +18,9 @@
 import { useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 
-import type { RunSnapshot } from "../../api/types";
+import type { FinalReport, RunSnapshot } from "../../api/types";
 import { STEPS } from "../../derive/steps";
+import { FIELD_FOR_CODE } from "../ConfigurationForm";
 import { EmptyState, Panel } from "../ui";
 import { CodeTab } from "./CodeTab";
 import { EvidenceTab } from "./EvidenceTab";
@@ -65,11 +66,27 @@ function panelId(id: ReportTab): string {
  * keeps every factor and level when its narrative call fails — and the honest
  * thing is to report the error and let the tabs below show what survived.
  */
-function RecordedErrors({ snapshot }: { snapshot: RunSnapshot }) {
+function RecordedErrors({
+  snapshot,
+  report,
+  onRetry,
+}: {
+  snapshot: RunSnapshot;
+  report: FinalReport;
+  onRetry?: (report: FinalReport) => void;
+}) {
   const errors = snapshot.errors ?? [];
   if (errors.length === 0) {
     return null;
   }
+
+  // `FIELD_FOR_CODE` is the form's own map from an error code to the input it
+  // belongs beside, which makes it the existing definition of "this error is
+  // about something the user typed". Reusing it means the button appears for a
+  // bad path or an absent dependency and stays away from a `kb_unavailable`,
+  // where a prefilled form would point at a field that was never wrong --
+  // and there is one list to keep true rather than two.
+  const correctable = errors.some((error) => FIELD_FOR_CODE[error.code] !== undefined);
 
   return (
     <div
@@ -88,6 +105,15 @@ function RecordedErrors({ snapshot }: { snapshot: RunSnapshot }) {
           </li>
         ))}
       </ul>
+      {correctable && onRetry !== undefined && (
+        <button
+          type="button"
+          onClick={() => onRetry(report)}
+          className="mt-2.5 rounded-md border border-risk-high/60 px-2.5 py-1 text-xs font-medium text-risk-high hover:bg-risk-high/15"
+        >
+          Start a corrected run
+        </button>
+      )}
     </div>
   );
 }
@@ -100,7 +126,13 @@ function labelFor(node: string | null | undefined): string {
   return STEPS.find((step) => step.node === node)?.label ?? node;
 }
 
-export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
+export function ReportView({
+  snapshot,
+  onRetry,
+}: {
+  snapshot: RunSnapshot;
+  onRetry?: (report: FinalReport) => void;
+}) {
   const [tab, setTab] = useState<ReportTab>("overview");
   // Roving tabindex (fix-round-1 finding 3): only the selected tab is a
   // stop on the page's Tab order; arrow keys move both the selection and
@@ -129,7 +161,7 @@ export function ReportView({ snapshot }: { snapshot: RunSnapshot }) {
 
   return (
     <div className="space-y-4">
-      <RecordedErrors snapshot={snapshot} />
+      <RecordedErrors snapshot={snapshot} report={report} onRetry={onRetry} />
 
       {report.completed_with_warnings && (
         // Fix-round-1 finding 2: DESIGN.md's token table assigns "failed

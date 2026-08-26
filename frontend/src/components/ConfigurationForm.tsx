@@ -21,6 +21,7 @@ import type { FormEvent } from "react";
 
 import { ApiFailure, startRun } from "../api/client";
 import type { ErrorCode, RiskLevel } from "../api/types";
+import type { FormPrefill } from "../derive/prefill";
 import type { SessionRun } from "../hooks/useSessionRuns";
 import { Panel } from "./ui";
 
@@ -44,17 +45,45 @@ export const FIELD_FOR_CODE: Partial<Record<ErrorCode, FormField>> = {
 
 const RISK_OPTIONS: RiskLevel[] = ["low", "medium", "high"];
 
-export function ConfigurationForm({ onStarted }: { onStarted: (run: SessionRun) => void }) {
-  const [source, setSource] = useState<"remote" | "local">("remote");
-  const [url, setUrl] = useState("");
-  const [path, setPath] = useState("");
-  const [name, setName] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
-  const [zeroDowntime, setZeroDowntime] = useState(false);
-  const [minimizeEffort, setMinimizeEffort] = useState(false);
-  const [deadline, setDeadline] = useState("");
-  const [riskTolerance, setRiskTolerance] = useState<RiskLevel>("medium");
+/**
+ * A blank form, and the one thing every field's initial value is read from.
+ *
+ * `prefill` seeds these and nothing else -- the form stays the owner of its
+ * own state, so a seeded field is as editable as an empty one. That is the
+ * whole point: the affordance exists to correct one field, and a locked
+ * field would defeat it.
+ */
+const BLANK: FormPrefill = {
+  source: "remote",
+  url: "",
+  path: "",
+  name: "",
+  from: "",
+  to: "",
+  zeroDowntime: false,
+  minimizeEffort: false,
+  deadline: "",
+  riskTolerance: "medium",
+};
+
+export function ConfigurationForm({
+  onStarted,
+  prefill,
+}: {
+  onStarted: (run: SessionRun) => void;
+  prefill?: FormPrefill;
+}) {
+  const initial = prefill ?? BLANK;
+  const [source, setSource] = useState<"remote" | "local">(initial.source);
+  const [url, setUrl] = useState(initial.url);
+  const [path, setPath] = useState(initial.path);
+  const [name, setName] = useState(initial.name);
+  const [from, setFrom] = useState(initial.from);
+  const [to, setTo] = useState(initial.to);
+  const [zeroDowntime, setZeroDowntime] = useState(initial.zeroDowntime);
+  const [minimizeEffort, setMinimizeEffort] = useState(initial.minimizeEffort);
+  const [deadline, setDeadline] = useState(initial.deadline);
+  const [riskTolerance, setRiskTolerance] = useState<RiskLevel>(initial.riskTolerance);
 
   const [submitting, setSubmitting] = useState(false);
   const [fieldError, setFieldError] = useState<{ field: FormField; message: string } | null>(null);
