@@ -11,7 +11,7 @@
  * from the `describeEvidence` it replaces.
  */
 
-import type { EvidenceRef } from "../api/types";
+import type { EvidenceRef, UsageSite } from "../api/types";
 
 /**
  * One line of text describing a ref, in the shape that fits its kind.
@@ -46,4 +46,31 @@ export function evidenceRefKey(ref: EvidenceRef): string {
   if ("file" in ref) return `repo:${ref.file}:${ref.line}`;
   if ("chunk_id" in ref) return `doc:${ref.chunk_id}`;
   return `constraint:${ref.field}:${ref.value}`;
+}
+
+/**
+ * A React list key for one usage site, by structural identity -- the same
+ * doctrine as `evidenceRefKey` above, and it fails the same way when position
+ * is trusted alone.
+ *
+ * `file`+`line`+`column` is NOT an identity. `_emit_import_sites`
+ * (`services/analysis/usage.py`) emits one site per alias entry, every one of
+ * them carrying the import statement's own line and column, so
+ * `from pydantic import BaseModel, root_validator` is two sites at an
+ * identical `5:0` and a three-name import is three. Keyed on position, React
+ * reported duplicate keys on the repository-evidence list and was free to
+ * duplicate or omit rows -- on a list whose entire job is to be the evidence.
+ *
+ * `symbol` is what separates them, and `kind` is included because it is the
+ * remaining field that distinguishes one site from another: `confidence` is a
+ * judgement about the site and `snippet` is a quote of the line the other
+ * fields already point at, so neither is identity. Verified against a real
+ * analysis: three position collisions across five files, none once symbol and
+ * kind are included.
+ *
+ * `CodeTab` keys on `line:column:symbol`, which is sufficient only because
+ * its list is already scoped to one file. This is the unscoped form.
+ */
+export function usageSiteKey(site: UsageSite): string {
+  return `${site.file}:${site.line}:${site.column}:${site.symbol}:${site.kind}`;
 }

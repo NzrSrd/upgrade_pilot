@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeEvidenceRef, evidenceRefKey } from "./evidence";
+import { describeEvidenceRef, evidenceRefKey, usageSiteKey } from "./evidence";
 
 describe("describeEvidenceRef", () => {
   it("describes a repo ref as file:line", () => {
@@ -51,5 +51,42 @@ describe("evidenceRefKey", () => {
     expect(evidenceRefKey({ kind: "constraint", field: "deadline", value: "2026-09-01" })).toBe(
       "constraint:deadline:2026-09-01",
     );
+  });
+});
+
+describe("usageSiteKey", () => {
+  const site = {
+    file: "src/payments/ledger.py",
+    line: 5,
+    column: 0,
+    symbol: "BaseModel",
+    kind: "import" as const,
+    confidence: "low" as const,
+    snippet: "from pydantic import BaseModel, root_validator",
+  };
+
+  it("distinguishes two sites that share a position", () => {
+    // `_emit_import_sites` emits one site per alias entry, all carrying the
+    // import statement's own line and column -- so `from pydantic import
+    // BaseModel, root_validator` produces two sites at an identical 5:0.
+    // Position alone can never identify an import site, which is why keying
+    // on it collided in `EvidenceTab`.
+    expect(usageSiteKey(site)).not.toBe(usageSiteKey({ ...site, symbol: "root_validator" }));
+  });
+
+  it("distinguishes the same symbol recorded under two kinds", () => {
+    expect(usageSiteKey(site)).not.toBe(usageSiteKey({ ...site, kind: "model_definition" }));
+  });
+
+  it("is stable for the same site, and independent of what it quotes", () => {
+    // `confidence` and `snippet` are not identity: the snippet is a quote of
+    // the line the other fields already point at.
+    expect(usageSiteKey(site)).toBe(usageSiteKey({ ...site, snippet: null, confidence: "high" }));
+  });
+
+  it("distinguishes the same symbol in two files and on two lines", () => {
+    expect(usageSiteKey(site)).not.toBe(usageSiteKey({ ...site, file: "src/payments/models.py" }));
+    expect(usageSiteKey(site)).not.toBe(usageSiteKey({ ...site, line: 6 }));
+    expect(usageSiteKey(site)).not.toBe(usageSiteKey({ ...site, column: 4 }));
   });
 });

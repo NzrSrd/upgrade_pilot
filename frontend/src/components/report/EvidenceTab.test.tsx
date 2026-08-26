@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { aBreakingChange, aReport, aSnapshot, aSourceRef } from "../../test/fixtures";
 import { EvidenceTab } from "./EvidenceTab";
@@ -130,5 +130,47 @@ describe("EvidenceTab", () => {
     // `evidence_available` is true here even though `sufficient` is false --
     // the two are different claims, and only one of them is "no".
     expect(screen.getByText("yes")).toBeInTheDocument();
+  });
+  it("renders every usage site on an import line, and keys them uniquely", () => {
+    // `from pydantic import BaseModel, root_validator` is two usage sites at
+    // one position: `_emit_import_sites` emits per alias entry, all carrying
+    // the import statement's line and column. Keyed on position alone, React
+    // saw duplicate keys -- "children may be duplicated and/or omitted" is
+    // its own description of what that permits, and this list is evidence.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const importLine = "from pydantic import BaseModel, root_validator";
+    const shared = {
+      file: "src/payments/ledger.py",
+      line: 5,
+      column: 0,
+      kind: "import" as const,
+      confidence: "low" as const,
+      snippet: importLine,
+    };
+    const twoSitesOneLine = {
+      ...file,
+      path: "src/payments/ledger.py",
+      symbols: ["BaseModel", "root_validator"],
+      usage_sites: [
+        { ...shared, symbol: "BaseModel" },
+        { ...shared, symbol: "root_validator" },
+      ],
+    };
+
+    render(
+      <EvidenceTab
+        report={aReport({ affected_files: [twoSitesOneLine], rag_context: sufficientRag })}
+        snapshot={aSnapshot({ status: "completed" })}
+      />,
+    );
+
+    expect(screen.getByText(/BaseModel/)).toBeInTheDocument();
+    expect(screen.getByText(/root_validator/)).toBeInTheDocument();
+
+    const keyWarnings = consoleError.mock.calls.filter((call) =>
+      call.some((arg) => typeof arg === "string" && arg.includes("same key")),
+    );
+    expect(keyWarnings).toEqual([]);
+    consoleError.mockRestore();
   });
 });

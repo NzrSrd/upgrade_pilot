@@ -15,6 +15,7 @@
  */
 
 import type { FinalReport, RunSnapshot } from "../../api/types";
+import { usageSiteKey } from "../../derive/evidence";
 import { EvidencePanel, selectedSourceIds } from "../EvidencePanel";
 import { EmptyState, Field, Mono, Panel } from "../ui";
 
@@ -48,7 +49,7 @@ export function EvidenceTab({
           <ul className="space-y-1">
             {affectedFiles.flatMap((file) =>
               file.usage_sites.map((site) => (
-                <li key={`${site.file}:${site.line}:${site.column}`} className="text-sm">
+                <li key={usageSiteKey(site)} className="text-sm">
                   <Mono>
                     {site.file}:{site.line}
                   </Mono>{" "}
