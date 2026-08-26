@@ -68,16 +68,26 @@ export const ALL_STATUSES: ReadonlySet<RunStatus> = new Set([
 ]);
 
 /**
- * Statuses where polling stops because nothing further will change on its own.
+ * Statuses where the poll loop stops scheduling its next tick on its own.
  *
- * `orphaned` is here and `awaiting_human` is not, and both are deliberate. An
- * orphaned run's process is gone, so continuing to poll is asking a question
- * whose answer cannot change until someone resumes it. A run awaiting a human
- * *can* change without this client doing anything — another client may answer
- * it — and the transition out of the decision panel is the single thing the
- * user is watching for.
+ * This describes the poll loop's behaviour, not the run's finality — that
+ * distinction is the entire reason for the name. `completed`,
+ * `completed_with_warnings` and `failed` really are terminal: no code path
+ * changes them again. `orphaned` is not — it is the one stopped-but-resumable
+ * state, which is why it has a resume affordance at all. It belongs in this
+ * set because no process is currently advancing the run, so ticking a fixed
+ * question every second is pointless until someone acts — not because the run
+ * itself cannot change. An explicit resume (`useRunPolling`'s `restart`)
+ * re-enters the loop; removing `orphaned` from this set instead would poll a
+ * genuinely abandoned run once a second forever, which is what put it here in
+ * the first place.
+ *
+ * `awaiting_human` is deliberately absent for the opposite reason: a run
+ * awaiting a human *can* change without this client doing anything — another
+ * client may answer it — and the transition out of the decision panel is the
+ * single thing the user is watching for.
  */
-export const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set([
+export const POLLING_STOPS_ON: ReadonlySet<RunStatus> = new Set([
   "completed",
   "completed_with_warnings",
   "failed",

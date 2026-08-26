@@ -151,3 +151,90 @@ describe("App — sequential interrupts", () => {
     expect(screen.getByRole("button", { name: /submit decision/i })).toBeEnabled();
   });
 });
+
+/**
+ * The bug fix round 1 exists for: `orphaned` sits in the set that stops the
+ * poll loop (correctly -- nothing advances the run on its own), but a
+ * successful resume was previously invisible to the UI. The resume request
+ * really reached the backend and the run really continued; only the poll
+ * loop never started again, because `useRunPolling`'s effect depends solely
+ * on `threadId`, which a resume does not change. This test is the one that
+ * would have caught it -- confirmed failing against the pre-fix code before
+ * `restart` existed (see task-14-report.md, "Fix round 1").
+ */
+describe("App — resuming an orphaned run", () => {
+  it("leaves the orphan view once the backend confirms the resumed run is running again", async () => {
+    const user = userEvent.setup({ delay: null });
+
+    server.use(
+      http.get(HEALTH, () =>
+        HttpResponse.json({
+          status: "ok",
+          version: "test",
+          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+        }),
+      ),
+      http.post(START, () =>
+        HttpResponse.json(
+          { thread_id: "t-1", status: "queued", poll_url: "/api/agent/status/t-1" },
+          { status: 202 },
+        ),
+      ),
+      http.post(RESUME, () =>
+        HttpResponse.json(
+          { thread_id: "t-1", status: "running", poll_url: "/api/agent/status/t-1" },
+          { status: 202 },
+        ),
+      ),
+    );
+
+    // Orphaned on the first poll (the run's process died before this test
+    // ever looked at it); running from the second poll onward, which is the
+    // poll a working `restart` has to actually issue.
+    let statusCalls = 0;
+    server.use(
+      http.get(STATUS, () => {
+        statusCalls += 1;
+        return HttpResponse.json(
+          aSnapshot({
+            status: statusCalls === 1 ? "orphaned" : "running",
+            completed_steps: ["analyze_repo"],
+          }),
+        );
+      }),
+    );
+
+    render(<App />);
+
+    await user.type(screen.getByLabelText(/repository url/i), "https://example.com/repo.git");
+    await user.type(screen.getByLabelText(/^dependency$/i), "pydantic");
+    await user.type(screen.getByLabelText(/current version/i), "1.10.13");
+    await user.type(screen.getByLabelText(/target version/i), "2.9.2");
+    await user.click(screen.getByRole("button", { name: /start migration audit/i }));
+
+    const resumeButton = await screen.findByRole("button", { name: /resume/i });
+    await user.click(resumeButton);
+
+    // Not the decisive check on its own: clicking sets `resuming`, which
+    // relabels this same button to "Resuming…" (no longer matching
+    // `/resume/i`) well before any network round trip completes. A test that
+    // stopped at "the resume button is gone" would pass on that relabel
+    // alone and never touch the actual bug -- the poll loop restarting.
+    expect(screen.queryByRole("heading", { name: /interrupted by a restart/i })).toBeInTheDocument();
+
+    // The decisive assertion: once the backend reports `running` again, the
+    // orphan panel itself -- keyed off `snapshot.status`, not the button's
+    // own label -- must be gone. Under the bug this never resolves: the poll
+    // loop stopped for good on the first `orphaned` response and nothing
+    // ever asks the backend again, so the panel (and its resume button)
+    // would sit there forever even though the backend already moved on.
+    await waitFor(
+      () =>
+        expect(
+          screen.queryByRole("heading", { name: /interrupted by a restart/i }),
+        ).not.toBeInTheDocument(),
+      { timeout: 5 * POLL_MS },
+    );
+    expect(statusCalls).toBeGreaterThanOrEqual(2);
+  });
+});

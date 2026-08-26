@@ -96,6 +96,57 @@ describe("useRunPolling", () => {
     expect(calls()).toBe(1);
   });
 
+  it("restarts polling on an orphaned run and observes the status change a resume produces", async () => {
+    // Fix round 1: `orphaned` correctly stops the loop above -- nothing
+    // advances an abandoned run on its own -- but it is the one
+    // stopped-but-resumable status, and `restart` is the explicit reentry
+    // this test exists to prove works.
+    const calls = scriptSnapshots("orphaned", "running");
+    const { result } = renderHook(() => useRunPolling("t-1"));
+
+    await waitFor(() => expect(calls()).toBe(1));
+    await vi.advanceTimersByTimeAsync(10 * POLL_MS);
+    expect(calls()).toBe(1);
+    expect(result.current.snapshot?.status).toBe("orphaned");
+
+    result.current.restart();
+
+    // Ticks immediately, exactly like the very first poll of a fresh
+    // thread id -- no interval to wait out.
+    await waitFor(() => expect(calls()).toBe(2));
+    await waitFor(() => expect(result.current.snapshot?.status).toBe("running"));
+
+    // And the ordinary cadence resumes from there, on a clean backoff.
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(calls()).toBe(3);
+  });
+
+  it("does not start a second loop when restart is called while polling is already live", async () => {
+    const calls = scriptSnapshots("running");
+    const { result } = renderHook(() => useRunPolling("t-1"));
+
+    await waitFor(() => expect(calls()).toBe(1));
+
+    // Live, not stopped: `restart` must tear this loop down before starting
+    // a fresh one, or the next interval would bring two ticks instead of
+    // one.
+    result.current.restart();
+    await waitFor(() => expect(calls()).toBe(2));
+
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(calls()).toBe(3);
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(calls()).toBe(4);
+  });
+
+  it("does nothing when restart is called with no thread id", async () => {
+    const { result } = renderHook(() => useRunPolling(null));
+
+    expect(() => result.current.restart()).not.toThrow();
+    await vi.advanceTimersByTimeAsync(5 * POLL_MS);
+    expect(result.current.snapshot).toBeNull();
+  });
+
   it("stops on a failed run", async () => {
     const calls = scriptSnapshots("failed");
     renderHook(() => useRunPolling("t-1"));

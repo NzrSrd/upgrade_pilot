@@ -20,7 +20,7 @@ import { useSessionRuns } from "./hooks/useSessionRuns";
 export default function App() {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [traceOpen, setTraceOpen] = useState(false);
-  const { snapshot, error, reconnecting } = useRunPolling(threadId);
+  const { snapshot, error, reconnecting, restart } = useRunPolling(threadId);
   const { health } = useHealth();
   const { runs, remember } = useSessionRuns();
 
@@ -100,7 +100,14 @@ export default function App() {
             snapshot={snapshot}
             pollError={error}
             onRetry={() => setThreadId(null)}
-            onResumed={() => undefined}
+            // A successful resume request reaches the backend, and the run
+            // really continues -- but `orphaned` stops this poll loop (fix
+            // round 1: `POLLING_STOPS_ON` in `api/types.ts`), and nothing
+            // else about the resume changes `threadId`, which is the only
+            // thing that would otherwise re-enter it. Without `restart`, the
+            // UI would sit on this view forever with a resume that already
+            // worked on the server.
+            onResumed={restart}
           />
         )}
       </div>

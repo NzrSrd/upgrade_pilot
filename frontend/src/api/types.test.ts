@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ALL_STATUSES, TERMINAL_STATUSES } from "./types";
+import { ALL_STATUSES, POLLING_STOPS_ON } from "./types";
 
 describe("status unions", () => {
   it("lists exactly the seven statuses the backend derives", () => {
@@ -15,11 +15,12 @@ describe("status unions", () => {
     ]);
   });
 
-  it("treats a run that will not change on its own as terminal", () => {
-    // `orphaned` is terminal for polling: its process is gone, so no amount of
-    // waiting moves it. It is not terminal for the *run*, which a resume
-    // continues from the checkpoint.
-    expect([...TERMINAL_STATUSES].sort()).toEqual([
+  it("stops polling a run that will not change on its own", () => {
+    // `orphaned` stops the poll loop: its process is gone, so no amount of
+    // waiting moves it on its own. It is not terminal for the *run* itself,
+    // which an explicit resume continues from the checkpoint -- that is why
+    // this set is named for the poll loop's behaviour, not the run's finality.
+    expect([...POLLING_STOPS_ON].sort()).toEqual([
       "completed",
       "completed_with_warnings",
       "failed",
@@ -27,9 +28,9 @@ describe("status unions", () => {
     ]);
   });
 
-  it("does not treat awaiting_human as terminal", () => {
+  it("does not stop polling on awaiting_human", () => {
     // A resume can arrive from another client, and the transition out of the
     // decision panel is exactly what the user is waiting to see.
-    expect(TERMINAL_STATUSES.has("awaiting_human")).toBe(false);
+    expect(POLLING_STOPS_ON.has("awaiting_human")).toBe(false);
   });
 });
