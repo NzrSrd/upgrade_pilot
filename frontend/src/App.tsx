@@ -78,7 +78,15 @@ export default function App() {
         )}
         {view === "activity" && <ActivityTimeline snapshot={snapshot} />}
         {view === "human-review" && snapshot?.pending_decision != null && (
+          // Keyed by question id: guard two deliberately never clears
+          // `submitting` after a successful answer, and without a key React
+          // reuses this component instance -- and that leftover state -- for
+          // the next question at the same tree position. `human_decisions` is
+          // an append channel precisely so interrupts fire in sequence; a
+          // stale `submitting=true` from question 1 would permanently block
+          // question 2's button. The key makes a new question mount fresh.
           <HumanReviewPanel
+            key={snapshot.pending_decision.question_id}
             threadId={snapshot.thread_id}
             decision={snapshot.pending_decision}
             answered={answeredCount}

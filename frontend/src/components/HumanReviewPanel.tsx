@@ -24,8 +24,31 @@ import { AlertTriangle, UserCheck } from "lucide-react";
 import { useState } from "react";
 
 import { ApiFailure, resumeRun } from "../api/client";
-import type { DecisionOption, InterruptPayload } from "../api/types";
-import { Card, LevelBadge, Panel } from "./ui";
+import type { DecisionOption, EvidenceRef, InterruptPayload } from "../api/types";
+import { Card, LevelBadge, Mono, Panel } from "./ui";
+
+/**
+ * One line per evidence ref, in the shape that fits its kind.
+ *
+ * Discriminated on a required, kind-unique field (`file`, then `chunk_id`)
+ * rather than on `.kind` itself: `RepoEvidence["kind"]` and its siblings are
+ * typed `"repo" | undefined` because the backend field carries a default, so
+ * a `switch` on `.kind` alone cannot eliminate the other two shapes from the
+ * type and would need a cast to reach `.file` or `.field`. `in` narrows
+ * cleanly with no cast, on a field every real payload actually has.
+ */
+function describeEvidence(ref: EvidenceRef): string {
+  if ("file" in ref) return `${ref.file}:${ref.line}`;
+  if ("chunk_id" in ref) {
+    return ref.relevance != null ? `${ref.source_id} — similarity ${ref.relevance.toFixed(2)}` : ref.source_id;
+  }
+  return `${ref.field} = ${ref.value}`;
+}
+
+/** `DecisionKind` read aloud, for the group's accessible name and the header. */
+function readKind(kind: InterruptPayload["kind"]): string {
+  return kind.replace(/_/g, " ");
+}
 
 export function HumanReviewPanel({
   threadId,
@@ -44,6 +67,27 @@ export function HumanReviewPanel({
   const [problem, setProblem] = useState<string | null>(null);
 
   const blocked = selected === null || submitting || settled;
+
+  // At most one alert renders at a time (`role="alert"` must stay singular:
+  // two would break a `getByRole("alert")` query and double-announce to a
+  // screen reader). `problem` — this submission's own outcome — takes
+  // priority over `validation_error` — the *previous* answer's rejection —
+  // because a live 409 or a retryable failure is more current than a stale
+  // rejection reason on a decision the server already re-sent.
+  const alert: { text: string; className: string } | null =
+    problem !== null
+      ? {
+          text: problem,
+          className: settled
+            ? "border-edge-strong bg-surface-raised text-ink-muted"
+            : "border-risk-high/50 bg-risk-high/10 text-risk-high",
+        }
+      : decision.validation_error != null
+        ? {
+            text: decision.validation_error,
+            className: "border-risk-medium/50 bg-risk-medium/10 text-risk-medium",
+          }
+        : null;
 
   async function submit() {
     if (blocked || selected === null) return;
@@ -88,7 +132,7 @@ export function HumanReviewPanel({
             <p className="flex flex-wrap items-center gap-x-2 text-[11px] font-semibold tracking-wide text-pending-input uppercase">
               <span>The agent is waiting for your decision</span>
               <span>·</span>
-              <span>{decision.kind.replace(/_/g, " ")}</span>
+              <span>{readKind(decision.kind)}</span>
               {answered > 0 && (
                 <>
                   <span>·</span>
@@ -98,25 +142,40 @@ export function HumanReviewPanel({
             </p>
             <h2 className="mt-1.5 text-lg font-semibold">{decision.question}</h2>
             <p className="mt-1 text-sm text-ink-muted">{decision.reason}</p>
-            <p className="mt-2 text-sm text-risk-medium">
+            {decision.evidence.length > 0 && (
+              <div className="mt-2">
+                <p className="text-[11px] tracking-wide text-ink-faint uppercase">Evidence</p>
+                <ul className="mt-1 space-y-0.5">
+                  {decision.evidence.map((ref) => (
+                    <li key={describeEvidence(ref)} className="text-xs text-ink-muted">
+                      <Mono>{describeEvidence(ref)}</Mono>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {/* `pending-input`, not `risk-medium`: this is information about
+                the pending decision, not a risk finding, and DESIGN.md keeps
+                those two tokens separate for exactly that reason. */}
+            <p className="mt-2 text-sm text-pending-input">
               If you do not answer: {decision.consequences_if_unanswered}
             </p>
           </div>
         </div>
       </Card>
 
-      {decision.validation_error != null && (
+      {alert !== null && (
         <p
           role="alert"
-          className="flex items-start gap-2 rounded-md border border-risk-medium/50 bg-risk-medium/10 px-3 py-2 text-sm text-risk-medium"
+          className={`flex items-start gap-2 rounded-md border px-3 py-2 text-sm ${alert.className}`}
         >
           <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-          {decision.validation_error}
+          {alert.text}
         </p>
       )}
 
       <Panel title="Options">
-        <div role="radiogroup" aria-label="Migration strategy options" className="space-y-2">
+        <div role="radiogroup" aria-label={`${readKind(decision.kind)} options`} className="space-y-2">
           {decision.options.map((option) => (
             <OptionCard
               key={option.id}
@@ -129,19 +188,6 @@ export function HumanReviewPanel({
           ))}
         </div>
       </Panel>
-
-      {problem !== null && (
-        <p
-          role="alert"
-          className={`rounded-md border px-3 py-2 text-sm ${
-            settled
-              ? "border-edge-strong bg-surface-raised text-ink-muted"
-              : "border-risk-high/50 bg-risk-high/10 text-risk-high"
-          }`}
-        >
-          {problem}
-        </p>
-      )}
 
       <button
         type="button"

@@ -19,6 +19,11 @@ export type UsageView = S["UsageView"];
 export type TraceEvent = S["TraceEvent"];
 export type InterruptPayload = S["InterruptPayload"];
 export type DecisionOption = S["DecisionOption"];
+export type RepoEvidence = S["RepoEvidence"];
+export type DocEvidence = S["DocEvidence"];
+export type ConstraintEvidence = S["ConstraintEvidence"];
+/** The union `InterruptPayload.evidence`, `DecisionOption.supporting_evidence` and `MigrationStep.rationale_evidence` all share. */
+export type EvidenceRef = RepoEvidence | DocEvidence | ConstraintEvidence;
 export type HumanDecision = S["HumanDecision"];
 export type DecisionApplication = S["DecisionApplication"];
 export type RiskAnalysis = S["RiskAnalysis"];

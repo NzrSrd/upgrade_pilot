@@ -199,4 +199,63 @@ describe("HumanReviewPanel", () => {
 
     expect(screen.getByText(/risk acceptance/i)).toBeInTheDocument();
   });
+
+  it("renders the evidence behind the question, in the shape each kind fits", () => {
+    // `evidence` is a required field on every payload and DESIGN.md's HITL
+    // section lists it explicitly ("the refs behind the question"). A
+    // decision panel that never references it asks the user to choose
+    // without showing what the question rests on.
+    render(
+      panel({
+        decision: anInterrupt({
+          evidence: [
+            { kind: "repo", file: "src/models.py", line: 42 },
+            { kind: "doc", source_id: "s-2", chunk_id: "s-2#1", relevance: 0.91 },
+            { kind: "constraint", field: "deadline", value: "2026-09-01" },
+          ],
+        }),
+      }),
+    );
+
+    expect(screen.getByText(/src\/models\.py:42/)).toBeInTheDocument();
+    expect(screen.getByText(/s-2/)).toBeInTheDocument();
+    expect(screen.getByText(/0\.91/)).toBeInTheDocument();
+    expect(screen.getByText(/deadline = 2026-09-01/)).toBeInTheDocument();
+  });
+
+  it("derives the options group's accessible name from the decision kind", () => {
+    // A hardcoded "Migration strategy options" label gives a screen-reader
+    // user the wrong context for the other three `DecisionKind`s, in a
+    // component whose whole premise is that all four share the layout.
+    render(panel({ decision: anInterrupt({ kind: "scope_tradeoff" }) }));
+
+    expect(screen.getByRole("radiogroup", { name: /scope tradeoff/i })).toBeInTheDocument();
+  });
+
+  it("shows only one alert at a time, even when a rejection is followed by a conflict", async () => {
+    // A rejected-then-resubmitted-then-conflicting answer is a plausible
+    // sequence: `validation_error` (the previous rejection) and `problem`
+    // (this submission's own 409) could both be truthy at once. Two
+    // `role="alert"` elements would break any singular query and double
+    // announce to a screen reader.
+    const user = userEvent.setup();
+    server.use(http.post(RESUME, conflict));
+    render(
+      panel({
+        decision: anInterrupt({
+          validation_error: "Choose one of: compatibility_layer, staged_rollout, direct_migration",
+        }),
+      }),
+    );
+
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+
+    await user.click(screen.getByRole("radio", { name: /staged rollout/i }));
+    await user.click(screen.getByRole("button", { name: /submit/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(/already been answered/i),
+    );
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
 });
