@@ -47,7 +47,8 @@ describe("App — sequential interrupts", () => {
         HttpResponse.json({
           status: "ok",
           version: "test",
-          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+          checkpoint_backend: "sqlite",
+          checks: { checkpoint_ready: true, chroma_dir: true, llm_configured: true },
         }),
       ),
       http.post(START, () =>
@@ -171,7 +172,8 @@ describe("App — resuming an orphaned run", () => {
         HttpResponse.json({
           status: "ok",
           version: "test",
-          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+          checkpoint_backend: "sqlite",
+          checks: { checkpoint_ready: true, chroma_dir: true, llm_configured: true },
         }),
       ),
       http.post(START, () =>
@@ -264,7 +266,8 @@ describe("App — a poll error while a snapshot already exists", () => {
         HttpResponse.json({
           status: "ok",
           version: "test",
-          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+          checkpoint_backend: "sqlite",
+          checks: { checkpoint_ready: true, chroma_dir: true, llm_configured: true },
         }),
       ),
       http.post(START, () =>
@@ -354,7 +357,8 @@ describe("App — a poll error before any snapshot ever loads", () => {
         HttpResponse.json({
           status: "ok",
           version: "test",
-          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+          checkpoint_backend: "sqlite",
+          checks: { checkpoint_ready: true, chroma_dir: true, llm_configured: true },
         }),
       ),
       http.post(START, () =>
@@ -427,7 +431,8 @@ describe("App — a poll error before any snapshot ever loads", () => {
         HttpResponse.json({
           status: "ok",
           version: "test",
-          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+          checkpoint_backend: "sqlite",
+          checks: { checkpoint_ready: true, chroma_dir: true, llm_configured: true },
         }),
       ),
       http.post(START, () =>
@@ -489,7 +494,8 @@ describe("App — awaiting_human with no payload", () => {
         HttpResponse.json({
           status: "ok",
           version: "test",
-          checks: { checkpoint_dir: true, chroma_dir: true, llm_configured: true },
+          checkpoint_backend: "sqlite",
+          checks: { checkpoint_ready: true, chroma_dir: true, llm_configured: true },
         }),
       ),
       http.post(START, () =>
@@ -528,7 +534,7 @@ describe("App — awaiting_human with no payload", () => {
     const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });
     server.use(
       http.get(HEALTH, () =>
-        HttpResponse.json({ status: "ok", version: "0.1.0", checks: { chroma_dir: true, checkpoint_dir: true, llm_configured: true } }),
+        HttpResponse.json({ status: "ok", version: "0.1.0", checkpoint_backend: "sqlite", checks: { chroma_dir: true, checkpoint_ready: true, llm_configured: true } }),
       ),
       http.post(START, () =>
         HttpResponse.json({ thread_id: "t-1", status: "running", poll_url: "/api/agent/status/t-1" }, { status: 202 }),

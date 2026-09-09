@@ -42,7 +42,7 @@ def test_health_responds_with_the_documented_shape(tmp_path: Path) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] in {"ok", "degraded"}
-    assert set(body["checks"]) == {"chroma_dir", "checkpoint_dir", "llm_configured"}
+    assert set(body["checks"]) == {"chroma_dir", "checkpoint_ready", "llm_configured"}
     assert isinstance(body["version"], str) and body["version"]
 
 
@@ -55,7 +55,7 @@ def test_health_reports_ok_when_every_check_passes(
 
     assert body["checks"] == {
         "chroma_dir": True,
-        "checkpoint_dir": True,
+        "checkpoint_ready": True,
         "llm_configured": True,
     }
     assert body["status"] == "ok"
@@ -87,13 +87,13 @@ def test_health_does_not_require_an_api_key(monkeypatch: pytest.MonkeyPatch) -> 
 def test_health_reports_store_ready_for_a_writable_location(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """chroma_dir/checkpoint_dir must actually verify usability, not just existence."""
+    """chroma_dir/checkpoint_ready must actually verify usability, not just existence."""
     injected = _all_checks_pass(tmp_path)
 
     checks = TestClient(create_app(injected)).get("/api/health").json()["checks"]
 
     assert checks["chroma_dir"] is True
-    assert checks["checkpoint_dir"] is True
+    assert checks["checkpoint_ready"] is True
 
 
 def test_health_reports_store_not_ready_for_an_uncreatable_location(
@@ -110,7 +110,7 @@ def test_health_reports_store_not_ready_for_an_uncreatable_location(
     checks = TestClient(create_app(injected)).get("/api/health").json()["checks"]
 
     assert checks["chroma_dir"] is False
-    assert checks["checkpoint_dir"] is False
+    assert checks["checkpoint_ready"] is False
 
 
 def test_health_is_not_ok_when_a_store_check_fails(
@@ -136,7 +136,7 @@ def test_health_is_not_ok_when_a_store_check_fails(
 
     assert body["checks"] == {
         "chroma_dir": False,
-        "checkpoint_dir": True,
+        "checkpoint_ready": True,
         "llm_configured": True,
     }
     assert body["status"] != "ok"
@@ -164,7 +164,7 @@ def test_health_is_not_ok_when_the_api_key_is_missing(
 
     assert body["checks"] == {
         "chroma_dir": True,
-        "checkpoint_dir": True,
+        "checkpoint_ready": True,
         "llm_configured": False,
     }
     assert body["status"] == "degraded"

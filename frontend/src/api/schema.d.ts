@@ -458,10 +458,20 @@ export interface components {
        */
       version_discrepancy: [string, string] | null;
     };
-    /** HealthChecks */
+    /**
+     * HealthChecks
+     * @description Every field must be a `bool`.
+     *
+     * `_derive_status` computes `status` by requiring all of them to be truthy,
+     * iterating the model's own fields rather than naming them so a check added
+     * later cannot be reported while being left out of the status it informs. A
+     * non-boolean field here would join that `all()` as a truthy value and
+     * quietly stop being a check -- which is why `checkpoint_backend` lives on
+     * the response below and not in here.
+     */
     HealthChecks: {
-      /** Checkpoint Dir */
-      checkpoint_dir: boolean;
+      /** Checkpoint Ready */
+      checkpoint_ready: boolean;
       /** Chroma Dir */
       chroma_dir: boolean;
       /** Llm Configured */
@@ -469,6 +479,11 @@ export interface components {
     };
     /** HealthResponse */
     HealthResponse: {
+      /**
+       * Checkpoint Backend
+       * @enum {string}
+       */
+      checkpoint_backend: "sqlite" | "postgres";
       checks: components["schemas"]["HealthChecks"];
       /**
        * Status

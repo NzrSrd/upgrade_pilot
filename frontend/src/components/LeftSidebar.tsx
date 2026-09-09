@@ -27,6 +27,33 @@ import { EmptyState, Field } from "./ui";
  * call site rather than hardcoded, because "storage location writable" and
  * "configured" back different fields and neither would be honest for both.
  */
+/**
+ * What `checks.checkpoint_ready` means, which depends on the backend.
+ *
+ * The two are not the same claim and this component cannot say so with one
+ * label. On SQLite the backend measures a directory, so "storage location
+ * writable" is accurate. On Postgres it measures only that a DSN is
+ * configured -- the endpoint deliberately opens no connection -- so the same
+ * label would assert something about a database nobody checked, and a reader
+ * seeing a green tick would take it for reachability.
+ *
+ * Hence "configured", which is the weaker and true claim, matching what the
+ * model-key row already says about a key whose validity is equally unverified.
+ */
+const CHECKPOINT_LABELS: Record<
+  HealthResponse["checkpoint_backend"],
+  { readyLabel: string; unreadyLabel: string }
+> = {
+  sqlite: {
+    readyLabel: "storage location writable",
+    unreadyLabel: "storage location not writable",
+  },
+  postgres: {
+    readyLabel: "configured (reachability not checked)",
+    unreadyLabel: "not configured",
+  },
+};
+
 function Check({
   ok,
   label,
@@ -146,10 +173,9 @@ export function LeftSidebar({
               unreadyLabel="storage location not writable"
             />
             <Check
-              ok={health.checks.checkpoint_dir}
+              ok={health.checks.checkpoint_ready}
               label="Checkpoints"
-              readyLabel="storage location writable"
-              unreadyLabel="storage location not writable"
+              {...CHECKPOINT_LABELS[health.checkpoint_backend]}
             />
             <Check
               ok={health.checks.llm_configured}

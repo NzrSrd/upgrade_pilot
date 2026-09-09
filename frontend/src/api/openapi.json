@@ -774,9 +774,10 @@
         "type": "object"
       },
       "HealthChecks": {
+        "description": "Every field must be a `bool`.\n\n`_derive_status` computes `status` by requiring all of them to be truthy,\niterating the model's own fields rather than naming them so a check added\nlater cannot be reported while being left out of the status it informs. A\nnon-boolean field here would join that `all()` as a truthy value and\nquietly stop being a check -- which is why `checkpoint_backend` lives on\nthe response below and not in here.",
         "properties": {
-          "checkpoint_dir": {
-            "title": "Checkpoint Dir",
+          "checkpoint_ready": {
+            "title": "Checkpoint Ready",
             "type": "boolean"
           },
           "chroma_dir": {
@@ -790,7 +791,7 @@
         },
         "required": [
           "chroma_dir",
-          "checkpoint_dir",
+          "checkpoint_ready",
           "llm_configured"
         ],
         "title": "HealthChecks",
@@ -798,6 +799,14 @@
       },
       "HealthResponse": {
         "properties": {
+          "checkpoint_backend": {
+            "enum": [
+              "sqlite",
+              "postgres"
+            ],
+            "title": "Checkpoint Backend",
+            "type": "string"
+          },
           "checks": {
             "$ref": "#/components/schemas/HealthChecks"
           },
@@ -817,6 +826,7 @@
         "required": [
           "status",
           "version",
+          "checkpoint_backend",
           "checks"
         ],
         "title": "HealthResponse",

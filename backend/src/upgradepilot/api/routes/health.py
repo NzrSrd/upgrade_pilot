@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request
 
 from upgradepilot import __version__
 from upgradepilot.api.schemas import HealthChecks, HealthResponse
-from upgradepilot.config import get_settings
+from upgradepilot.config import Settings, get_settings
 
 router = APIRouter()
 
@@ -36,6 +36,29 @@ def _store_ready(directory: Path) -> bool:
     if directory.exists():
         return directory.is_dir() and os.access(directory, os.W_OK)
     return directory.parent.exists() and os.access(directory.parent, os.W_OK)
+
+
+def _checkpoint_ready(settings: Settings) -> bool:
+    """Whether the configured checkpoint destination looks usable.
+
+    **The two backends are measured differently, and the difference is not
+    hidden.** With SQLite this is the same filesystem check as `chroma_dir`:
+    the directory that will hold the database is writable. With Postgres it
+    reports only that a DSN is *configured*, exactly as `llm_configured`
+    reports a key -- and deliberately **not** that the server is reachable.
+
+    That asymmetry is a real weakness and is worth naming rather than
+    papering over: on Postgres this check cannot go false, so a database that
+    is down leaves `status` at `"ok"`. It is accepted for the reason the
+    module docstring already gives -- a health probe must not open
+    connections, cost money, or inherit third-party latency -- and the
+    response publishes `checkpoint_backend` so a caller can tell which of the
+    two claims it is reading. A reachability probe belongs behind its own
+    endpoint, where its cost is opted into.
+    """
+    if settings.checkpoint_url is not None:
+        return True
+    return _store_ready(settings.checkpoint_db.parent)
 
 
 def _derive_status(checks: HealthChecks) -> HealthStatus:
@@ -81,7 +104,12 @@ def health(request: Request) -> HealthResponse:
     settings = getattr(request.app.state, "settings", None) or get_settings()
     checks = HealthChecks(
         chroma_dir=_store_ready(settings.chroma_dir),
-        checkpoint_dir=_store_ready(settings.checkpoint_db.parent),
+        checkpoint_ready=_checkpoint_ready(settings),
         llm_configured=settings.llm_configured,
     )
-    return HealthResponse(status=_derive_status(checks), version=__version__, checks=checks)
+    return HealthResponse(
+        status=_derive_status(checks),
+        version=__version__,
+        checkpoint_backend="postgres" if settings.checkpoint_url is not None else "sqlite",
+        checks=checks,
+    )
