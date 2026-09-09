@@ -188,6 +188,12 @@ def build_graph(
         # flips again, the fix is to run `mypy` with the cache removed and
         # write down whichever code it actually emits -- not to list both,
         # which mypy rejects per-code as an unused ignore (measured).
+        #
+        # Run it bare, as the config and CI do. `mypy src/upgradepilot`
+        # narrows the file set and reports these same ten errors while the
+        # project's own invocation reports none, because the overload
+        # narrowing depends on what else is being checked. A narrowed run is
+        # not evidence about this code either way.
         graph.add_node(name, traced(name, body_for(name)))  # type: ignore[arg-type]
 
     graph.add_edge(START, NODE_SEQUENCE[0])
