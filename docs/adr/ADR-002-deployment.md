@@ -479,6 +479,29 @@ none of which changes a decision:
   are both on 17. Nothing has depended on the difference, but the suite that
   guards this deployment does not run on the version the deployment uses.
 
+**The Vercel project was never building the frontend, and nothing said so.**
+Its Root Directory was `.` and its framework preset was "Other", so Vercel
+served the *repository root* as static files: no build ran, `/` returned 404,
+and every deployment reported success in three seconds. Two consequences worth
+separating, because only the first is obvious:
+
+- The site was broken in production and had been since the project was created.
+- **`frontend/vercel.json` had never been read**, because Vercel looks for it in
+  the configured root directory. So the `/api/*` rewrite this document treats as
+  the mechanism connecting the two halves was not in effect at any point, and
+  the placeholder hostname D4 relies on being replaced was never consulted
+  either. The file was correct and inert.
+
+Fixed by setting Root Directory to `frontend` and the preset to Vite. The
+evidence that it was actually wrong, rather than merely suspicious, is the build
+duration: 3 seconds before, 17 seconds after, with `vite build` and
+`dist/index.html` appearing in the log for the first time.
+
+The general lesson is the one this project keeps relearning: a green check mark
+reports that a step completed, not that it did anything. The same shape as
+`/api/health` answering `ok` over an empty corpus, which is why D3 has the build
+assert a document count.
+
 **`UP_ALLOWED_LOCAL_ROOTS` is absent rather than set empty**, which is the
 stronger of the two. It defaults to empty; `.gcloudignore` excludes `.env` and
 `.env.*`; no `COPY` in the Dockerfile references either. All three checked.
