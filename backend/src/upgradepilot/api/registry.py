@@ -106,7 +106,7 @@ class RunRegistry:
         handle.task = asyncio.create_task(guarded(), name=f"run:{thread_id}")
         return handle
 
-    async def drain(self) -> None:
+    async def drain(self, timeout: float | None = None) -> None:
         """Await every task, ignoring failures. Used at shutdown and in tests.
 
         Failures are ignored *here* rather than swallowed: each task's
@@ -114,7 +114,48 @@ class RunRegistry:
         `FAILED`. What this must not do is raise while shutting down, which
         would leave the remaining tasks unawaited and the checkpointer closed
         underneath them.
+
+        **`timeout` exists because the platform has one.** ADR-002's platform
+        fact 2: Cloud Run sends `SIGTERM` and kills the container 10 seconds
+        later, and that period is not configurable. A run takes minutes, so an
+        unbounded drain cannot finish -- the shutdown was not deliberate, it
+        was truncated by the platform at an arbitrary point.
+
+        **On timeout the remaining tasks are cancelled, and that is the point
+        rather than a detail.** Returning while they still ran would be worse
+        than the unbounded wait: the caller goes on to close the checkpointer
+        and the connection pool, and a task touching either afterwards fails
+        somewhere unrelated to what it was doing. Cancelling unwinds each task
+        through its own `finally` while its resources are still open, and the
+        second gather is what waits for that unwind -- cancelling without
+        awaiting it would exit mid-cleanup, which is the outcome this exists to
+        avoid. The run is lost either way; it is lost at a known point.
+
+        **The default stays `None`, meaning unbounded.** Every `drain()` in the
+        test suite means "wait for the work to actually finish", and a default
+        deadline would quietly turn those into "wait a bit" and make
+        assertions about completed runs depend on machine speed. The deadline
+        belongs to the caller that has one.
         """
         tasks = [handle.task for handle in self._handles.values() if handle.task is not None]
-        if tasks:
+        if not tasks:
+            return
+
+        if timeout is None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return
+
+        try:
+            async with asyncio.timeout(timeout):
+                await asyncio.gather(*tasks, return_exceptions=True)
+        except TimeoutError:
+            # `asyncio.timeout` cancels this coroutine, which propagates into
+            # the gather and on to its children -- so the tasks are already
+            # cancelling by the time we get here. The explicit `cancel()` is
+            # for any that were never part of that propagation, and a fresh
+            # gather is required because the previous one is now cancelled and
+            # re-awaiting it would raise rather than wait.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
