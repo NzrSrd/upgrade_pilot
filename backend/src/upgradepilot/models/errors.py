@@ -42,6 +42,7 @@ class ErrorCode(StrEnum):
     THREAD_NOT_FOUND = "thread_not_found"
     THREAD_NOT_AWAITING_INPUT = "thread_not_awaiting_input"
     INVALID_DECISION = "invalid_decision"
+    UNAUTHENTICATED = "unauthenticated"
     INTERNAL = "internal"
 
 
@@ -146,6 +147,24 @@ class ThreadNotAwaitingInputError(UpgradePilotError):
 class InvalidDecisionError(UpgradePilotError):
     code = ErrorCode.INVALID_DECISION
     http_status = 422
+
+
+class UnauthenticatedError(UpgradePilotError):
+    """No usable Clerk session accompanied the request (ADR-002 D4).
+
+    **There is deliberately no companion "forbidden" code**, and that is a
+    decision rather than an omission. ADR-002 D6 requires a thread owned by
+    another user to be indistinguishable from one that does not exist, so an
+    ownership failure raises `ThreadNotFoundError` and returns 404. A distinct
+    403 would confirm that the thread id is real, which is the one fact an
+    enumerating caller wants and the only thing they cannot otherwise get.
+
+    401 rather than 403 here because this is the absent-or-invalid-credential
+    case: the remedy is to sign in, which is what the status code is for.
+    """
+
+    code = ErrorCode.UNAUTHENTICATED
+    http_status = 401
 
 
 class LLMUnavailableError(UpgradePilotError):

@@ -567,6 +567,7 @@
           "thread_not_found",
           "thread_not_awaiting_input",
           "invalid_decision",
+          "unauthenticated",
           "internal"
         ],
         "title": "ErrorCode",
@@ -799,6 +800,10 @@
       },
       "HealthResponse": {
         "properties": {
+          "auth_required": {
+            "title": "Auth Required",
+            "type": "boolean"
+          },
           "checkpoint_backend": {
             "enum": [
               "sqlite",
@@ -827,6 +832,7 @@
           "status",
           "version",
           "checkpoint_backend",
+          "auth_required",
           "checks"
         ],
         "title": "HealthResponse",

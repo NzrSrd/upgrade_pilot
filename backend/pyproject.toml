@@ -71,6 +71,26 @@ dependencies = [
     "langgraph-checkpoint-postgres==3.1.2",
     "psycopg[binary]==3.3.5",
     "psycopg-pool==3.3.1",
+    # ADR-002 D4 -- the identity gate. Verifies the Clerk session token that
+    # `client.ts` attaches, via `authenticate_request`, which fetches and
+    # caches the JWKS rather than making this project hand-roll JWT
+    # validation against a rotating key set.
+    #
+    # Chosen over verifying the token directly with `pyjwt` because the same
+    # client is what Sub-project 2 needs: `get_user_oauth_access_token`
+    # returns the signed-in user's GitHub token, which is the credential an
+    # authenticated clone of a private repository requires. Building half of
+    # this by hand now and adopting the SDK later for the other half would be
+    # two implementations of the same trust boundary.
+    #
+    # New to *runtime* with this: `cryptography` (abi3, so the 3.14 floor is
+    # unaffected), `pyjwt`, and `cffi`/`pycparser` beneath them. NOT `httpx`
+    # -- an earlier note in PLANNING claimed this moved httpx from dev-only to
+    # runtime, and that was wrong: `requirements.lock` already carried
+    # `httpx`, `httpx2` and `httpcore` as transitives of chromadb,
+    # langchain-core and openai. The `[dev]` pin below constrains a package
+    # that was already shipping.
+    "clerk-backend-api==7.0.0",
 ]
 
 [project.optional-dependencies]
