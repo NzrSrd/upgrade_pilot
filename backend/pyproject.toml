@@ -142,6 +142,7 @@ norecursedirs = [
 asyncio_mode = "auto"
 markers = [
     "live: makes a real network call; skipped unless --live is passed",
+    "postgres: needs a real database; skipped unless UP_TEST_POSTGRES_URL is set",
 ]
 addopts = "-q"
 

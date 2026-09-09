@@ -134,7 +134,27 @@ class KnowledgeBaseUnavailableError(UpgradePilotError):
     retryable = True
 
 
+THREAD_NOT_FOUND_MESSAGE = "No run with that id exists."
+"""The only user-facing text a 404 from this API ever carries.
+
+A constant rather than a literal at each raise site, and that is a security
+property rather than tidiness. ADR-002 D6 requires a run owned by another
+user to be indistinguishable from one that does not exist -- and two call
+sites spelling the message slightly differently ("No run with that id." next
+to "No run with that id exists.") is exactly how that guarantee is lost, with
+nothing failing and no test noticing. Measured: the first version of the
+ownership check did precisely this.
+"""
+
+
 class ThreadNotFoundError(UpgradePilotError):
+    """No run with that id, **or** one belonging to someone else.
+
+    Both cases raise this, deliberately. See `THREAD_NOT_FOUND_MESSAGE` and
+    ADR-002 D6: a distinct 403 would confirm the thread id is real, which is
+    the single fact an enumerating caller cannot obtain otherwise.
+    """
+
     code = ErrorCode.THREAD_NOT_FOUND
     http_status = 404
 

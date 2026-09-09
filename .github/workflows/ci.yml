@@ -30,6 +30,27 @@ jobs:
     defaults:
       run:
         working-directory: backend
+
+    # A real database, because ADR-002 D6's ownership guarantee is exactly the
+    # shape that passes against an in-memory dict and fails against SQL. The
+    # `postgres`-marked tests skip without `UP_TEST_POSTGRES_URL`, so without
+    # this service they would be silently absent from every run -- green CI
+    # proving nothing about the one mechanism that keeps users out of each
+    # other's runs.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: upgradepilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +82,30 @@ jobs:
       # passed, and CI deliberately does not pass it -- those five tests need a
       # real key and make real model calls. Rule 24 keeps them in the suite; it
       # does not ask CI to pay for them on every push.
+      #
+      # `postgres`-marked tests are the opposite case: they need a database and
+      # not a key, they cost nothing, and they cover a security guarantee, so
+      # the service above is wired in rather than left for a developer to
+      # remember locally.
       - run: python -m pytest
+        env:
+          UP_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/upgradepilot_test
+
+      # Asserted separately because a skip is silent. If the marker, the
+      # service or the variable ever drift apart, the ownership tests would
+      # vanish from CI while it stayed green -- which is the failure this line
+      # exists to make loud.
+      - name: The ownership tests actually ran
+        env:
+          UP_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/upgradepilot_test
+        run: |
+          python -m pytest tests/api/test_run_ownership.py -q --no-header \
+            | tee /tmp/ownership.txt
+          grep -qE "[0-9]+ passed" /tmp/ownership.txt
+          if grep -q "skipped" /tmp/ownership.txt; then
+            echo "::error::ownership tests skipped -- the database was not reachable"
+            exit 1
+          fi
 
   frontend:
     runs-on: ubuntu-latest

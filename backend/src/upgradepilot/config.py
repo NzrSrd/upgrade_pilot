@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     SecretStr,
     field_validator,
+    model_validator,
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -493,6 +494,38 @@ class Settings(BaseSettings):
         provider instead of a clear local answer.
         """
         return self.llm_api_key is not None and bool(self.llm_api_key.get_secret_value().strip())
+
+    @model_validator(mode="after")
+    def _an_authenticated_deployment_needs_postgres(self) -> "Settings":
+        """Refuse to boot with a gate but no way to enforce ownership.
+
+        ADR-002 D6. Authentication without ownership is a *downgrade*: it
+        replaces "nobody can get in" with "anyone who is in can read and
+        resume anyone else's run", including answering someone else's pending
+        decision, which the append-only `human_decisions` channel would then
+        record as that user's answer. The run registry and the ownership table
+        both live in Postgres, so a Clerk key without `UP_CHECKPOINT_URL`
+        describes a deployment where the gate exists and ownership cannot be
+        checked.
+
+        Refused here rather than handled per-request, because the alternative
+        is a service that starts, looks gated, and silently shares runs. This
+        is the one configuration whose failure mode is invisible from the
+        outside, so it fails at startup where an operator is watching.
+
+        The pairing is one-directional on purpose: Postgres without Clerk is
+        fine and is what a single-tenant deployment looks like. It is only the
+        gate that implies ownership.
+        """
+        if self.auth_required and self.checkpoint_url is None:
+            raise ValueError(
+                "CLERK_SECRET_KEY is set but UP_CHECKPOINT_URL is not. "
+                "Authenticated deployments need the Postgres checkpointer, "
+                "because run ownership is stored there and a gate without "
+                "ownership lets any signed-in user read and resume any run. "
+                "Set UP_CHECKPOINT_URL, or unset CLERK_SECRET_KEY to run open."
+            )
+        return self
 
     @property
     def auth_required(self) -> bool:
