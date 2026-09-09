@@ -11,10 +11,14 @@ What we are building and in what order. Architecture rationale lives in `docs/ad
 | | Sub-project | Status |
 |---|---|---|
 | **1** | **Agent core** — analysis, RAG, risk, HITL, plan, cost, API, UI | **In progress** |
-| 2 | Repository sources & GitHub — authenticated clones, private repos, OAuth | Not started |
-| 3 | Accounts & history — PostgreSQL, users, saved analyses, Postgres checkpointer and run registry | Not started |
+| 2 | Repository sources & GitHub — authenticated clones, private repos, OAuth | Not started. Phase 13 adds Clerk with GitHub sign-in, so the OAuth half largely arrives early and Clerk holds the user's GitHub token (`getUserOauthAccessToken`). What remains here is the *authenticated clone* — which ADR-001 D5 says lands without touching the analyzer. |
+| 3 | Accounts & history — PostgreSQL, users, saved analyses, and the Postgres **run registry** | Not started. The Postgres *checkpointer* is proposed to leave early, in Phase 13 — see ADR-002 D2. The registry stays here, and it is the registry that pins the single-worker constraint. |
 
 Sub-project 1 contains every graded capability, which is why it comes first. Sub-projects 2 and 3 get their own specs when 1 is complete.
+
+Deployment is **Phase 13**, written after Sub-project 1's definition of done because it is not one of the graded capabilities and nothing above it depends on one. Its decisions are recorded in `docs/adr/ADR-002-deployment.md`.
+
+**Order note, 2026-09-09.** Phase 13 is now worked **before Phases 11 and 12**, on the project owner's explicit instruction, with Phase 11's CI item as its only prerequisite. Phase numbers were left alone so nothing has to be renumbered — read the order from here and from Phase 13's own header, not from the numbering. The motivation is GitHub sign-in and users pasting repository links, which Phase 13 now carries via Clerk (ADR-002 D4).
 
 Demo target throughout: **Pydantic v1 → v2** against a real public Python repository, pinned to a fixed commit.
 
@@ -382,6 +386,8 @@ One thing this exit does **not** claim: the relevance figures are what the offli
 
 ## Phase 11 — End-to-end and requirements audit
 
+**Worked after Phase 13, except for the CI item below, which gates it.** See the order note near the top. Nothing in this phase changed; only when it happens did.
+
 - [ ] E2E HITL test: start → `AWAITING_HUMAN` → resume → `COMPLETED`, asserting resolving evidence, non-zero usage, applied decision
 - [ ] Opt-in live test asserting real `usage_metadata`
 - [ ] CI: pytest, ruff, mypy, vitest, tsc
@@ -413,6 +419,8 @@ One thing this exit does **not** claim: the relevance figures are what the offli
 
 ## Phase 12 — Demo scenario and polish
 
+**Worked after Phase 13.** See the order note near the top. One item gains a dependency by moving: the pinned demo scenario is what Phase 13.5's exit exercises, so if it is not fixed by then, that exit is demonstrated against an ad hoc scenario and this phase should say so when it lands.
+
 - [ ] Pinned demo: fixture repository, Pydantic v1 → v2, zero-downtime plus deadline constraints
 - [ ] A real public Python repository, vendored or cloned at a **fixed commit**, for the demo and the end-to-end path — the deferral recorded in Phase 1 and in spec §12 assumption 5, landing here. The hand-authored fixture stays the basis for analyzer unit tests; this is the second, realistic target
 - [ ] Verify the run reliably reaches a meaningful HITL decision
@@ -429,3 +437,260 @@ One thing this exit does **not** claim: the relevance figures are what the offli
 ## Definition of done for Sub-project 1
 
 See spec §13. Summarised: a developer can point UpgradePilot at a repository and a version change, watch it gather real evidence, be asked exactly one meaningful question, answer it, and receive a validated migration plan in which every claim resolves to a real line of code or a real document — with token cost and full trace visible throughout, and a comprehensible error whenever something fails.
+
+---
+
+## Phase 13 — Deployment: Cloud Run backend, Vercel frontend
+
+**Numbered 13, but runs BEFORE Phases 11 and 12.** Prioritised on the project
+owner's instruction, 2026-09-09, which rule 2 allows on an explicit direction.
+The number is kept so nothing above has to be renumbered; the *order* is what
+changed, and this paragraph is the only thing that says so.
+
+The re-ordering is more defensible than it first looks, and one reason is worth
+stating because it inverts the obvious objection. Phase 10's exit is pending
+*one human pass in a browser*, and Phase 11's headline item is an end-to-end
+HITL run. **A deployed URL is what both of those need.** Doing deployment last
+would mean building the thing that makes the remaining exits testable after
+those exits were supposed to be met.
+
+**Prerequisite, and the only one:** Phase 11's `CI: pytest, ruff, mypy, vitest,
+tsc`. There is no `.github/` directory at all today, and a deploy pipeline with
+no checks in front of it is a way to publish a regression. Not duplicated as a
+task here. One detail for whoever writes it: `npm test` runs vitest in **watch
+mode**, so CI needs `vitest run`.
+
+**What is knowingly accepted by going early.** The E2E HITL test, the
+requirements audit and Phase 12's polish all now land *after* a deployment
+exists. So the first deploy is not a claim that the journey works — it is the
+environment in which that claim gets tested. Phase 13.5's exit criteria are
+written to that standard: they demonstrate the *deployment*, and they do not
+stand in for Phase 11's audit.
+
+**Architecture record:** `docs/adr/ADR-002-deployment.md` (**Proposed**). Read it
+first; it carries the reasoning, the rejected alternatives, and the three vendor
+platform facts the design turns on. This section is the task list only.
+
+**Target shape.** One Cloud Run instance serving the API; the Vite build on
+Vercel with a `vercel.json` rewrite in front of `/api`; Clerk as the identity
+and access gate; the corpus baked into the image; workspaces on an in-memory
+volume; thread state and run ownership in Cloud SQL.
+
+### 13.0 Pre-flight probes
+
+This project retires unknowns with probes before designing around them
+(`backend/probes/`, and ADR-001's Phase 0 verification record). Each of these
+would change the plan if it came back wrong, which is what earns it a probe.
+
+- [ ] **`psycopg` on Python 3.14.** `requires-python = ">=3.14"` and ADR-001 says
+      "Do not relax this". Confirm a `cp314` wheel exists for `psycopg[binary]`,
+      or that pure `psycopg` works against Debian's `libpq5`. If neither holds,
+      ADR-002 D2 needs rethinking rather than forcing.
+- [ ] **`sqlite-vec` and `ruff` on `linux/amd64`.** ADR-001 records both resolving
+      to `py3-none-macosx_11_0_arm64` wheels in the dev venv — platform-locked
+      despite the `py3` prefix. `sqlite-vec` arrives transitively via
+      `langgraph-checkpoint-sqlite`, which stays for local development, so it has
+      to resolve on Linux too.
+- [ ] **`AsyncPostgresSaver` round-trip across a real process restart.** Mirror
+      `tests/graph/test_langgraph_contract.py::test_state_survives_a_new_saver_instance`,
+      but with an actual restart. That test is explicit that it proves disk
+      durability across a closed connection and *not* a process restart — and a
+      process restart is precisely what ADR-002 D2 claims to survive.
+- [ ] **`clerk-backend-api` on Python 3.14.** `7.0.0` needs
+      `cryptography>=45,<51`, `pyjwt>=2.9,<3`, `httpx>=0.28.1` and
+      `pydantic>=2.11.2`. Pydantic is satisfied at `2.13.4`. Two things to check
+      rather than assume: that `cryptography` resolves on 3.14 — it ships `abi3`
+      wheels, which ADR-001 already records six of in this venv, so it probably
+      does — and that **`httpx` becoming a runtime dependency is deliberate**. It
+      is currently dev-only, pinned at `0.28.1` for the test client.
+- [ ] Record resolved versions in ADR-001's verification record (rule 13).
+      `langgraph-checkpoint-postgres==3.1.2` needs
+      `langgraph-checkpoint>=4.1.0,<5.0.0` and `4.2.0` is already installed, so
+      this is additive; verify rather than assume, and state the reason for each
+      new dependency (rule 12).
+
+### 13.1 Checkpointer backend seam
+
+ADR-001's Benefits claim that "swapping model provider, checkpointer backend, or
+repository source each touch one module". This is the first change that tests
+that claim, and `graph/checkpointer.py` is the module it named. If the change
+spreads beyond it, that benefit was overstated and ADR-001 should say so.
+
+- [ ] `graph/checkpointer.py` — `open_checkpointer` becomes a factory. A new
+      `UP_CHECKPOINT_URL` selects `AsyncPostgresSaver`; its absence keeps the
+      SQLite path, so local development and the hermetic suite are untouched
+      (rule 22).
+- [ ] `config.py` — add the setting with the validation discipline the existing
+      path settings already use. `extra="ignore"` means a mistyped `UP_*` var is a
+      silent no-op, so a real validator is the only thing that turns a typo into
+      an error instead of a default.
+- [ ] Declare `aiosqlite` in `pyproject.toml`. `checkpointer.py` imports it
+      directly but it currently rides in as a transitive of
+      `langgraph-checkpoint-sqlite` — the same class of undeclared dependency the
+      pyproject comment already flags for `pyyaml`.
+- [ ] Decide and implement where `AsyncPostgresSaver.setup()` runs. It needs DDL
+      rights once; the lifespan and a one-off migration step are both defensible
+      and the choice should be stated, not defaulted.
+- [ ] Tests for both backends behind the same seam, including that an absent
+      `UP_CHECKPOINT_URL` still yields SQLite.
+
+**Health-check ripple, recorded because it is not free.** `routes/health.py`
+reports `checkpoint_dir` by stat-ing a filesystem path, which says nothing true
+about a Postgres DSN. Renaming the field to something honest regenerates
+`frontend/src/api/openapi.json` and `schema.d.ts` and touches the health UI.
+`_derive_status` iterates the model's own fields, so the status derivation
+absorbs a renamed check safely — that was the defect it was written to fix. The
+cost here is the regeneration and the frontend edit, not the logic. A clean
+`git diff` after `npm run gen:api` is a gate.
+
+### 13.2 Container image
+
+- [ ] `backend/Dockerfile` on a **Debian** `python:3.14-slim` base. Not Alpine,
+      for two independent reasons: musl invalidates every `cp314` wheel, and
+      `services/repo/workspace.py` hardcodes
+      `PATH=/usr/bin:/bin:/usr/local/bin` for every git subprocess with `env=`
+      replacing the whole environment. `apt-get install git` (git is absent from
+      slim) puts git at `/usr/bin/git`, so that assumption holds on Debian and
+      would not elsewhere.
+- [ ] Serve `0.0.0.0:$PORT`, `--workers 1`, no `--reload`, and `--factory` —
+      `api/app.py` exports `create_app`, not a module-level `app`.
+- [ ] **Generate a lockfile, resolved on `linux/amd64`.** There is no lockfile of
+      any kind today, so every transitive is unpinned while rule 13 requires
+      pinned and verified versions. It cannot be generated from the dev venv,
+      which holds macOS-only wheels.
+- [ ] **Run ingest at build time**, behind a BuildKit secret for the provider key,
+      so the image ships a populated `.chroma` (ADR-002 D3). This is a mandatory
+      deploy step that the README never mentions, and skipping it produces a
+      server that answers `/api/health` with `status: "ok"` while retrieving zero
+      evidence — the exact failure the product exists to prevent.
+- [ ] Set `UP_CORPUS_DIR` explicitly. `CORPUS_ROOT` resolves relative to the
+      installed package file and `corpus/` sits outside `src/` with no
+      `package-data` entry, so a non-editable install does not ship it.
+- [ ] `.dockerignore` that excludes `.venv/`, `.chroma/`, `.workspaces/`,
+      `checkpoints.db*`, and every `.env`.
+
+### 13.3 Identity and access — Clerk
+
+The API has no authentication of any kind today, and `POST /api/agent/start`
+clones a caller-supplied URL and spends tokens. **Clerk** is the gate (ADR-002
+D4), chosen over a shared secret because the next thing planned after deployment
+is GitHub sign-in, and a shared secret would be built and then thrown away.
+
+Scope here is **the gate only**. Public repository URLs already work — `RepoInput`
+accepts a `url` and `tests/repo/test_clone_live.py` clones a real public
+repository over `https`. Clerk adds *who the user is*; it does not by itself add
+private repositories. Cloning private repositories with Clerk's stored GitHub
+token stays Sub-project 2 work, unblocked rather than done here.
+
+- [ ] `@clerk/clerk-react` in the frontend, with GitHub as the social connection.
+      New dependency, so rule 12 wants the reason stated and rule 13 wants the
+      resolved version recorded.
+- [ ] **Sign-ups restricted to invitation or an allowed domain in the Clerk
+      dashboard.** This is what actually makes the deployment private. Clerk with
+      open sign-up is a login page, not an access control.
+- [ ] `client.ts` attaches the Clerk session token as a bearer header. It is the
+      only module in the frontend that calls `fetch`, by design, so this is one
+      edit rather than a sweep — the Phase 10 decision paying off.
+- [ ] **The frontend reads its first environment variable**
+      (`VITE_CLERK_PUBLISHABLE_KEY`). It currently reads none, and that property
+      is load-bearing in ADR-002 D4's reasoning about why no `VITE_API_BASE_URL`
+      is needed. Note the change where it is now false, rather than leaving the
+      ADR overstating it.
+- [ ] `clerk-backend-api` in the backend, verifying the session token via
+      `authenticate_request`. Per rule 20 a rejection produces a typed
+      `AppError`, which means a new `ErrorCode` member and its own tests.
+- [ ] Health stays reachable unauthenticated, or a TCP startup probe is used —
+      decide which, and say why, rather than discovering it from a failing probe.
+- [ ] `vercel.json` rewrite for `/api/*` → Cloud Run. Plain rewrite, **not**
+      Routing Middleware: Clerk's token comes from the browser, so nothing needs
+      injecting server-side. This is a simplification Clerk buys.
+- [ ] `UP_CORS_ORIGINS` set to the Vercel production domain. The rewrite keeps the
+      browser same-origin so CORS is never exercised, but ADR-001 is explicit
+      that a wildcard is not a decision anyone would make on purpose.
+
+**Run ownership, and why it cannot wait for Sub-project 3.** A shared secret has
+no concept of a second user: one trusted proxy, one tenant, and every run
+implicitly the caller's. Clerk creates real users, and
+`GET /api/agent/status/{thread_id}` and `POST /api/agent/resume` check nothing
+about who is asking. **Authentication without ownership is a downgrade** — it
+replaces "nobody can get in" with "anyone who is in can read and resume anyone
+else's run." So this lands with the gate, not after it (ADR-002 D6).
+
+- [ ] A `runs` table in the same Cloud SQL instance 13.1 provisions, mapping
+      `thread_id` to a Clerk user id, written when a run starts.
+- [ ] Ownership enforced on `status` and `resume`. A thread owned by someone else
+      must be indistinguishable from one that does not exist — a distinct
+      "forbidden" response confirms the thread id is real, which is the one thing
+      an enumerating caller wants to learn.
+- [ ] Tests: two users, and neither can see or resume the other's run. This is the
+      assertion that would have failed silently before Clerk existed.
+
+### 13.4 Production configuration
+
+- [ ] `--max-instances=1`, asserted by whatever applies the configuration rather
+      than left to an autoscaling default. This is the deployment's load-bearing
+      correctness setting and its least visible one: the run registry is
+      in-process, so a second instance makes half of all status polls report
+      `ORPHANED` and offer to restart running work.
+- [ ] `--no-cpu-throttling` (instance-based billing) with `--min-instances=0`.
+      The billing mode is a correctness requirement, not a cost tweak — `start`
+      returns 202 and the graph runs on a background task, which the default
+      request-based billing throttles the instant the response is sent.
+- [ ] `UP_ALLOWED_LOCAL_ROOTS` **empty**. The committed `.env.example` ships
+      `/Users/nzrsrd/Code`; local-path analysis is meaningless on a server and
+      ADR-001 records the setting as an arbitrary-read surface.
+- [ ] `UP_WORKSPACE_DIR` on an in-memory volume with an explicit size cap. Writes
+      count against the instance memory limit, so budget `UP_MAX_REPO_BYTES`
+      (50 MB) × `UP_MAX_CONCURRENT_RUNS` plus depth-100 git history — consider
+      lowering concurrency to 2 and sizing memory at 2 GiB. Nothing shared: the
+      startup sweep `rmtree`s `repo-*` older than an hour under this directory.
+- [ ] Provider key via Secret Manager and `--set-secrets`, never a plain env var,
+      **and a hard spend cap set at the provider.** The gate in 13.3 is the only
+      thing between a reachable URL and the token budget; the cap is the only
+      thing that bounds the damage if the gate fails.
+- [ ] Give `RunRegistry.drain()` a bounded timeout. It currently awaits every
+      in-flight run with no limit, against a 10-second non-configurable kill —
+      an unbounded drain there is a truncated shutdown rather than a deliberate
+      one.
+- [ ] A deploy runbook in the README: the ingest step, the required settings, and
+      the single-instance constraint with its reason.
+
+### 13.5 Exit criteria
+
+Rules 9–11: a phase is done when its exit criteria are demonstrably met, with
+output shown. Not one of these is met by the corresponding code existing.
+
+- [ ] **A paused HITL run survives a full Cloud Run revision replacement and
+      resumes to `COMPLETED` on the same `thread_id`.** This is the entire
+      justification for ADR-002 D2 and must be demonstrated rather than asserted.
+- [ ] `/api/health` reports `status: "ok"` **and** a real run returns resolving
+      citations. Both halves: the endpoint deliberately never opens the store, so
+      it reports `ok` over an empty collection and cannot on its own show that the
+      baked corpus is populated.
+- [ ] An unauthenticated request to the Cloud Run URL is rejected, shown against
+      the deployed service and not against a local test client.
+- [ ] **A signed-in user cannot read or resume another user's run**, demonstrated
+      with two real Clerk accounts against the deployed service. Not a unit test:
+      the failure this guards against is a deployment-shaped one.
+- [ ] Sign-up by an uninvited account is refused. Clerk with open registration
+      would make every criterion above vacuous.
+- [ ] A public GitHub URL, pasted into the deployed UI by a signed-in user, runs
+      to a report with resolving citations. This is the capability the
+      prioritisation was for, and it is the one that proves the deployment
+      earns its place.
+- [ ] Two instances are shown to be impossible to reach by configuration, or the
+      constraint is shown to be enforced. A correctness setting nobody verified
+      is a correctness setting nobody has.
+
+**Exit:** a private URL an invited person signs in to with GitHub, pastes a
+public repository link into, is asked and answers one real question on, and
+receives a report from — where a redeploy mid-decision does not lose their run,
+where they cannot see anyone else's, and where every figure on screen still
+traces to a real line of code or a real corpus document.
+
+**What this exit does not claim.** It does not stand in for Phase 11. The
+requirements audit, the opt-in live usage test and the golden-set evaluation are
+still unchecked, and a deployment demonstrating one journey is not the
+whole-surface audit Phase 11 specifies. It also says nothing about private
+repositories, which need Sub-project 2. Both are ordinary consequences of going
+early and are recorded here so the exit is not read as more than it is.
