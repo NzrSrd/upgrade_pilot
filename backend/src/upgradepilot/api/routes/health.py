@@ -110,6 +110,7 @@ def health(request: Request) -> HealthResponse:
     return HealthResponse(
         status=_derive_status(checks),
         version=__version__,
+        auth_required=settings.auth_required,
         checkpoint_backend="postgres" if settings.checkpoint_url is not None else "sqlite",
         checks=checks,
     )

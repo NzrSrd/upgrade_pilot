@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     SecretStr,
     field_validator,
+    model_validator,
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -406,6 +407,27 @@ class Settings(BaseSettings):
     checkpoint_db: StorePath = Path("./checkpoints.db")
     workspace_dir: StorePath = Path("./.workspaces")
 
+    clerk_secret_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices("CLERK_SECRET_KEY"),
+    )
+    """The Clerk secret key, or `None` for an unauthenticated API.
+
+    ADR-002 D4. `CLERK_SECRET_KEY` is the name Clerk's own docs, CLI and SDK
+    use, so a shell that already has it works without translation -- the same
+    reason `llm_api_key` reads `OPENROUTER_API_KEY` before its own prefixed
+    spelling. `UP_CLERK_SECRET_KEY` also works, and only because
+    `validate_by_name=True` is set in `model_config`.
+
+    **`None` leaves the API open, and that is deliberate rather than a
+    permissive default.** The hermetic suite and local development have no
+    Clerk instance and must not need one (rule 22), and inventing a fake key
+    to satisfy a mandatory setting would mean every test ran against a code
+    path production does not use. What makes it safe is that the absence is
+    *reported* rather than assumed harmless: `/api/health` publishes
+    `auth_required`, so a deployment that forgot the key says so in the one
+    place an operator looks, instead of silently accepting every caller."""
+
     checkpoint_url: PostgresUrl | None = None
     """The Postgres checkpointer, or `None` for the SQLite file above.
 
@@ -472,6 +494,67 @@ class Settings(BaseSettings):
         provider instead of a clear local answer.
         """
         return self.llm_api_key is not None and bool(self.llm_api_key.get_secret_value().strip())
+
+    @model_validator(mode="after")
+    def _an_authenticated_deployment_needs_postgres(self) -> "Settings":
+        """Refuse to boot with a gate but no way to enforce ownership.
+
+        ADR-002 D6. Authentication without ownership is a *downgrade*: it
+        replaces "nobody can get in" with "anyone who is in can read and
+        resume anyone else's run", including answering someone else's pending
+        decision, which the append-only `human_decisions` channel would then
+        record as that user's answer. The run registry and the ownership table
+        both live in Postgres, so a Clerk key without `UP_CHECKPOINT_URL`
+        describes a deployment where the gate exists and ownership cannot be
+        checked.
+
+        Refused here rather than handled per-request, because the alternative
+        is a service that starts, looks gated, and silently shares runs. This
+        is the one configuration whose failure mode is invisible from the
+        outside, so it fails at startup where an operator is watching.
+
+        The pairing is one-directional on purpose: Postgres without Clerk is
+        fine and is what a single-tenant deployment looks like. It is only the
+        gate that implies ownership.
+        """
+        if self.auth_required and self.checkpoint_url is None:
+            raise ValueError(
+                "CLERK_SECRET_KEY is set but UP_CHECKPOINT_URL is not. "
+                "Authenticated deployments need the Postgres checkpointer, "
+                "because run ownership is stored there and a gate without "
+                "ownership lets any signed-in user read and resume any run. "
+                "Set UP_CHECKPOINT_URL, or unset CLERK_SECRET_KEY to run open."
+            )
+        return self
+
+    @property
+    def auth_required(self) -> bool:
+        """Whether requests must carry a Clerk session.
+
+        Same shape as `llm_configured`, but measured rather than assumed:
+        `SecretStr` defines `__len__` and not `__bool__`, so `SecretStr("")`
+        is already falsy and a naive `bool(...)` would catch the
+        exported-empty case for free. What it would **not** catch is
+        `SecretStr("   ")`, which has length 3 and is therefore truthy. So the
+        `.strip()` is load-bearing for whitespace only, and
+        `test_an_empty_clerk_key_reads_as_no_auth_rather_than_as_configured`
+        proves exactly that: under a naive `bool(self.clerk_secret_key)` the
+        blank-string case still passes and only the whitespace case goes red.
+
+        Worth the precision because the failure direction is bad. Reporting a
+        whitespace key as configured would announce the API as gated while
+        every request was in fact rejected -- an operator reading
+        `auth_required: true` would believe the deployment was private for
+        the wrong reason.
+
+        (The `llm_configured` docstring above states this as "a `SecretStr`
+        wrapping `""` is an object, and reading it as truthy" -- which the
+        measurement above contradicts. Left alone here rather than edited in
+        passing, but it is imprecise in the same way.)
+        """
+        return self.clerk_secret_key is not None and bool(
+            self.clerk_secret_key.get_secret_value().strip()
+        )
 
 
 @lru_cache(maxsize=1)

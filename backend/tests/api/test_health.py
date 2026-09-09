@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from upgradepilot.api.app import create_app
 from upgradepilot.api.routes import health
@@ -190,3 +191,68 @@ def test_every_reported_check_can_change_the_status() -> None:
         one_false = {**all_true, field: False}
         status = health._derive_status(HealthChecks(**one_false))
         assert status != "ok", f"{field!r} is reported but does not affect the status"
+
+
+def test_auth_required_is_false_without_a_clerk_key(tmp_path: Path) -> None:
+    """The state local development and the hermetic suite run in.
+
+    Reported rather than assumed harmless: an operator has no other way to
+    tell a gated deployment from an open one, and "is my private URL actually
+    private" should not require reading a config file.
+    """
+    body = TestClient(create_app(_all_checks_pass(tmp_path))).get("/api/health").json()
+
+    assert body["auth_required"] is False
+
+
+def test_auth_required_is_true_once_a_clerk_key_is_configured(tmp_path: Path) -> None:
+    settings = _all_checks_pass(tmp_path).model_copy(
+        update={"clerk_secret_key": SecretStr("sk_test_not_a_real_key")}
+    )
+
+    body = TestClient(create_app(settings)).get("/api/health").json()
+
+    assert body["auth_required"] is True
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_an_empty_clerk_key_reads_as_no_auth_rather_than_as_configured(
+    tmp_path: Path, blank: str
+) -> None:
+    """`CLERK_SECRET_KEY=` exported empty is this project's recurring defect.
+
+    Both cases are parametrised because only one of them is actually at risk,
+    and that was measured rather than assumed. `SecretStr` defines `__len__`
+    and not `__bool__`, so `SecretStr("")` is falsy and a naive
+    `bool(self.clerk_secret_key)` handles it; `SecretStr("   ")` has length 3
+    and is truthy, so the whitespace case is the one the `.strip()` exists
+    for. Reverting `auth_required` to that naive check turns exactly this
+    parametrisation's `"   "` case red and leaves `""` passing.
+
+    The wrong direction matters here: reporting a whitespace key as
+    configured would announce `auth_required: true` on an API that rejects
+    every request, and an operator would read that as "the deployment is
+    private" for a reason that is not the real one.
+    """
+    settings = _all_checks_pass(tmp_path).model_copy(update={"clerk_secret_key": SecretStr(blank)})
+
+    body = TestClient(create_app(settings)).get("/api/health").json()
+
+    assert body["auth_required"] is False
+
+
+def test_a_missing_clerk_key_does_not_make_the_service_degraded(tmp_path: Path) -> None:
+    """The discriminating test for why `auth_required` is not in `checks`.
+
+    `_derive_status` requires every field of `checks` to be truthy. Putting
+    this there would have been easy and wrong: a laptop with no Clerk
+    instance is correctly configured and would report `degraded` forever,
+    which is how a status field stops being read. A deployment that forgot
+    the key is a misconfiguration and a laptop without one is not, and one
+    field cannot mean both.
+    """
+    body = TestClient(create_app(_all_checks_pass(tmp_path))).get("/api/health").json()
+
+    assert body["auth_required"] is False
+    assert body["status"] == "ok"
+    assert "auth_required" not in body["checks"]

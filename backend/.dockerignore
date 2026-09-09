@@ -1,0 +1,42 @@
+# The build context is `backend/`. Everything the image needs is `src/`,
+# `corpus/`, `pyproject.toml` and `requirements.lock`; everything below either
+# cannot work in the image or must not be in it.
+
+# A macOS arm64 virtualenv. Copying it in would shadow the installed
+# packages with wheels the image cannot load -- see ADR-001 on `ruff` and
+# `sqlite-vec` being platform-locked despite a `py3` prefix.
+.venv/
+venv/
+
+# Secrets. The provider key reaches the build as a mounted Cloud Build
+# secret and the runtime as a Secret Manager reference, never as a layer.
+.env
+.env.*
+!.env.example
+
+# Local run state. `.chroma` in particular: the image builds its own from
+# `corpus/`, and copying a developer's would ship whatever they last ingested
+# as though it were the shipped corpus.
+.chroma/
+.workspaces/
+checkpoints.db*
+*.sqlite
+*.sqlite3
+
+# Tests and probes. Neither runs in the image, and `tests/fixtures/` carries a
+# deliberately-unparseable file and several fake manifests.
+tests/
+probes/
+
+# Caches and tool state.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.lock-report.json
+
+.DS_Store

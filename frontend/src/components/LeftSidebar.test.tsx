@@ -20,6 +20,7 @@ describe("LeftSidebar", () => {
           status: "ok",
           version: "test",
           checkpoint_backend: "sqlite",
+          auth_required: false,
           checks: { chroma_dir: true, checkpoint_ready: true, llm_configured: true },
         }}
         onNewRun={() => {}}
@@ -43,6 +44,7 @@ describe("LeftSidebar", () => {
           status: "degraded",
           version: "test",
           checkpoint_backend: "sqlite",
+          auth_required: false,
           checks: { chroma_dir: false, checkpoint_ready: true, llm_configured: false },
         }}
         onNewRun={() => {}}
@@ -70,6 +72,7 @@ describe("LeftSidebar", () => {
           status: "ok",
           version: "test",
           checkpoint_backend: "postgres",
+          auth_required: false,
           checks: { chroma_dir: true, checkpoint_ready: true, llm_configured: true },
         }}
         onNewRun={() => {}}

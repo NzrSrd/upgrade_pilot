@@ -30,6 +30,27 @@ jobs:
     defaults:
       run:
         working-directory: backend
+
+    # A real database, because ADR-002 D6's ownership guarantee is exactly the
+    # shape that passes against an in-memory dict and fails against SQL. The
+    # `postgres`-marked tests skip without `UP_TEST_POSTGRES_URL`, so without
+    # this service they would be silently absent from every run -- green CI
+    # proving nothing about the one mechanism that keeps users out of each
+    # other's runs.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: upgradepilot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +82,50 @@ jobs:
       # passed, and CI deliberately does not pass it -- those five tests need a
       # real key and make real model calls. Rule 24 keeps them in the suite; it
       # does not ask CI to pay for them on every push.
+      #
+      # `postgres`-marked tests are the opposite case: they need a database and
+      # not a key, they cost nothing, and they cover a security guarantee, so
+      # the service above is wired in rather than left for a developer to
+      # remember locally.
       - run: python -m pytest
+        env:
+          UP_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/upgradepilot_test
+
+      # Asserted separately because a skip is silent. If the marker, the
+      # service or the variable ever drift apart, the ownership tests would
+      # vanish from CI while it stayed green -- which is the failure this line
+      # exists to make loud.
+      - name: The ownership tests actually ran
+        env:
+          UP_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/upgradepilot_test
+        run: |
+          # No `-q` here. `addopts = "-q"` in pyproject already supplies one,
+          # and a second makes it `-qq`, which suppresses the summary line
+          # this step reads -- so the first version of this failed while the
+          # tests it guards were passing. A false negative rather than a false
+          # positive, but it still cost a red build.
+          python -m pytest tests/api/test_run_ownership.py --no-header \
+            > /tmp/ownership.txt 2>&1 || { cat /tmp/ownership.txt; exit 1; }
+          tail -3 /tmp/ownership.txt
+
+          # Only the summary line, never the whole output: the word "skipped"
+          # appears in this module's own docstring explaining when it skips,
+          # so grepping the transcript would fail on its own documentation.
+          summary=$(grep -E "[0-9]+ (passed|failed|skipped|error)" /tmp/ownership.txt | tail -1)
+          echo "summary: $summary"
+          case "$summary" in
+            *skipped*)
+              echo "::error::ownership tests skipped -- the database was not reachable, so ADR-002 D6 is untested"
+              exit 1
+              ;;
+          esac
+          case "$summary" in
+            *passed*) ;;
+            *)
+              echo "::error::no passing ownership tests were reported"
+              exit 1
+              ;;
+          esac
 
   frontend:
     runs-on: ubuntu-latest

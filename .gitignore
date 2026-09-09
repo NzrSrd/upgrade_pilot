@@ -36,3 +36,15 @@ backend/.workspaces/
 
 # SDD scratch workspace (ledger, briefs, review packages)
 .superpowers/
+
+# Agent tooling installed by plugins, not project source. Ignored for the same
+# reason `.superpowers/` is: it is how the assistant is configured, it arrives
+# and changes independently of this codebase, and a `git add -A` during
+# unrelated work otherwise sweeps ~170 vendored files into a product commit --
+# which is exactly what happened once before this line existed.
+#
+# If these should be versioned, that is a deliberate decision and deserves its
+# own commit rather than a side effect of one.
+.agents/skills/
+.claude/skills/
+skills-lock.json
