@@ -680,7 +680,7 @@ and it was not worth another detour, so it is unmeasured rather than estimated.
 It matters for cold-start latency under ADR-002 D5 and should be measured before
 that default is relied on.
 
-### 13.3 Identity and access — Clerk — COMPLETE except one dashboard setting
+### 13.3 Identity and access — Clerk — COMPLETE
 
 The API has no authentication of any kind today, and `POST /api/agent/start`
 clones a caller-supplied URL and spends tokens. **Clerk** is the gate (ADR-002
@@ -696,9 +696,17 @@ token stays Sub-project 2 work, unblocked rather than done here.
 - [x] `@clerk/react` in the frontend, with GitHub as the social connection.
       New dependency, so rule 12 wants the reason stated and rule 13 wants the
       resolved version recorded.
-- [ ] **BLOCKED ON A HUMAN. Sign-ups restricted to invitation or an allowed domain in the Clerk
-      dashboard.** This is what actually makes the deployment private. Clerk with
-      open sign-up is a login page, not an access control.
+- [x] **Sign-ups restricted in the Clerk dashboard.** This is what actually makes
+      the deployment private. Clerk with open sign-up is a login page, not an access
+      control. Done as `sign_up_mode: public` + `allowlist_enabled: true` with the
+      owner's address allowlisted — **not** invitation-only as ADR-002 D4 originally
+      said, and the difference is recorded there because it is a security property:
+      `restricted` fails closed, an allowlist fails open if the list is ever cleared.
+      The safer mode was attempted first and locked the owner out of their own
+      instance (zero users, no pending invitation), and Clerk refuses
+      `allowlist: true` alongside `restricted` at all, so the two are alternatives
+      rather than layers. Moving to `restricted` plus a real emailed invitation is
+      still open and is the stricter end state.
 - [x] `client.ts` attaches the Clerk session token as a bearer header. It is the
       only module in the frontend that calls `fetch`, by design, so this is one
       edit rather than a sweep — the Phase 10 decision paying off.
@@ -767,14 +775,49 @@ mutation could break it. Separately, `npm install` surfaced a high-severity
 dependency; pinned via a nested `overrides` entry exactly as ADR-001 already
 does for `undici`, back to zero vulnerabilities.
 
-**What remains is a dashboard setting nobody can commit.** Invitation-only
-sign-up is the single control that makes this deployment private rather than
-merely authenticated, it lives outside version control and outside CI, and
-every other decision in ADR-002 D4 assumes it. Until it is set, the gate is a
-login page.
+**The one control that lives outside version control.** Restricted sign-up is
+what makes this deployment private rather than merely authenticated, it lives
+outside version control and outside CI, and every other decision in ADR-002 D4
+assumes it. It is now set — as an allowlist, see above — but nothing in this
+repository can assert that it stays set, and `/api/health`'s `auth_required`
+reports only that a Clerk key is configured, not that sign-up is closed. So this
+is a standing manual check rather than a completed task, and the honest summary
+is that the gate is exactly as private as one dashboard toggle.
 
 ### 13.4 Production configuration
 
+- [x] **A durable Postgres, and it is Neon rather than Cloud SQL.** ADR-002 D2 was
+      drafted around Cloud SQL at roughly $10-12/month; that cost was declined, and
+      Neon's free tier carries a checkpoint table for a handful of paused runs. The
+      provider change cost **no code** — `Settings` validates `UP_CHECKPOINT_URL`
+      for scheme only — which is the second time ADR-001's one-module-per-swap claim
+      has held. ADR-002 D2 amended to record it, along with the two things Neon
+      requires that Cloud SQL would not: the **direct** endpoint (the saver uses
+      `prepare_threshold=0`, and transaction-pooled connections do not keep named
+      prepared statements), and connection checking, below.
+- [x] **The Postgres connection survives the database hanging up.** Not on the
+      original list, and it was a live defect rather than a refinement. Neon
+      suspends after five minutes idle and Cloud Run keeps an idle instance alive,
+      so the deployment's ordinary overnight state is a live process holding a dead
+      connection — and `AsyncPostgresSaver.from_conn_string` holds exactly one
+      connection for the application lifespan. Measured: the next write raised
+      `OperationalError: server closed the connection unexpectedly`, a 500 on the
+      resume of a run the user was told was safely paused. `open_ownership` had the
+      identical defect, surfacing as `AdminShutdown` from `require_owner` — a failed
+      authorisation check, so unavailable rather than unsafe, but still the owner
+      locked out of their own run. Both fixed with
+      `AsyncConnectionPool(check=AsyncConnectionPool.check_connection)`; the pool
+      alone is **not** the fix, measured by removing `check=` and watching the
+      reproduction still fail. Evidence: `1204 passed / 8 skipped`, ruff and mypy
+      clean; `tests/graph/test_checkpointer_survives_an_idle_disconnect.py` and
+      `test_ownership_still_answers_after_the_database_hangs_up` reproduce it with
+      `pg_terminate_backend`, and `test_checkpointer_backend.py` pins `check=`
+      hermetically so CI covers it without a database. Recorded in ADR-001's
+      verification record and ADR-002 D2/D6.
+- [x] **The image size, which D5 accepted a cold start without measuring.**
+      231,700,255 bytes (~221 MiB) with the corpus baked in, so the pull is not the
+      dominant term in a cold start and the `chromadb` import remains the thing to
+      attack. Recorded in ADR-001's verification record and ADR-002 D5.
 - [ ] `--max-instances=1`, asserted by whatever applies the configuration rather
       than left to an autoscaling default. This is the deployment's load-bearing
       correctness setting and its least visible one: the run registry is

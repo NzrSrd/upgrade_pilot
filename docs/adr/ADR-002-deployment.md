@@ -75,9 +75,9 @@ scalable service.
 
 ### D2. The LangGraph checkpointer moves to PostgreSQL, ahead of Sub-project 3
 
-`AsyncPostgresSaver` against Cloud SQL, selected by a new `UP_CHECKPOINT_URL`
-setting. Its absence keeps the existing `AsyncSqliteSaver` path, so local
-development and the hermetic test suite are unchanged.
+`AsyncPostgresSaver` against a managed Postgres, selected by a new
+`UP_CHECKPOINT_URL` setting. Its absence keeps the existing `AsyncSqliteSaver`
+path, so local development and the hermetic test suite are unchanged.
 
 This is the one decision here that contradicts ADR-001, whose D3 table lists
 PostgreSQL as *"absent — arrives in Sub-project 3"*. The forcing fact is
@@ -95,6 +95,64 @@ truncated by a revision replacement. That does not change under Postgres —
 what changes is the aftermath. With state in RAM the run was gone. With state
 in Postgres the checkpoint survives and the run is resumable through the
 `ORPHANED` branch that `resume_run` already has.
+
+**Amended after implementation: the provider is Neon, not Cloud SQL.** This
+document was drafted around Cloud SQL and priced at roughly $10-12/month for the
+smallest always-on instance. The project owner declined that cost, and Neon's
+free tier carries the workload: 0.5 GB of storage against a checkpoint table
+holding a handful of paused runs, and no card. Recorded here rather than left to
+diverge, because the ADR naming a service the deployment does not use is worse
+than no ADR.
+
+The switch cost **no code**, which is the part worth keeping. `Settings`
+validates `UP_CHECKPOINT_URL` for scheme and nothing else -- it refuses anything
+that is not a `postgres(ql)://` DSN and inspects no host -- so changing
+providers was changing one environment variable. That is the seam ADR-001
+claimed and this is the second time it has held.
+
+Two things Neon requires that Cloud SQL would not have:
+
+- **The direct endpoint, not the `-pooler` one.** `AsyncPostgresSaver` opens its
+  connections with `prepare_threshold=0`, so every statement it issues is a
+  named server-side prepared statement. Transaction-pooled connections do not
+  carry those across checkouts. The pooled host is the one Neon's dialog offers
+  first, and the failure would appear as intermittent `prepared statement
+  already exists` errors under load rather than as a clear refusal at startup.
+- **Connection checking on checkout**, which is a correctness requirement and
+  is described in its own subsection below.
+
+**A failure this provider introduces, found by looking for it.** Neon suspends
+its compute after five minutes with no queries. Cloud Run keeps an idle instance
+alive after its last request. So the ordinary overnight state of this deployment
+is a live process holding a connection to a database that has hung up -- and
+`AsyncPostgresSaver.from_conn_string`, the obvious spelling and the one
+originally written here, holds exactly **one** connection for the whole
+application lifespan. The next resume raised `OperationalError: server closed
+the connection unexpectedly`: a 500 on the resume of a run the user had been
+told was safely paused, which is the single promise this decision exists to
+keep. Durability of the *state* had been established; durability of the
+*connection to it* had not, and the two are not the same guarantee.
+
+`probes/probe_postgres_checkpointer.py` could not have caught it and is not
+deficient for that. It proved state survives a **process** restart, against a
+local server that never suspends. A connection dying underneath a process that
+keeps running is the opposite arrangement.
+
+The fix is a `psycopg_pool.AsyncConnectionPool` with
+`check=AsyncConnectionPool.check_connection`, and the pool is **not** the fix on
+its own -- measured, with `check=` removed the reproduction still fails and logs
+`discarding closed connection`, because the pool notices a dead connection when
+it comes *back*, having already handed it out. The pool is sized at 1-2
+connections rather than by concurrency: `AsyncPostgresSaver._cursor` holds a lock
+around every operation, so the saver serialises itself and a second connection
+can never be busy. It is there to be a replacement, not a second worker.
+
+Reproduced with `pg_terminate_backend` from a second connection, which is what
+an idle timeout does to a session, so the regression test is deterministic,
+local, and needs neither a Neon account nor a five-minute wait
+(`tests/graph/test_checkpointer_survives_an_idle_disconnect.py`, plus a hermetic
+assertion in `test_checkpointer_backend.py` that pins `check=` in CI where no
+database exists).
 
 **What this decision does not claim.** It moves the *checkpointer* only.
 Accounts, users and saved analysis history stay in Sub-project 3, and ADR-001's
@@ -128,10 +186,16 @@ no `package-data` entry, so a non-editable install does not ship it.
 
 ### D4. Clerk as the identity and access gate
 
-Clerk, with GitHub as the social connection and sign-ups restricted to
-invitation. `@clerk/clerk-react` in the frontend; `clerk-backend-api`'s
-`authenticate_request` verifying the session token in FastAPI. A plain
+Clerk, with GitHub as the social connection and sign-ups restricted.
+`@clerk/react` in the frontend; `clerk-backend-api`'s
+`authenticate_request_async` verifying the session token in FastAPI. A plain
 `vercel.json` rewrite sends `/api/*` to Cloud Run.
+
+**Two corrections from implementation.** The package is `@clerk/react`;
+`@clerk/clerk-react` as first written here does not exist. And the restriction
+is an **allowlist over public sign-up**, not invitation-only -- see the
+subsection at the end of this decision, because the difference is a security
+property rather than a configuration detail.
 
 **This replaces an earlier decision in this document's own draft, and the reason
 is worth keeping.** The first version of D4 was a shared secret injected by a
@@ -145,7 +209,7 @@ decision is small.
 Clerk earns the place over a hand-rolled gate on four counts, three of which are
 not access control at all:
 
-1. **It is the private gate.** Invitation-only sign-up is what makes the
+1. **It is the private gate.** Restricted sign-up is what makes the
    deployment private. Clerk with open registration would be a login page, not
    an access control, and this distinction is the one most easily lost.
 2. **It is the GitHub sign-in the prioritisation was for**, rather than a
@@ -170,6 +234,29 @@ still keeps the browser same-origin, so CORS is never exercised and no
 `VITE_API_BASE_URL` has to be invented. `UP_CORS_ORIGINS` is set to the Vercel
 production domain regardless — it costs nothing, and ADR-001 is explicit that a
 wildcard is not a decision anyone would make on purpose.
+
+**Amended after implementation: the sign-up posture is an allowlist, and it
+fails open.** This document said invitation-only. What is deployed is
+`sign_up_mode: public` with `allowlist_enabled: true` and one address on the
+list. It is equally closed today and the distinction still matters, for two
+reasons.
+
+The first is that a reader of the Clerk dashboard sees `public` and will
+reasonably conclude the deployment is open. It is not -- the allowlist is what
+closes it -- but nothing at the point of reading says so.
+
+The second is the failure direction. `restricted` fails **closed**: with no
+invitation, nobody gets in. An allowlist fails **open**: clear the list and
+sign-up is public registration on a URL that reaches the token budget. The
+safer mode is available and was not chosen for a reason worth recording -- the
+first attempt set `sign_up_mode: restricted` on an instance with zero users and
+no pending invitation, which locked the project owner out of their own
+application, and Clerk then refuses `allowlist: true` alongside `restricted`
+at all ("isn't allowed to be `true` when sign-up mode is set to restricted").
+So the two mechanisms are alternatives, not layers, and the allowlist was the
+one that could be applied without first arranging an invitation. Moving to
+`restricted` plus a genuine emailed invitation remains the stricter option and
+is open.
 
 **The frontend does need a code change**, which the earlier design avoided.
 `client.ts` must attach the session token, and the app must read
@@ -198,9 +285,22 @@ checkpoint in Postgres an idle instance holds nothing worth keeping, so the
 instance can go away and the cost with it. The price is a cold start, dominated
 by the `chromadb` import.
 
+**The image size, measured rather than assumed.** This decision was taken with
+the image unmeasured, which left the cold-start argument resting on nothing.
+The built image is **231,700,255 bytes (~221 MiB)**, corpus included. That is
+small enough that pull time is not the dominant term and the `chromadb` import
+remains the thing to attack if cold starts become the complaint. Recorded
+because "accepted for internal use" is only a defensible position with a number
+attached. *Source: `gcloud artifacts docker images list`, tag `f581b31`.*
+
+Neon compounds this, mildly and worth stating: the database also suspends when
+idle, so the first request after a quiet night pays a Cloud Run cold start
+**and** a Neon resume. Neither is a correctness problem -- see D2 for the one
+that was.
+
 ### D6. Runs are owned, and ownership is enforced
 
-A `runs` table in the same Cloud SQL instance D2 provisions, mapping
+A `run_owners` table in the same Postgres database D2 provisions, mapping
 `thread_id` to a Clerk user id, checked on `status` and `resume`.
 
 This is a direct consequence of D4 and is the one place where adding
@@ -219,9 +319,21 @@ otherwise lives. Two details that are decisions rather than implementation:
 - A thread owned by someone else must be **indistinguishable from one that does
   not exist**. A distinct "forbidden" response confirms the thread id is real,
   which is the single fact an enumerating caller wants.
-- The table goes in the instance D2 already provisions. It needs no second
+- The table goes in the database D2 already provisions. It needs no second
   store, and it is the natural seed for Sub-project 3's saved analyses — which
   makes this early arrival a down payment rather than a detour.
+
+**Sharing D2's database means sharing D2's connection bug.** `open_ownership`
+already used a pool, for concurrency, and a pool alone is not enough — so
+`require_owner` raised `psycopg.errors.AdminShutdown` from `owner_of` once the
+provider hung up. Worth being precise about the direction: the authorisation
+check *failed*, it did not pass. A 500 rather than an accidental allow, so
+unavailable and not unsafe — but still the owner locked out of their own paused
+run, on the deployment's morning after. Fixed the same way as D2, with
+`check=AsyncConnectionPool.check_connection`, and covered by
+`test_ownership_still_answers_after_the_database_hangs_up`, which re-asserts
+ownership afterwards rather than only checking for a 200: a check that started
+failing open would also have satisfied "the request succeeded".
 
 **A coupling this decision creates, added after implementing it.** Ownership
 lives in Postgres, so a Clerk key without `UP_CHECKPOINT_URL` describes a
@@ -264,11 +376,16 @@ already makes for keeping one live LLM test. Removing the single
 **A1. A small Compute Engine VM instead of Cloud Run** — an `e2-small` with a
 persistent disk, running the same container. This fits the architecture better
 than the chosen platform does: one process, a real disk, no 10-second kill, and
-SQLite stays adequate so D2 and its Cloud SQL bill both become unnecessary.
-Roughly $13/month all in. Not chosen — Cloud Run is the project owner's
-platform decision — but recorded because it is the honest escape hatch if the
-Cloud SQL line item stops earning its place, and because it is the option that
-would have required the fewest decisions in this document.
+SQLite stays adequate so D2 becomes unnecessary. Roughly $13/month all in. Not
+chosen — Cloud Run is the project owner's platform decision — and it is the
+option that would have required the fewest decisions in this document.
+
+**This alternative got weaker after D2's provider changed, and saying so is the
+point of keeping it.** It was recorded as the escape hatch if the database line
+item stopped earning its place. That line item is now $0, so the comparison is
+$13/month for the VM against near-zero for Cloud Run scaled to zero plus Neon's
+free tier — and the VM is no longer the cheaper option it was written up as. The
+architectural fit argument survives untouched; only the money moved.
 
 **A2. Multiple Cloud Run instances** — rejected outright by D1. The in-memory
 run registry makes it a correctness bug, not a scaling trade-off.
@@ -335,9 +452,16 @@ it.
   given a bounded timeout so the shutdown is deliberate rather than truncated.
 - Cold-start latency on the first request after an idle period, dominated by the
   `chromadb` import. Accepted for internal use; it is the direct price of D5.
-- Cloud SQL is a new always-on dependency and a new monthly cost, in a
-  sub-project that previously had no external service other than the model
-  provider.
+- Postgres is a new external dependency, in a sub-project that previously had
+  no external service other than the model provider. On Neon's free tier it is
+  not a new *cost*, but the dependency is real and it brought a failure mode
+  with it — see D2's idle-disconnect subsection, which is the one thing in this
+  document that was a live defect rather than a trade-off.
+- Neon's free tier caps storage at 0.5 GB and compute at 100 CU-hours/month.
+  Both are far above a checkpoint table for a handful of paused runs, and
+  neither is monitored — so the first sign of outgrowing the tier would be a
+  failure, not a warning. Acceptable at this scale; not acceptable if this
+  deployment ever stops being internal.
 - `psycopg` is a new dependency on an interpreter floor of 3.14, which ADR-001
   says must not be relaxed. Phase 13.0 probes wheel availability before the
   design depends on it.
