@@ -9,12 +9,11 @@ HTTP client that waits for one has already timed out. The client polls
 renders one shape and never branches on which endpoint replied.
 """
 
-from typing import Annotated
+from fastapi import APIRouter, status
 
-from fastapi import APIRouter, Depends, Request, status
-
+from upgradepilot.api.auth import CallerDep, claim_run, require_owner
+from upgradepilot.api.deps import RuntimeDep
 from upgradepilot.api.runtime import (
-    Runtime,
     resume_run,
     snapshot_of,
     snapshot_response,
@@ -28,19 +27,9 @@ from upgradepilot.api.schemas import (
     StartRunRequest,
 )
 from upgradepilot.api.status import checkpoint_exists, derive_status
-from upgradepilot.models.errors import ThreadNotFoundError
+from upgradepilot.models.errors import THREAD_NOT_FOUND_MESSAGE, ThreadNotFoundError
 
 router = APIRouter(prefix="/agent", tags=["agent"])
-
-
-def get_runtime(request: Request) -> Runtime:
-    runtime = getattr(request.app.state, "runtime", None)
-    if runtime is None:  # pragma: no cover - the lifespan always sets it
-        raise RuntimeError("the application runtime was not initialised")
-    return runtime  # type: ignore[no-any-return]
-
-
-RuntimeDep = Annotated[Runtime, Depends(get_runtime)]
 
 RESPONSES: dict[int | str, dict[str, object]] = {
     404: {"model": ErrorResponse, "description": "No run with that id"},
@@ -58,8 +47,12 @@ client renders as `[object Object]` the first time it is hit."""
     response_model=StartResponse,
     responses=RESPONSES,
 )
-async def start(request: StartRunRequest, runtime: RuntimeDep) -> StartResponse:
+async def start(request: StartRunRequest, runtime: RuntimeDep, caller: CallerDep) -> StartResponse:
     thread_id = await start_run(runtime, request)
+    # After the run exists, so a thread id is never claimed for a run that
+    # failed to start; before the response, so the caller cannot poll a run
+    # they do not yet own and be told it does not exist.
+    await claim_run(runtime, thread_id, caller)
     snapshot = await snapshot_of(runtime, thread_id)
     return StartResponse(
         thread_id=thread_id,
@@ -73,7 +66,7 @@ async def start(request: StartRunRequest, runtime: RuntimeDep) -> StartResponse:
     response_model=RunSnapshot,
     responses=RESPONSES,
 )
-async def get_status(thread_id: str, runtime: RuntimeDep) -> RunSnapshot:
+async def get_status(thread_id: str, runtime: RuntimeDep, caller: CallerDep) -> RunSnapshot:
     """The one response shape, in every state.
 
     A thread nobody started is a **404** rather than an empty snapshot:
@@ -81,9 +74,15 @@ async def get_status(thread_id: str, runtime: RuntimeDep) -> RunSnapshot:
     id with a perfectly ordinary snapshot, so an endpoint that did not check
     would return 200 and a blank report for any string a client sent.
     """
+    # Ownership before the snapshot read, for two reasons. A run belonging to
+    # someone else is never loaded at all, so nothing about it can leak
+    # through a response this handler builds. And an unclaimed id short-
+    # circuits without touching the checkpointer, which is the cheaper path
+    # for the case a prober generates most of.
+    await require_owner(runtime, thread_id, caller)
     snapshot = await snapshot_of(runtime, thread_id)
     if not checkpoint_exists(snapshot) and runtime.registry.get(thread_id) is None:
-        raise ThreadNotFoundError("No run with that id exists.", detail=f"thread_id={thread_id!r}")
+        raise ThreadNotFoundError(THREAD_NOT_FOUND_MESSAGE, detail=f"thread_id={thread_id!r}")
     return snapshot_response(runtime, thread_id, snapshot)
 
 
@@ -93,7 +92,12 @@ async def get_status(thread_id: str, runtime: RuntimeDep) -> RunSnapshot:
     response_model=StartResponse,
     responses=RESPONSES,
 )
-async def resume(request: ResumeRequest, runtime: RuntimeDep) -> StartResponse:
+async def resume(request: ResumeRequest, runtime: RuntimeDep, caller: CallerDep) -> StartResponse:
+    # Ownership first, before `resume_run` touches the graph. Answering
+    # someone else's pending decision is the worst thing an unowned resume
+    # could do -- the `human_decisions` channel is append-only, so it would be
+    # recorded as that user's answer with nothing to say it was not.
+    await require_owner(runtime, request.thread_id, caller)
     await resume_run(runtime, request.thread_id, request.decision)
     snapshot = await snapshot_of(runtime, request.thread_id)
     return StartResponse(

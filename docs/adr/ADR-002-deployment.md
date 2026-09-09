@@ -223,6 +223,42 @@ otherwise lives. Two details that are decisions rather than implementation:
   store, and it is the natural seed for Sub-project 3's saved analyses — which
   makes this early arrival a down payment rather than a detour.
 
+**A coupling this decision creates, added after implementing it.** Ownership
+lives in Postgres, so a Clerk key without `UP_CHECKPOINT_URL` describes a
+deployment where the gate exists and ownership cannot be recorded — the
+downgrade this decision exists to prevent, in the one configuration that looks
+correct from the outside. `Settings` therefore **refuses to start** on that
+pair, naming both variables. The pairing is one-directional on purpose:
+Postgres without Clerk is fine and is what a single-tenant deployment looks
+like; it is only the gate that implies ownership.
+
+**Two things the implementation found that this decision had not
+anticipated.**
+
+The first was a working oracle. "Indistinguishable" was first written as two
+raise sites with two string literals — `"No run with that id."` beside
+`"No run with that id exists."` — so the response *text* told a caller whether
+a thread id was real, while both returned 404 and every test passed. The
+message is now a single constant, `THREAD_NOT_FOUND_MESSAGE`, and the test
+compares whole response bodies rather than status codes. Recorded because the
+defect was invisible by construction: neither literal was wrong, only their
+being two.
+
+The second is that **an unclaimed run must be refused, not shared.** A thread
+with no owner row is reachable in practice — one predating the table, or one
+whose claim failed to write — and the permissive reading ("no owner, so anyone
+may read it") would expose precisely those. `require_owner` treats absence as
+refusal, and a test deletes a claim to prove it rather than trusting a comment.
+
+**Verified against the real store rather than a fake.** The ownership tests
+carry a `postgres` marker and run against a live database — locally from
+`UP_TEST_POSTGRES_URL`, in CI from a service container, with a CI step that
+fails if they *skip*, because a silent skip would leave this guarantee
+uncovered while CI stayed green. An in-memory dict would have satisfied every
+assertion while proving nothing about the SQL, which is the argument rule 24
+already makes for keeping one live LLM test. Removing the single
+`require_owner` call from the status route turns four of the seven red.
+
 ## Alternatives considered
 
 **A1. A small Compute Engine VM instead of Cloud Run** — an `e2-small` with a

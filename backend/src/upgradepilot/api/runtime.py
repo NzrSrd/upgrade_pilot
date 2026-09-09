@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from clerk_backend_api import Clerk
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
@@ -49,6 +50,7 @@ from upgradepilot.graph.inspect import pending_payload
 from upgradepilot.models.decision import HumanDecision
 from upgradepilot.models.enums import RunStatus, TraceEventKind
 from upgradepilot.models.errors import (
+    THREAD_NOT_FOUND_MESSAGE,
     ErrorCode,
     InvalidRepoUrlError,
     ThreadNotAwaitingInputError,
@@ -66,6 +68,7 @@ from upgradepilot.models.usage import LLMCall, UsageSummary
 from upgradepilot.services.knowledge.embeddings import openai_embedding_function
 from upgradepilot.services.knowledge.store import KnowledgeStore
 from upgradepilot.services.llm.tracked import build_tracked_llm
+from upgradepilot.services.ownership import RunOwnership, open_ownership
 from upgradepilot.services.repo.manager import WorkspaceManager
 
 STALE_WORKSPACE_SECONDS = 60 * 60
@@ -101,6 +104,22 @@ class Runtime:
     settings: Settings
     registry: RunRegistry
     graph: CompiledStateGraph[MigrationState, Any, MigrationState, MigrationState] | None = None
+    clerk: Clerk | None = None
+    """The Clerk client, or `None` when no key is configured.
+
+    Its presence is what `api/auth.py` reads to decide whether to verify a
+    session, so the gate is on exactly when a key exists. Built here rather
+    than per request because the client caches Clerk's JWKS -- one per
+    process, not one per call."""
+
+    ownership: RunOwnership | None = None
+    """The run-owner table, or `None` when there is no Postgres.
+
+    `Settings` refuses to start with a Clerk key and no `UP_CHECKPOINT_URL`,
+    so `clerk is not None and ownership is None` is unreachable
+    configuration -- which is what lets `api/auth.py` treat an absent store as
+    "no users exist" rather than as "ownership is unenforceable"."""
+
     startup_error: Exception | None = None
     """Why the graph could not be built, if it could not be.
 
@@ -174,6 +193,33 @@ def config_for(thread_id: str) -> RunnableConfig:
 
 
 @asynccontextmanager
+async def _open_ownership_if_configured(settings: Settings) -> AsyncIterator[RunOwnership | None]:
+    """The ownership store when Postgres is configured, `None` otherwise.
+
+    A separate context manager rather than a branch inside `open_runtime`,
+    because the store must close on the way out and an `if` around an
+    `async with` cannot express that without duplicating the body.
+    """
+    if settings.checkpoint_url is None:
+        yield None
+        return
+    async with open_ownership(settings.checkpoint_url) as store:
+        yield store
+
+
+def _build_clerk(settings: Settings) -> Clerk | None:
+    """The Clerk client, or `None` when the deployment runs open.
+
+    Inside the same `try` as the graph, so a Clerk misconfiguration lands on
+    `startup_error` and is reported by `/api/health` rather than raised into
+    uvicorn's boot -- the behaviour ADR-002's smoke test pins.
+    """
+    if not settings.auth_required or settings.clerk_secret_key is None:
+        return None
+    return Clerk(bearer_auth=settings.clerk_secret_key.get_secret_value())
+
+
+@asynccontextmanager
 async def open_runtime(settings: Settings) -> AsyncIterator[Runtime]:
     """Open every long-lived resource, and close them in the right order.
 
@@ -189,14 +235,17 @@ async def open_runtime(settings: Settings) -> AsyncIterator[Runtime]:
 
     workspaces = WorkspaceManager(settings)
 
-    async with open_checkpointer(
-        settings.checkpoint_db, url=settings.checkpoint_url
-    ) as checkpointer:
+    async with (
+        open_checkpointer(settings.checkpoint_db, url=settings.checkpoint_url) as checkpointer,
+        _open_ownership_if_configured(settings) as ownership,
+    ):
+        runtime.ownership = ownership
         try:
             store = KnowledgeStore.open(
                 settings.chroma_dir,
                 embedding_function=openai_embedding_function(settings),
             )
+            runtime.clerk = _build_clerk(settings)
             runtime.graph = compile_graph(
                 deps=GraphDeps(
                     llm=build_tracked_llm(settings),
@@ -339,7 +388,7 @@ async def resume_run(runtime: Runtime, thread_id: str, decision: DecisionInput |
     status = derive_status(snapshot, runtime.registry.get(thread_id))
 
     if status is RunStatus.ORPHANED and snapshot is not None and snapshot.created_at is None:
-        raise ThreadNotFoundError("No run with that id exists.", detail=f"thread_id={thread_id!r}")
+        raise ThreadNotFoundError(THREAD_NOT_FOUND_MESSAGE, detail=f"thread_id={thread_id!r}")
 
     if status is RunStatus.AWAITING_HUMAN:
         if decision is None:
