@@ -29,6 +29,8 @@ from enum import Enum
 from pathlib import Path
 
 import aiosqlite
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
@@ -87,19 +89,57 @@ def checkpoint_serializer() -> JsonPlusSerializer:
 
 
 @asynccontextmanager
-async def open_checkpointer(path: Path | str) -> AsyncIterator[AsyncSqliteSaver]:
-    """Open an `AsyncSqliteSaver` over `path` with our serializer.
+async def open_checkpointer(
+    path: Path | str, *, url: str | None = None
+) -> AsyncIterator[BaseCheckpointSaver[str]]:
+    """Open the checkpointer: Postgres when `url` is given, SQLite otherwise.
 
-    Written out rather than using `AsyncSqliteSaver.from_conn_string`, which
-    takes no `serde` argument -- the constructor does, but only if the
-    connection is owned by the caller.
+    ADR-002 D2. `url` is set in a hosted deployment and unset everywhere
+    else, so SQLite remains the path this project develops and tests under
+    and the hermetic suite needs no database (rule 22). ADR-001 claims that
+    "swapping model provider, checkpointer backend, or repository source each
+    touch one module"; this function is that claim being cashed.
 
-    The connection's lifetime belongs to whoever outlives the graph: the API's
-    lifespan in Phase 9, a `with` block in a test. A graph that opened its own
-    would either close it too early or leak it, which is why `compile_graph`
-    takes a checkpointer rather than a path.
+    **`url` wins over `path` rather than conflicting with it.** Passing both
+    is not an error, because `checkpoint_db` has a default and a deployment
+    should be able to select Postgres by adding one variable rather than by
+    remembering to unset another. What makes that safe is that `url` cannot
+    be *nearly* a URL: `Settings.checkpoint_url` refuses anything that is not
+    a `postgres(ql)://` DSN, so there is no value that quietly means SQLite.
+
+    **Both backends get `checkpoint_serializer()`, and that is not
+    incidental.** Without the allowlist a resumed run comes back holding
+    plain dicts where it expects Pydantic models -- `BreakingChange.source`
+    no longer required, `RiskFactor.evidence`'s `min_length=1` no longer
+    held. A Postgres backend wired without the serializer would lose every
+    honesty invariant this project encodes in its types, on the exact path
+    Postgres exists to make durable, and nothing would raise at the point of
+    loss. `AsyncPostgresSaver.from_conn_string` takes `serde`, so unlike the
+    SQLite branch below it needs no hand-built connection.
+
+    `setup()` runs on both branches. It is idempotent, and running it here
+    matches what SQLite already did rather than inventing a second lifecycle
+    for the new backend. The cost is that the connecting role needs DDL
+    rights: a least-privilege deployment that refuses them has to run
+    `setup()` once as a migration step instead, and will find out by way of
+    a permission error at startup rather than a silent one.
+
+    The connection's lifetime belongs to whoever outlives the graph: the
+    API's lifespan in Phase 9, a `with` block in a test. A graph that opened
+    its own would either close it too early or leak it, which is why
+    `compile_graph` takes a checkpointer rather than a path.
     """
-    async with aiosqlite.connect(str(path)) as connection:
-        saver = AsyncSqliteSaver(connection, serde=checkpoint_serializer())
-        await saver.setup()
-        yield saver
+    if url is not None:
+        async with AsyncPostgresSaver.from_conn_string(
+            url, serde=checkpoint_serializer()
+        ) as postgres_saver:
+            await postgres_saver.setup()
+            yield postgres_saver
+    else:
+        # Written out rather than using `AsyncSqliteSaver.from_conn_string`,
+        # which takes no `serde` argument -- the constructor does, but only if
+        # the connection is owned by the caller.
+        async with aiosqlite.connect(str(path)) as connection:
+            sqlite_saver = AsyncSqliteSaver(connection, serde=checkpoint_serializer())
+            await sqlite_saver.setup()
+            yield sqlite_saver

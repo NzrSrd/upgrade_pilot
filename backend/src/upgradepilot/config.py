@@ -186,6 +186,7 @@ def _require_matchable_scheme(value: str) -> str:
 NonBlankSetting = Annotated[str, AfterValidator(_reject_blank_element)]
 
 _HTTP_BASE_URL = re.compile(r"https?://[^\s]+\Z")
+_POSTGRES_URL = re.compile(r"postgres(?:ql)?://[^\s]*\Z")
 r"""An absolute http(s) base URL with no whitespace.
 
 `\Z` and not `$` so a trailing newline -- what a shell heredoc or a copied
@@ -211,6 +212,35 @@ BaseUrl = Annotated[
     str, BeforeValidator(_reject_blank_text), AfterValidator(_require_http_base_url)
 ]
 """An OpenAI-compatible API base URL. Absolute, or rejected at startup."""
+
+
+def _require_postgres_url(value: str) -> str:
+    """Reject a checkpointer URL psycopg could not open.
+
+    This setting selects the checkpointer backend by its presence, which
+    makes a malformed value worse than a missing one: anything non-empty
+    routes the run away from SQLite, so a typo does not fall back -- it picks
+    Postgres and then fails to connect, and the operator sees a connection
+    error rather than "that is not a Postgres URL".
+
+    The scheme is the whole check, and both spellings are accepted because
+    psycopg accepts both. Host, port, database and parameters are
+    deliberately not validated: Cloud Run reaches Cloud SQL over a unix
+    socket, spelled `postgresql://user:pw@/db?host=/cloudsql/INSTANCE` with
+    an empty host section, and a rule demanding a hostname would reject the
+    one topology ADR-002 actually deploys.
+    """
+    if not _POSTGRES_URL.match(value):
+        raise ValueError(
+            f"must be a postgresql:// or postgres:// URL with no whitespace (got {value!r})"
+        )
+    return value
+
+
+PostgresUrl = Annotated[
+    str, BeforeValidator(_reject_blank_text), AfterValidator(_require_postgres_url)
+]
+"""A Postgres connection URL. Selects the Postgres checkpointer by existing."""
 
 
 UrlScheme = Annotated[NonBlankSetting, AfterValidator(_require_matchable_scheme)]
@@ -375,6 +405,28 @@ class Settings(BaseSettings):
     chroma_dir: StorePath = Path("./.chroma")
     checkpoint_db: StorePath = Path("./checkpoints.db")
     workspace_dir: StorePath = Path("./.workspaces")
+
+    checkpoint_url: PostgresUrl | None = None
+    """The Postgres checkpointer, or `None` for the SQLite file above.
+
+    ADR-002 D2. Set in a hosted deployment and unset everywhere else, so
+    `None` is the configuration this project develops and tests under and
+    the hermetic suite needs no database (rule 22).
+
+    **Why a second setting rather than widening `checkpoint_db`.** A single
+    field holding either a path or a URL would have to guess which it was
+    handed, and the guess is wrong exactly when it matters: a value that
+    fails to parse as a URL would be treated as a filename, so a typo in a
+    production DSN would silently create a SQLite file named after the typo
+    and the run would appear to work while every paused run was again held on
+    an ephemeral disk. Two fields cannot do that -- `checkpoint_url` is
+    either a Postgres URL or absent, and `_require_postgres_url` refuses
+    everything in between.
+
+    When both are set, this one wins and `checkpoint_db` is ignored rather
+    than rejected. A deployment sets the URL by adding one variable; making
+    it also unset a path that has a default would be a second step whose
+    omission is an error, for no benefit."""
 
     # Repository access guards.
     # NoDecode is required: pydantic-settings JSON-decodes complex-typed env

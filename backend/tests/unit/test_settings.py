@@ -545,3 +545,54 @@ def test_allowed_local_roots_keeps_its_own_absoluteness_rule(tmp_path: Path) -> 
     assert Settings(_env_file=None, allowed_local_roots=(tmp_path,)).allowed_local_roots == (
         tmp_path,
     )
+
+
+def test_the_checkpointer_defaults_to_the_sqlite_file() -> None:
+    """`checkpoint_url` unset is what the hermetic suite and local development
+    both run under, so the default is load-bearing rather than cosmetic: rule
+    22 forbids a unit test needing a database, and every graph test would need
+    one if this ever defaulted to a DSN."""
+    assert Settings(_env_file=None).checkpoint_url is None
+
+
+def test_a_real_postgres_url_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The negative tests below are worthless unless the positive direction is
+    shown to pass: a validator refusing everything would satisfy them."""
+    monkeypatch.setenv("UP_CHECKPOINT_URL", "postgresql://user:pw@localhost:5432/upgradepilot")
+    settings = Settings(_env_file=None)
+    assert settings.checkpoint_url == "postgresql://user:pw@localhost:5432/upgradepilot"
+
+
+def test_the_cloud_sql_unix_socket_url_is_accepted() -> None:
+    """The one topology ADR-002 actually deploys, and the one a stricter rule
+    would have rejected. Cloud Run reaches Cloud SQL over a unix socket, whose
+    DSN carries an *empty host section* and puts the socket directory in a
+    query parameter. A validator requiring a hostname would refuse the
+    production configuration while accepting every developer's localhost."""
+    url = "postgresql://user:pw@/upgradepilot?host=/cloudsql/project:europe-west1:instance"
+    assert Settings(_env_file=None, checkpoint_url=url).checkpoint_url == url
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "localhost:5432/upgradepilot",  # no scheme -- what an operator types
+        "mysql://localhost/upgradepilot",  # a database psycopg cannot open
+        "postgresql://local host/db",  # embedded whitespace
+        "postgresql://localhost/db\n",  # a copied .env line
+        "   ",  # the empty-exported-variable defect again
+    ],
+)
+def test_a_checkpointer_url_that_is_not_a_postgres_dsn_is_refused(bad: str) -> None:
+    """Rejected at startup, because presence is what selects the backend.
+
+    This setting is chosen by *existing*, which makes a malformed value worse
+    than a missing one: anything non-empty routes the run away from SQLite, so
+    a typo does not fall back to the working default -- it selects Postgres
+    and then fails to connect. Refused here, the operator is told the value is
+    not a Postgres URL; accepted, they get a connection error naming a host
+    they never configured, which is the same defect `_require_http_base_url`
+    exists to prevent one setting over.
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, checkpoint_url=bad)
