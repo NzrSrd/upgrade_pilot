@@ -219,6 +219,25 @@ def _build_clerk(settings: Settings) -> Clerk | None:
     return Clerk(bearer_auth=settings.clerk_secret_key.get_secret_value())
 
 
+SHUTDOWN_DRAIN_SECONDS = 5.0
+"""How long the shutdown waits for in-flight runs before cancelling them.
+
+Sized against a platform constant, not a guess. ADR-002's platform fact 2:
+Cloud Run sends `SIGTERM` and kills the container **10 seconds** later, and
+that grace period is not configurable. Half of it goes to the runs and the
+rest is left for what happens after `drain()` returns -- closing the
+checkpointer, and closing the connection pool underneath it, both of which
+talk to a remote database over TLS and neither of which is instant.
+
+A run takes minutes, so this deadline will essentially always expire when
+anything is in flight. That is not a tuning failure: no value under ten
+seconds saves a running analysis, and the choice is only ever between
+cancelling it deliberately while its resources are open and having the
+platform kill it mid-write. Raising this to 9 would buy nothing for the run
+and would risk the close never happening.
+"""
+
+
 @asynccontextmanager
 async def open_runtime(settings: Settings) -> AsyncIterator[Runtime]:
     """Open every long-lived resource, and close them in the right order.
@@ -265,7 +284,7 @@ async def open_runtime(settings: Settings) -> AsyncIterator[Runtime]:
         try:
             yield runtime
         finally:
-            await registry.drain()
+            await registry.drain(timeout=SHUTDOWN_DRAIN_SECONDS)
 
 
 def new_thread_id() -> str:
