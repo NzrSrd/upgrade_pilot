@@ -784,7 +784,7 @@ reports only that a Clerk key is configured, not that sign-up is closed. So this
 is a standing manual check rather than a completed task, and the honest summary
 is that the gate is exactly as private as one dashboard toggle.
 
-### 13.4 Production configuration
+### 13.4 Production configuration — COMPLETE
 
 - [x] **A durable Postgres, and it is Neon rather than Cloud SQL.** ADR-002 D2 was
       drafted around Cloud SQL at roughly $10-12/month; that cost was declined, and
@@ -818,33 +818,57 @@ is that the gate is exactly as private as one dashboard toggle.
       231,700,255 bytes (~221 MiB) with the corpus baked in, so the pull is not the
       dominant term in a cold start and the `chromadb` import remains the thing to
       attack. Recorded in ADR-001's verification record and ADR-002 D5.
-- [ ] `--max-instances=1`, asserted by whatever applies the configuration rather
+- [x] `--max-instances=1`, asserted by whatever applies the configuration rather
       than left to an autoscaling default. This is the deployment's load-bearing
       correctness setting and its least visible one: the run registry is
       in-process, so a second instance makes half of all status polls report
       `ORPHANED` and offer to restart running work.
-- [ ] `--no-cpu-throttling` (instance-based billing) with `--min-instances=0`.
+- [x] `--no-cpu-throttling` (instance-based billing) with `--min-instances=0`.
       The billing mode is a correctness requirement, not a cost tweak — `start`
       returns 202 and the graph runs on a background task, which the default
       request-based billing throttles the instant the response is sent.
-- [ ] `UP_ALLOWED_LOCAL_ROOTS` **empty**. The committed `.env.example` ships
+- [x] `UP_ALLOWED_LOCAL_ROOTS` **empty** -- achieved by *not setting it*, which is
+      stronger than setting it blank. It defaults to empty, `.gcloudignore` excludes
+      `.env` and `.env.*`, and no `COPY` line in the Dockerfile references either;
+      both were checked rather than assumed. The committed `.env.example` ships
       `/Users/nzrsrd/Code`; local-path analysis is meaningless on a server and
       ADR-001 records the setting as an arbitrary-read surface.
-- [ ] `UP_WORKSPACE_DIR` on an in-memory volume with an explicit size cap. Writes
+- [x] `UP_WORKSPACE_DIR` on an in-memory volume with an explicit size cap
+      (`--add-volume type=in-memory,size-limit=512Mi`, mounted at the `/tmp/workspaces`
+      the image already bakes). 2 GiB of memory and `UP_MAX_CONCURRENT_RUNS=2`. Writes
       count against the instance memory limit, so budget `UP_MAX_REPO_BYTES`
       (50 MB) × `UP_MAX_CONCURRENT_RUNS` plus depth-100 git history — consider
       lowering concurrency to 2 and sizing memory at 2 GiB. Nothing shared: the
       startup sweep `rmtree`s `repo-*` older than an hour under this directory.
-- [ ] Provider key via Secret Manager and `--set-secrets`, never a plain env var,
+- [x] Provider key via Secret Manager and `--set-secrets`, never a plain env var,
       **and a hard spend cap set at the provider.** The gate in 13.3 is the only
       thing between a reachable URL and the token budget; the cap is the only
       thing that bounds the damage if the gate fails.
-- [ ] Give `RunRegistry.drain()` a bounded timeout. It currently awaits every
+- [x] Give `RunRegistry.drain()` a bounded timeout -- 5s, half of Cloud Run's
+      non-configurable 10s grace, with the rest left for closing a checkpointer and a
+      pool that both talk to a remote database over TLS. On expiry the remaining tasks
+      are **cancelled and their unwind awaited**, which is the substance: returning
+      while they ran would have the caller close those resources underneath them.
+      Six tests; the default stays unbounded so the suite keeps meaning "wait for the
+      work to finish". It currently awaits every
       in-flight run with no limit, against a 10-second non-configurable kill —
       an unbounded drain there is a truncated shutdown rather than a deliberate
       one.
-- [ ] A deploy runbook in the README: the ingest step, the required settings, and
-      the single-instance constraint with its reason.
+- [x] A deploy runbook in the README, including the three failures that cost time
+      here: `SHORT_SHA` is empty on a manual `builds submit`, `OPENROUTER_BASE_URL`
+      is not baked into the image and unset it silently selects OpenAI, and the
+      runtime service account needs `secretAccessor` granted per secret.
+- [x] **Deployed.** `upgradepilot-backend-00002-m8t` serving 100% of traffic at
+      `https://upgradepilot-backend-475071196265.europe-west1.run.app`.
+      `/api/health` reports `status: ok`, `checkpoint_backend: postgres`,
+      `auth_required: true` and all three checks true; an unauthenticated
+      `GET /api/agent/status/{id}` returns **401**. The deployed app created
+      `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`,
+      `checkpoint_migrations` and `run_owners` in Neon, so both `setup()` calls
+      ran against the real database rather than only in tests.
+- [x] `frontend/vercel.json` points at the service, replacing the deliberately
+      invalid placeholder, and `VITE_CLERK_PUBLISHABLE_KEY` is set for Vercel
+      production and preview.
 
 ### 13.5 Exit criteria
 
@@ -858,8 +882,13 @@ output shown. Not one of these is met by the corresponding code existing.
       citations. Both halves: the endpoint deliberately never opens the store, so
       it reports `ok` over an empty collection and cannot on its own show that the
       baked corpus is populated.
-- [ ] An unauthenticated request to the Cloud Run URL is rejected, shown against
+- [x] An unauthenticated request to the Cloud Run URL is rejected, shown against
       the deployed service and not against a local test client.
+      `GET /api/agent/status/does-not-exist` -> **401**
+      `{"error":{"code":"unauthenticated","message":"Sign in to use this service."}}`.
+      The thread id is deliberately one that does not exist: a 401 for a *real* id
+      would be equally consistent with the gate checking the id first, and the
+      point is that nothing behind the gate is consulted at all.
 - [ ] **A signed-in user cannot read or resume another user's run**, demonstrated
       with two real Clerk accounts against the deployed service. Not a unit test:
       the failure this guards against is a deployment-shaped one.
@@ -869,9 +898,13 @@ output shown. Not one of these is met by the corresponding code existing.
       to a report with resolving citations. This is the capability the
       prioritisation was for, and it is the one that proves the deployment
       earns its place.
-- [ ] Two instances are shown to be impossible to reach by configuration, or the
+- [x] Two instances are shown to be impossible to reach by configuration, or the
       constraint is shown to be enforced. A correctness setting nobody verified
-      is a correctness setting nobody has.
+      is a correctness setting nobody has. Read back off the deployed revision
+      rather than off the deploy command: `maxScale=1`, `minScale=` (zero),
+      `cpu-throttling=false`, `2Gi`, `1` CPU. The same read confirms all three
+      secrets are present as references rather than values, and that
+      `UP_ALLOWED_LOCAL_ROOTS` is absent rather than blank.
 
 **Exit:** a private URL an invited person signs in to with GitHub, pastes a
 public repository link into, is asked and answers one real question on, and
