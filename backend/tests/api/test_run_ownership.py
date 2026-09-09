@@ -266,3 +266,60 @@ def test_a_second_claim_does_not_transfer_ownership(
 
     clerk.user_id = BOB
     assert client.get(f"/api/agent/status/{thread_id}").status_code == 404
+
+
+def _hang_up_on_every_other_connection(url: str) -> int:
+    """Close every other backend on this database, server-side.
+
+    The same reproduction `tests/graph/test_checkpointer_survives_an_idle_disconnect.py`
+    uses, and duplicated rather than shared because the two live in different
+    layers and a fixture spanning `graph/` and `api/` tests would be the only
+    thing coupling them.
+    """
+    with psycopg.connect(url, autocommit=True) as watcher:
+        return len(
+            watcher.execute(
+                """
+                SELECT pg_terminate_backend(pid)
+                FROM pg_stat_activity
+                WHERE datname = current_database() AND pid <> pg_backend_pid()
+                """
+            ).fetchall()
+        )
+
+
+def test_ownership_still_answers_after_the_database_hangs_up(
+    client: TestClient, clerk: _ClerkStub, postgres_url: str, repo_root: list[Path]
+) -> None:
+    """The ownership store must survive an idle disconnect too.
+
+    ADR-002 D6 puts the ownership check on the status and resume paths, so a
+    dead pool connection here fails a request just as completely as a dead
+    checkpointer connection does -- and this is the deployment's *authorisation*
+    check, so the failure mode is worth being precise about: `require_owner`
+    raising `OperationalError` rather than returning is a 500, not an accidental
+    allow. Unavailable rather than unsafe, but still a paused run the owner
+    cannot reach.
+
+    Neon's free tier suspends after five minutes idle and Cloud Run keeps an
+    idle instance alive, so this is the ordinary morning state of the
+    deployment, not an edge case. `pg_terminate_backend` reproduces it without
+    the wait.
+
+    Ownership is re-asserted afterwards rather than only checking for a 200:
+    a pool that reconnected to the wrong database, or a check that started
+    failing open, would both satisfy "the request succeeded".
+    """
+    thread_id = _start_a_run(client, repo_root)
+    assert client.get(f"/api/agent/status/{thread_id}").status_code == 200
+
+    assert _hang_up_on_every_other_connection(postgres_url), (
+        "nothing was terminated, so this test proved nothing"
+    )
+
+    assert client.get(f"/api/agent/status/{thread_id}").status_code == 200
+
+    clerk.user_id = BOB
+    response = client.get(f"/api/agent/status/{thread_id}")
+    assert response.status_code == 404
+    assert response.json()["error"]["message"] == THREAD_NOT_FOUND_MESSAGE

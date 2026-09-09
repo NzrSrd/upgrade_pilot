@@ -92,12 +92,26 @@ class RunOwnership:
 async def open_ownership(url: str) -> AsyncIterator[RunOwnership]:
     """Open the ownership store over `url`, creating its table.
 
-    A pool rather than the single connection the SQLite checkpointer uses,
-    because psycopg's `AsyncConnection` is not safe for concurrent use and
-    this is read on every status poll -- one connection would serialise a
-    1-per-second poll per active run behind whatever else was in flight.
+    A pool rather than a single connection, because psycopg's
+    `AsyncConnection` is not safe for concurrent use and this is read on every
+    status poll -- one connection would serialise a 1-per-second poll per
+    active run behind whatever else was in flight.
+
+    **`check=` is a correctness argument, not tuning.** A pool alone does not
+    survive the server hanging up: it notices a dead connection when the
+    connection is *returned*, having already handed it to the caller, so the
+    caller gets the exception. The chosen provider suspends its compute after
+    five minutes idle while Cloud Run keeps an idle instance alive, which makes
+    a dead pooled connection the deployment's ordinary morning state. Without
+    this, `require_owner` raised `psycopg.errors.AdminShutdown` from
+    `owner_of` -- a 500 on the authorisation check, so unavailable rather than
+    unsafe, but still the owner locked out of their own paused run. Measured in
+    `test_ownership_still_answers_after_the_database_hangs_up`; the checkpointer
+    had the same defect and is fixed the same way.
     """
-    async with AsyncConnectionPool(url, open=False) as pool:
+    async with AsyncConnectionPool(
+        url, check=AsyncConnectionPool.check_connection, open=False
+    ) as pool:
         await pool.open(wait=True)
         store = RunOwnership(pool)
         await store.setup()
