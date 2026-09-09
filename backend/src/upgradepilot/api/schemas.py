@@ -202,14 +202,34 @@ class RunSnapshot(BaseModel):
 
 
 class HealthChecks(BaseModel):
+    """Every field must be a `bool`.
+
+    `_derive_status` computes `status` by requiring all of them to be truthy,
+    iterating the model's own fields rather than naming them so a check added
+    later cannot be reported while being left out of the status it informs. A
+    non-boolean field here would join that `all()` as a truthy value and
+    quietly stop being a check -- which is why `checkpoint_backend` lives on
+    the response below and not in here.
+    """
+
     chroma_dir: bool
-    checkpoint_dir: bool
+    checkpoint_ready: bool
     llm_configured: bool
 
 
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     version: str
+    checkpoint_backend: Literal["sqlite", "postgres"]
+    """Which backend `checks.checkpoint_ready` was measured against.
+
+    Published because the two measurements are not the same claim and a
+    client cannot otherwise tell them apart -- see `checkpoint_ready` in
+    `routes/health.py`. Without it the UI has to pick one label and be wrong
+    on one backend: it previously read "storage location writable", which is
+    true of a directory and meaningless about a database.
+    """
+
     checks: HealthChecks
 
 

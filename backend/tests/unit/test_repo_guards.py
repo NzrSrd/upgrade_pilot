@@ -378,12 +378,30 @@ def test_accepts_an_uppercased_variant_of_the_allowed_root(tmp_path: Path) -> No
 
 
 def test_accepts_an_nfd_unicode_variant_of_the_allowed_root(tmp_path: Path) -> None:
-    """APFS does not normalise on write, so an NFD-encoded path and its NFC
-    counterpart resolve to string-different Path objects that are the same
-    inode. String comparison denies this; samefile() does not."""
+    """An NFD-encoded path and its NFC counterpart are string-different Paths
+    that reach the same inode. String comparison denies this; samefile() does
+    not.
+
+    **Only on a filesystem that normalises**, which is why the skip below
+    exists -- the same guard the two case-variant tests above already carry,
+    and this test was written without it. On APFS `café` and `café` are one
+    file; on ext4 they are two, so the NFD path genuinely does not exist and
+    `resolve_local_path` is right to say so. The first CI run on Linux is
+    what found this: nine phases of green came from a suite that had only
+    ever run on macOS.
+
+    Worth being explicit that this is a test bug and not a guard bug. On a
+    non-normalising filesystem the guard is *stricter*, never weaker -- it
+    denies a path that is not the file it names -- so nothing here is a
+    security regression on the deployment platform. ADR-002 also requires
+    `UP_ALLOWED_LOCAL_ROOTS` to be empty in production, which disables this
+    door entirely there.
+    """
     project = tmp_path / "café"
     project.mkdir()
     nfd_variant = Path(unicodedata.normalize("NFD", str(project)))
+    if not nfd_variant.exists():
+        pytest.skip("filesystem does not normalise unicode; the NFD path does not exist")
     result = resolve_local_path(str(nfd_variant), [tmp_path])
     assert result.samefile(project)
 

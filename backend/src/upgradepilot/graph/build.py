@@ -172,12 +172,29 @@ def build_graph(
 
     graph = StateGraph(MigrationState)
     for name in (*NODE_SEQUENCE, HUMAN_REVIEW):
-        # `type: ignore[call-overload]`, for the reason already established in
+        # `type: ignore[arg-type]`, for the reason already established in
         # `tests/graph/test_langgraph_contract.py`: langgraph resolves the
         # contravariant NodeInputT per `add_node` call rather than once per
         # graph, so which call trips the overload set is an artifact of how
         # many precede it, not of this callable's shape.
-        graph.add_node(name, traced(name, body_for(name)))  # type: ignore[call-overload]
+        #
+        # The *code* is `arg-type` and not `call-overload`, which is what this
+        # said until CI first ran on a cold cache. Both describe the same
+        # rejection; which one mypy emits depends on how far it gets narrowing
+        # the overload set, and that changed under some earlier dependency
+        # bump. Nobody noticed because `.mypy_cache` was carrying the older
+        # verdict on every developer machine, and the contract test still says
+        # `call-overload` because there it is still what mypy reports. If this
+        # flips again, the fix is to run `mypy` with the cache removed and
+        # write down whichever code it actually emits -- not to list both,
+        # which mypy rejects per-code as an unused ignore (measured).
+        #
+        # Run it bare, as the config and CI do. `mypy src/upgradepilot`
+        # narrows the file set and reports these same ten errors while the
+        # project's own invocation reports none, because the overload
+        # narrowing depends on what else is being checked. A narrowed run is
+        # not evidence about this code either way.
+        graph.add_node(name, traced(name, body_for(name)))  # type: ignore[arg-type]
 
     graph.add_edge(START, NODE_SEQUENCE[0])
     for earlier, later in zip(NODE_SEQUENCE, NODE_SEQUENCE[1:], strict=False):

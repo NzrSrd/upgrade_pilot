@@ -101,12 +101,13 @@ def build_rag_graph(
     prevent one level up.
     """
     graph = StateGraph(RAGState)
-    graph.add_node("plan_retrieval", traced("plan_retrieval", make_plan_retrieval(llm)))  # type: ignore[call-overload]
-    graph.add_node("retrieve", traced("retrieve", make_retrieve(store, limit=limit)))  # type: ignore[call-overload]
-    graph.add_node(  # type: ignore[call-overload]
-        "evaluate_retrieval", traced("evaluate_retrieval", make_evaluate_retrieval(llm))
+    graph.add_node("plan_retrieval", traced("plan_retrieval", make_plan_retrieval(llm)))  # type: ignore[arg-type]
+    graph.add_node("retrieve", traced("retrieve", make_retrieve(store, limit=limit)))  # type: ignore[arg-type]
+    graph.add_node(
+        "evaluate_retrieval",
+        traced("evaluate_retrieval", make_evaluate_retrieval(llm)),  # type: ignore[arg-type]
     )
-    graph.add_node("build_context", traced("build_context", make_build_context()))  # type: ignore[call-overload]
+    graph.add_node("build_context", traced("build_context", make_build_context()))  # type: ignore[arg-type]
 
     graph.add_edge(START, "plan_retrieval")
     graph.add_conditional_edges("plan_retrieval", route_after_plan)

@@ -189,7 +189,9 @@ async def open_runtime(settings: Settings) -> AsyncIterator[Runtime]:
 
     workspaces = WorkspaceManager(settings)
 
-    async with open_checkpointer(settings.checkpoint_db) as checkpointer:
+    async with open_checkpointer(
+        settings.checkpoint_db, url=settings.checkpoint_url
+    ) as checkpointer:
         try:
             store = KnowledgeStore.open(
                 settings.chroma_dir,
