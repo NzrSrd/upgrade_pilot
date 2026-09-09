@@ -1,0 +1,37 @@
+# `gcloud builds submit` does NOT read .dockerignore -- it reads this file.
+# Without it the first submit uploaded 634 MiB across 20,297 files, almost all
+# of it the macOS arm64 .venv, which the image cannot use and the build does
+# not need.
+#
+# Kept deliberately close to .dockerignore. The two files serve different
+# stages -- this one bounds what is uploaded, that one bounds what is copied
+# into a layer -- so they are not interchangeable, but a path that must not
+# reach a layer generally has no business being uploaded either.
+
+.venv/
+venv/
+
+.env
+.env.*
+!.env.example
+
+.chroma/
+.workspaces/
+checkpoints.db*
+*.sqlite
+*.sqlite3
+
+tests/
+probes/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.lock-report.json
+
+.DS_Store
