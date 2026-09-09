@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://REPLACE_WITH_CLOUD_RUN_URL/api/:path*" },
+    { "source": "/api/:path*", "destination": "https://upgradepilot-backend-475071196265.europe-west1.run.app/api/:path*" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

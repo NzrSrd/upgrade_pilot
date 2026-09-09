@@ -112,10 +112,121 @@ npx tsc -b                                # typecheck
 npm run build                             # typecheck plus production build
 ```
 
+## Deploying
+
+Backend on Cloud Run, frontend on Vercel. The reasoning is in
+`docs/adr/ADR-002-deployment.md`; this is the sequence.
+
+**Two settings are correctness requirements, not tuning.** `--max-instances=1`
+because the run registry is in-process, so a second instance makes half of all
+status polls report `ORPHANED` and offer to restart work that is currently
+running. `--no-cpu-throttling` because `POST /api/agent/start` returns 202 and
+the graph runs on a background task, which the default request-based billing
+throttles the instant the response is sent.
+
+### Once, per project
+
+```bash
+gcloud artifacts repositories create upgradepilot \
+  --repository-format=docker --location=europe-west1
+```
+
+Three secrets. Use `backend/scripts/set_checkpoint_url.py` for the database
+URL rather than assembling it by hand -- it takes the password without echoing
+it, strips Neon's `-pooler` suffix, and refuses to write a DSN it could not
+connect with.
+
+```bash
+printf '%s' "$OPENROUTER_API_KEY" | gcloud secrets create llm-api-key      --data-file=-
+printf '%s' "$CLERK_SECRET_KEY"   | gcloud secrets create clerk-secret-key --data-file=-
+printf '%s' "$UP_CHECKPOINT_URL"  | gcloud secrets create checkpoint-url   --data-file=-
+```
+
+`printf`, not `echo`: a trailing newline in a secret is invisible in every
+dashboard and fails as an authentication error that looks like a wrong key.
+
+Grant the runtime service account read access **per secret** rather than at the
+project level:
+
+```bash
+SA="$(gcloud projects describe "$(gcloud config get-value project)" \
+      --format='value(projectNumber)')-compute@developer.gserviceaccount.com"
+for s in llm-api-key clerk-secret-key checkpoint-url; do
+  gcloud secrets add-iam-policy-binding "$s" \
+    --member="serviceAccount:$SA" --role=roles/secretmanager.secretAccessor
+done
+```
+
+### Every deploy
+
+```bash
+cd backend
+gcloud builds submit --config=cloudbuild.yaml \
+  --substitutions=SHORT_SHA="$(git rev-parse --short HEAD)" .
+```
+
+`SHORT_SHA` must be passed explicitly. It is populated automatically only for
+trigger-based builds, and a manual submit without it fails on an unparseable
+image reference rather than on anything that names the cause.
+
+The build ingests the corpus and then asserts four things, because each has a
+silent failure mode: no provider key in the image history, the baked Chroma
+collection is non-empty, the image actually serves `/api/health`, and it
+reports `degraded` rather than `ok` when it has no key.
+
+```bash
+gcloud run deploy upgradepilot-backend \
+  --image="europe-west1-docker.pkg.dev/$PROJECT/upgradepilot/backend:$SHA" \
+  --region=europe-west1 --allow-unauthenticated \
+  --max-instances=1 --min-instances=0 --no-cpu-throttling \
+  --cpu=1 --memory=2Gi \
+  --add-volume=name=workspaces,type=in-memory,size-limit=512Mi \
+  --add-volume-mount=volume=workspaces,mount-path=/tmp/workspaces \
+  --set-secrets=OPENROUTER_API_KEY=llm-api-key:latest,CLERK_SECRET_KEY=clerk-secret-key:latest,UP_CHECKPOINT_URL=checkpoint-url:latest \
+  --set-env-vars=OPENROUTER_BASE_URL=https://openrouter.ai/api/v1,UP_CORS_ORIGINS=https://your-app.vercel.app,UP_MAX_CONCURRENT_RUNS=2
+```
+
+`--allow-unauthenticated` is deliberate and does not mean the API is open.
+Clerk is the gate (ADR-002 D4): the container refuses every request without a
+valid session, and `Settings` refuses to boot at all with a Clerk key and no
+`UP_CHECKPOINT_URL`. Cloud Run IAM was rejected because Vercel's rewrite is an
+unauthenticated proxy and would need a service-account key stored in Vercel.
+
+`OPENROUTER_BASE_URL` is **not** baked into the image and must be set here.
+Unset, the client falls back to OpenAI direct while holding an OpenRouter key,
+and the first symptom is the corpus ingest failing with "the embedding provider
+could not be reached".
+
+`UP_ALLOWED_LOCAL_ROOTS` is deliberately absent. It defaults to empty,
+local-path analysis is meaningless on a server, and ADR-001 records the setting
+as an arbitrary-read surface. Do not set it in production.
+
+### Frontend
+
+`frontend/vercel.json` rewrites `/api/*` to the Cloud Run URL, which keeps the
+browser same-origin so CORS is never exercised. Set
+`VITE_CLERK_PUBLISHABLE_KEY` in the Vercel project for both production and
+preview -- it is a publishable key and ships in the browser bundle, so it is
+not a secret. The Clerk **secret** key belongs only in Secret Manager and must
+never appear under `frontend/`.
+
+### Checking it worked
+
+```bash
+curl -s "$SERVICE_URL/api/health" | python3 -m json.tool
+curl -s -o /dev/null -w '%{http_code}\n' "$SERVICE_URL/api/agent/status/nope"
+```
+
+`/api/health` must report `checkpoint_backend: "postgres"` and
+`auth_required: true`; the second must be `401`. Note that `status: "ok"` does
+**not** prove the corpus is populated -- the check stats a directory and never
+opens the store, which is why the build asserts the collection count instead.
+
 ## Documentation
 
 - `PLANNING.md` — what we are building, in what order
 - `docs/adr/ADR-001-system-architecture.md` — why the architecture is what it is
+- `docs/adr/ADR-002-deployment.md` — why the deployment is what it is
 - `docs/superpowers/specs/` — detailed designs
 - `CLAUDE.md` — working rules
 
