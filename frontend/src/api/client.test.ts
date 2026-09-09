@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { server } from "../test/server";
 import { aSnapshot } from "../test/fixtures";
-import { ApiFailure, getStatus, resumeRun, startRun } from "./client";
+import { ApiFailure, getStatus, resumeRun, setTokenProvider, startRun } from "./client";
 
 const BASE = "http://localhost";
 
@@ -192,5 +192,89 @@ describe("client", () => {
     });
 
     expect(response).toEqual({ thread_id: "t-2", status: "queued", poll_url: "/api/agent/status/t-2" });
+  });
+
+  describe("the session token", () => {
+    // Cleared after each, or a registered provider leaks into every later
+    // test in this file and they start passing for the wrong reason.
+    afterEach(() => setTokenProvider(null));
+
+    it("is absent when no provider is registered", async () => {
+      // The local and test posture, and the default: the backend runs open
+      // when it has no Clerk key, so an unconditional header would be a
+      // header the server never asked for.
+      let seen: string | null = "unset";
+      server.use(
+        http.get(`${BASE}/api/agent/status/t-1`, ({ request }) => {
+          seen = request.headers.get("authorization");
+          return HttpResponse.json(aSnapshot({ thread_id: "t-1" }));
+        }),
+      );
+
+      await getStatus("t-1");
+
+      expect(seen).toBeNull();
+    });
+
+    it("is attached as a bearer header once a provider is registered", async () => {
+      setTokenProvider(async () => "a-session-token");
+      let seen: string | null = null;
+      server.use(
+        http.get(`${BASE}/api/agent/status/t-1`, ({ request }) => {
+          seen = request.headers.get("authorization");
+          return HttpResponse.json(aSnapshot({ thread_id: "t-1" }));
+        }),
+      );
+
+      await getStatus("t-1");
+
+      expect(seen).toBe("Bearer a-session-token");
+    });
+
+    it("accompanies a request that supplies its own headers", async () => {
+      // POSTs set `content-type`, so this checks the token is not lost when
+      // `init.headers` is present -- which a GET cannot show.
+      //
+      // What it deliberately does **not** claim is that the spread order
+      // matters. It was written asserting that, and the assertion was
+      // vacuous: reversing the spread in `request` leaves this green, because
+      // `content-type` and `authorization` do not collide and object spread
+      // merges them the same way round either way. Nothing here discriminates
+      // on ordering, and pretending otherwise would leave a test whose stated
+      // purpose no mutation can break.
+      setTokenProvider(async () => "a-session-token");
+      let seen: string | null = null;
+      let contentType: string | null = null;
+      server.use(
+        http.post(`${BASE}/api/agent/resume`, ({ request }) => {
+          seen = request.headers.get("authorization");
+          contentType = request.headers.get("content-type");
+          return HttpResponse.json({ thread_id: "t-3", status: "running", poll_url: "/x" });
+        }),
+      );
+
+      await resumeRun({ thread_id: "t-3", decision: null });
+
+      expect(seen).toBe("Bearer a-session-token");
+      expect(contentType).toBe("application/json");
+    });
+
+    it("sends no header when the provider yields nothing", async () => {
+      // Clerk returns `null` for a user who is not signed in. Sending
+      // `Bearer null` would be worse than sending nothing: the backend would
+      // reject a malformed token rather than an absent one.
+      setTokenProvider(async () => null);
+      let seen: string | null = "unset";
+      server.use(
+        http.get(`${BASE}/api/agent/status/t-1`, ({ request }) => {
+          seen = request.headers.get("authorization");
+          return HttpResponse.json(aSnapshot({ thread_id: "t-1" }));
+        }),
+      );
+
+      await getStatus("t-1");
+
+      expect(seen).toBeNull();
+    });
   });
 });

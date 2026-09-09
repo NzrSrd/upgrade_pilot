@@ -680,7 +680,7 @@ and it was not worth another detour, so it is unmeasured rather than estimated.
 It matters for cold-start latency under ADR-002 D5 and should be measured before
 that default is relied on.
 
-### 13.3 Identity and access — Clerk
+### 13.3 Identity and access — Clerk — COMPLETE except one dashboard setting
 
 The API has no authentication of any kind today, and `POST /api/agent/start`
 clones a caller-supplied URL and spends tokens. **Clerk** is the gate (ADR-002
@@ -693,29 +693,29 @@ repository over `https`. Clerk adds *who the user is*; it does not by itself add
 private repositories. Cloning private repositories with Clerk's stored GitHub
 token stays Sub-project 2 work, unblocked rather than done here.
 
-- [ ] `@clerk/clerk-react` in the frontend, with GitHub as the social connection.
+- [x] `@clerk/react` in the frontend, with GitHub as the social connection.
       New dependency, so rule 12 wants the reason stated and rule 13 wants the
       resolved version recorded.
-- [ ] **Sign-ups restricted to invitation or an allowed domain in the Clerk
+- [ ] **BLOCKED ON A HUMAN. Sign-ups restricted to invitation or an allowed domain in the Clerk
       dashboard.** This is what actually makes the deployment private. Clerk with
       open sign-up is a login page, not an access control.
-- [ ] `client.ts` attaches the Clerk session token as a bearer header. It is the
+- [x] `client.ts` attaches the Clerk session token as a bearer header. It is the
       only module in the frontend that calls `fetch`, by design, so this is one
       edit rather than a sweep — the Phase 10 decision paying off.
-- [ ] **The frontend reads its first environment variable**
+- [x] **The frontend reads its first environment variable**
       (`VITE_CLERK_PUBLISHABLE_KEY`). It currently reads none, and that property
       is load-bearing in ADR-002 D4's reasoning about why no `VITE_API_BASE_URL`
       is needed. Note the change where it is now false, rather than leaving the
       ADR overstating it.
-- [ ] `clerk-backend-api` in the backend, verifying the session token via
+- [x] `clerk-backend-api` in the backend, verifying the session token via
       `authenticate_request`. Per rule 20 a rejection produces a typed
       `AppError`, which means a new `ErrorCode` member and its own tests.
-- [ ] Health stays reachable unauthenticated, or a TCP startup probe is used —
+- [x] Health stays reachable unauthenticated, or a TCP startup probe is used —
       decide which, and say why, rather than discovering it from a failing probe.
-- [ ] `vercel.json` rewrite for `/api/*` → Cloud Run. Plain rewrite, **not**
+- [x] `vercel.json` rewrite for `/api/*` → Cloud Run. Plain rewrite, **not**
       Routing Middleware: Clerk's token comes from the browser, so nothing needs
       injecting server-side. This is a simplification Clerk buys.
-- [ ] `UP_CORS_ORIGINS` set to the Vercel production domain. The rewrite keeps the
+- [ ] `UP_CORS_ORIGINS` set to the Vercel production domain (13.4). The rewrite keeps the
       browser same-origin so CORS is never exercised, but ADR-001 is explicit
       that a wildcard is not a decision anyone would make on purpose.
 
@@ -727,14 +727,51 @@ about who is asking. **Authentication without ownership is a downgrade** — it
 replaces "nobody can get in" with "anyone who is in can read and resume anyone
 else's run." So this lands with the gate, not after it (ADR-002 D6).
 
-- [ ] A `runs` table in the same Cloud SQL instance 13.1 provisions, mapping
+- [x] A `run_owners` table in the same Cloud SQL instance 13.1 provisions, mapping
       `thread_id` to a Clerk user id, written when a run starts.
-- [ ] Ownership enforced on `status` and `resume`. A thread owned by someone else
+- [x] Ownership enforced on `status` and `resume`. A thread owned by someone else
       must be indistinguishable from one that does not exist — a distinct
       "forbidden" response confirms the thread id is real, which is the one thing
       an enumerating caller wants to learn.
-- [ ] Tests: two users, and neither can see or resume the other's run. This is the
+- [x] Tests: two users, and neither can see or resume the other's run. This is the
       assertion that would have failed silently before Clerk existed.
+
+**Frontend, done. Three things worth recording.**
+
+`@clerk/react` at `6.15.1`, **not** `@clerk/clerk-react` — the latter is the
+name this plan and two of my own messages used, and it is wrong. The bundle
+grew 247 kB → 378 kB raw, 75 kB → 109 kB gzipped, which is the cost of the
+gate and is worth knowing before ADR-002 D5's cold-start default is relied on.
+
+**`ClerkProvider` is mounted only when a publishable key exists**, so local
+development stays ungated and matches a backend that runs open without
+`CLERK_SECRET_KEY`. The provider renders a blank sign-in surface when handed
+no key, so an unconditional mount would present an unusable screen instead of
+an obvious misconfiguration.
+
+**The two keys can disagree**, because they live in different places and
+deploy separately: a gated backend behind an ungated build is a real
+configuration whose only symptom is every request answering 401 while the app
+offers no way to sign in. The health panel now carries a row for exactly that,
+reusing `Check` rather than inventing a banner — which is what
+`/api/health`'s `auth_required` was added for.
+
+**Two claims of mine that measurement contradicted, corrected in place rather
+than quietly.** A code comment asserted that spreading the auth header after
+`init.headers` stopped `json()` from dropping the token; reversing the spread
+changes nothing, because `content-type` and `authorization` do not collide and
+object spread merges them identically either way. The test written to prove
+that ordering was therefore vacuous, and now says so instead of implying a
+mutation could break it. Separately, `npm install` surfaced a high-severity
+`js-yaml` advisory — **not** from Clerk, but from `openapi-typescript`, a dev
+dependency; pinned via a nested `overrides` entry exactly as ADR-001 already
+does for `undici`, back to zero vulnerabilities.
+
+**What remains is a dashboard setting nobody can commit.** Invitation-only
+sign-up is the single control that makes this deployment private rather than
+merely authenticated, it lives outside version control and outside CI, and
+every other decision in ADR-002 D4 assumes it. Until it is set, the gate is a
+login page.
 
 ### 13.4 Production configuration
 

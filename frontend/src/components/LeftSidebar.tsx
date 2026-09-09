@@ -13,6 +13,7 @@
 import { CheckCircle, Plus, ShieldAlert } from "lucide-react";
 
 import type { HealthResponse } from "../api/types";
+import { isAuthConfigured } from "../auth/config";
 import type { SessionRun } from "../hooks/useSessionRuns";
 import { EmptyState, Field } from "./ui";
 
@@ -177,6 +178,27 @@ export function LeftSidebar({
               label="Checkpoints"
               {...CHECKPOINT_LABELS[health.checkpoint_backend]}
             />
+            {health.auth_required && !isAuthConfigured ? (
+              /*
+               * A gated backend behind an ungated build. Reachable because the
+               * two keys live in different places and deploy separately -- the
+               * secret in the backend's environment, the publishable one in
+               * the frontend's -- so nothing stops one being set without the
+               * other.
+               *
+               * Shown because the symptom is otherwise unreadable: every
+               * request answers 401 "Sign in to use this service." while the
+               * app presents no way to sign in. Reusing `Check` rather than
+               * inventing a banner keeps this in the one place an operator
+               * already looks to ask whether the deployment is configured.
+               */
+              <Check
+                ok={false}
+                label="Access gate"
+                readyLabel=""
+                unreadyLabel="backend requires sign-in, this build has no Clerk key"
+              />
+            ) : null}
             <Check
               ok={health.checks.llm_configured}
               label="Model key"

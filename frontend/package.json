@@ -12,6 +12,7 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@clerk/react": "^6.15.1",
     "lucide-react": "^1.34.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
@@ -35,7 +36,8 @@
   },
   "overrides": {
     "openapi-typescript": {
-      "undici": "^6.21.2"
+      "undici": "^6.21.2",
+      "js-yaml": "^4.3.2"
     }
   }
 }

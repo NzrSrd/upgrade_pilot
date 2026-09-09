@@ -75,8 +75,57 @@ function isAbort(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "AbortError";
 }
 
+/**
+ * How this module obtains a session token, when there is one to obtain.
+ *
+ * A registered function rather than a direct Clerk import, for two reasons.
+ * Clerk's token lives behind `useAuth()`, and a hook cannot be called from a
+ * plain module -- importing it here would either break the rule that this is
+ * the only module touching the network or drag React into the transport
+ * layer. And every existing test drives this client through MSW with no
+ * provider mounted; a hard dependency on Clerk would make all of them
+ * require an auth context they have no reason to care about.
+ *
+ * `null` is the local and test posture: no provider, no token, no header --
+ * which is what the backend expects when it has no Clerk key either.
+ */
+type TokenProvider = () => Promise<string | null>;
+
+let tokenProvider: TokenProvider | null = null;
+
+export function setTokenProvider(provider: TokenProvider | null): void {
+  tokenProvider = provider;
+}
+
+/**
+ * The `Authorization` header, or nothing.
+ *
+ * Failure to obtain a token is deliberately **not** swallowed into a
+ * header-less request. An expired session would otherwise turn into an
+ * unauthenticated call, and the backend answers those with 401 "Sign in to
+ * use this service." -- which is the right message for the wrong reason, and
+ * indistinguishable from never having signed in. Letting the rejection
+ * propagate keeps the real cause visible.
+ */
+async function authHeaders(): Promise<Record<string, string>> {
+  if (tokenProvider === null) return {};
+  const token = await tokenProvider();
+  return token === null ? {} : { authorization: `Bearer ${token}` };
+}
+
 async function request<T>(path: string, init: RequestInit, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(path, { ...init, signal });
+  const auth = await authHeaders();
+  const response = await fetch(path, {
+    ...init,
+    signal,
+    // Spread after `init`, so a caller-supplied `authorization` cannot
+    // displace the session token. Defensive rather than load-bearing, and
+    // measured as such: reversing the two changes nothing today, because the
+    // only header any caller sets is `content-type` and object spread merges
+    // non-colliding keys identically in either order. An earlier version of
+    // this comment claimed `json()` would drop the token; it does not.
+    headers: { ...(init.headers as Record<string, string> | undefined), ...auth },
+  });
 
   if (!response.ok) {
     let body: ErrorResponse | null = null;
