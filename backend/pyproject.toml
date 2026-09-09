@@ -47,6 +47,30 @@ dependencies = [
     # matters instead: `CorpusDocument` refuses an unquoted `to_version: 2.0`
     # rather than coercing the float back to a string nobody wrote.
     "pyyaml==6.0.3",
+    # CLAUDE.md rule 12 -- the stated reason. Imported directly by
+    # `graph/checkpointer.py` (`import aiosqlite`, `aiosqlite.connect`) while
+    # arriving only as a transitive of `langgraph-checkpoint-sqlite`. Same
+    # unstated assumption pyyaml above was declared to remove: depending on
+    # someone else's transitive is a dependency you did not choose and cannot
+    # see change.
+    "aiosqlite==0.22.1",
+    # ADR-002 D2 -- the checkpointer backend for a hosted deployment. Cloud
+    # Run's filesystem is in-memory, so a SQLite `checkpoints.db` holds paused
+    # human-in-the-loop state in RAM and loses it on every instance recycle.
+    # `langgraph-checkpoint-sqlite` above stays: it is the local and test
+    # path, selected by the absence of `UP_CHECKPOINT_URL`, which is what
+    # keeps the hermetic suite free of a database (rule 22).
+    #
+    # `psycopg[binary]` rather than bare `psycopg`, which needs a system
+    # `libpq`. The binary distribution bundles it and publishes a real cp314
+    # wheel, so the container needs no `apt-get install libpq5` and the 3.14
+    # floor is not at risk. Measured, not assumed --
+    # `probes/probe_wheels.py` checks manylinux x86_64 availability, and
+    # `probes/probe_postgres_checkpointer.py` proves a paused run survives a
+    # genuine process restart, which is the claim D2 rests on.
+    "langgraph-checkpoint-postgres==3.1.2",
+    "psycopg[binary]==3.3.5",
+    "psycopg-pool==3.3.1",
 ]
 
 [project.optional-dependencies]
