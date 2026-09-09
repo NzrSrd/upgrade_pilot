@@ -230,6 +230,23 @@ class HealthResponse(BaseModel):
     true of a directory and meaningless about a database.
     """
 
+    auth_required: bool
+    """Whether the API rejects requests without a Clerk session (ADR-002 D4).
+
+    On the response and **not** in `checks`, for a different reason than
+    `checkpoint_backend`. It is a `bool`, so it would not break
+    `_derive_status` -- but it would break the status *semantically*: local
+    development and the hermetic suite have no Clerk instance and never
+    should, so an open API is the correct state there and would report
+    `degraded` forever. A deployment that forgot the key is a
+    misconfiguration; a laptop without one is not, and one field cannot mean
+    both.
+
+    Published rather than kept internal because the alternative is worse: an
+    operator has no other way to tell a gated deployment from an open one, and
+    "is my private URL actually private" is not a question that should require
+    reading a config."""
+
     checks: HealthChecks
 
 

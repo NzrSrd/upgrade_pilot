@@ -343,7 +343,7 @@ export interface components {
      * ErrorCode
      * @enum {string}
      */
-    ErrorCode: "invalid_repo_url" | "local_path_forbidden" | "repo_unavailable" | "repo_too_large" | "dependency_not_found" | "version_invalid" | "kb_unavailable" | "llm_unavailable" | "llm_rate_limited" | "thread_not_found" | "thread_not_awaiting_input" | "invalid_decision" | "internal";
+    ErrorCode: "invalid_repo_url" | "local_path_forbidden" | "repo_unavailable" | "repo_too_large" | "dependency_not_found" | "version_invalid" | "kb_unavailable" | "llm_unavailable" | "llm_rate_limited" | "thread_not_found" | "thread_not_awaiting_input" | "invalid_decision" | "unauthenticated" | "internal";
     /**
      * ErrorResponse
      * @description The body of every non-2xx response from this API.
@@ -479,6 +479,8 @@ export interface components {
     };
     /** HealthResponse */
     HealthResponse: {
+      /** Auth Required */
+      auth_required: boolean;
       /**
        * Checkpoint Backend
        * @enum {string}

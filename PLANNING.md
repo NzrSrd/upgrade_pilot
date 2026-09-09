@@ -508,13 +508,21 @@ would change the plan if it came back wrong, which is what earns it a probe.
       second, which has never seen that graph object, reconstructs the run from
       the checkpoint alone and drives it to completion. The claim ADR-002 D2
       rests on is now measured rather than read.
-- [ ] **`clerk-backend-api` on Python 3.14 — still open.** Verified *available*:
-      `7.0.0` needs `cryptography>=45,<51`, `pyjwt>=2.9,<3`, `httpx>=0.28.1` and
-      `pydantic>=2.11.2`; pydantic is satisfied at `2.13.4` and `cryptography`
-      ships `abi3`. Not installed, so **no version is pinned yet** and this
-      stays unticked until 13.3 adopts it. One thing to decide rather than
-      absorb: adopting it moves `httpx` from a dev-only dependency to a runtime
-      one.
+- [x] **`clerk-backend-api` on Python 3.14.** Installed and pinned at `7.0.0`.
+      `cryptography` resolved to `50.0.1` on `abi3`, so the 3.14 floor is
+      untouched. What it actually adds to runtime is `cryptography`, `pyjwt`,
+      `cffi` and `pycparser` — five new lines in `requirements.lock`, 112 to
+      117.
+
+      **A claim in the earlier version of this item was wrong and is corrected
+      here rather than quietly edited:** it said adopting this "moves `httpx`
+      from a dev-only dependency to a runtime one". It does not.
+      `requirements.lock` already carried `httpx==0.28.1`, `httpx2==2.12.0`
+      and `httpcore==1.0.9`, because `chromadb`, `langchain-core` and `openai`
+      all depend on them. `httpx` has been shipping all along; the `[dev]`
+      pin constrains a package that was already in the image. The mistake came
+      from reading the SDK's declared requirements and assuming a new name
+      meant a new dependency.
 - [x] Record resolved versions in ADR-001's verification record (rule 13).
       Three rows added — the pinned versions, the wheel sweep, and the Postgres
       restart — each naming the probe that produces it. `psycopg 3.3.5 ·
