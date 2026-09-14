@@ -48,6 +48,10 @@ pytestmark = pytest.mark.postgres
 ALICE = "user_alice"
 BOB = "user_bob"
 
+ALIAS_ORIGIN = "https://pilotproject-gamma.vercel.app"
+PREVIEW_ORIGIN = "https://pilotproject-qs8x0yfq6-upgrade-pilot.vercel.app"
+SCOPE_WILDCARD = "https://*-upgrade-pilot.vercel.app"
+
 
 class _ClerkStub(Clerk):
     """Answers as whichever user the test is currently pretending to be.
@@ -60,6 +64,7 @@ class _ClerkStub(Clerk):
     def __init__(self) -> None:
         super().__init__(bearer_auth="sk_test_stub")
         self.user_id: str | None = ALICE
+        self.azp: str | None = ALIAS_ORIGIN
 
     async def authenticate_request_async(
         self, request: Requestish, options: AuthenticateRequestOptions
@@ -69,7 +74,15 @@ class _ClerkStub(Clerk):
                 status=AuthStatus.SIGNED_OUT,
                 reason=AuthErrorReason.SESSION_TOKEN_MISSING,
             )
-        return RequestState(status=AuthStatus.SIGNED_IN, payload={"sub": self.user_id})
+        # `options.authorized_parties` is `None` by design: `api/auth.py` asks
+        # the SDK to skip its exact-membership `azp` check and makes that
+        # decision itself. Asserting it here is what stops a future change
+        # quietly restoring the SDK's check and running both.
+        assert options.authorized_parties is None
+        payload: dict[str, Any] = {"sub": self.user_id}
+        if self.azp is not None:
+            payload["azp"] = self.azp
+        return RequestState(status=AuthStatus.SIGNED_IN, payload=payload)
 
 
 @pytest.fixture
@@ -107,7 +120,10 @@ def client(
 ) -> Iterator[TestClient]:
     """The real app, with the real ownership store and a stubbed Clerk."""
     settings = a_settings(tmp_path).model_copy(
-        update={"clerk_secret_key": SecretStr("sk_test_not_a_real_key")}
+        update={
+            "clerk_secret_key": SecretStr("sk_test_not_a_real_key"),
+            "authorized_parties": (ALIAS_ORIGIN, SCOPE_WILDCARD),
+        }
     )
     inner = a_runtime_factory(tmp_path, repo_root_holder=repo_root)
 
@@ -323,3 +339,52 @@ def test_ownership_still_answers_after_the_database_hangs_up(
     response = client.get(f"/api/agent/status/{thread_id}")
     assert response.status_code == 404
     assert response.json()["error"]["message"] == THREAD_NOT_FOUND_MESSAGE
+
+
+def test_a_preview_deployments_token_is_accepted(
+    client: TestClient, clerk: _ClerkStub, repo_root: list[Path]
+) -> None:
+    """The bug, at the surface it was reported on.
+
+    Cloud Run held one origin -- the project alias -- and `api/auth.py` handed
+    it to Clerk as `authorized_parties`, so a token minted on a preview
+    deployment's own URL came back
+    `TokenVerificationErrorReason.TOKEN_INVALID_AUTHORIZED_PARTIES` and every
+    `POST /api/agent/start` answered 401. The scope wildcard is what makes the
+    preview URL a caller this deployment recognises.
+    """
+    clerk.azp = PREVIEW_ORIGIN
+
+    response = client.post("/api/agent/start", json=a_start_body(repo_root[0]))
+
+    assert response.status_code == 202, response.text
+
+
+def test_a_token_minted_outside_the_scope_is_refused(
+    client: TestClient, clerk: _ClerkStub, repo_root: list[Path]
+) -> None:
+    """The wildcard widens the allowlist; it does not remove it."""
+    clerk.azp = "https://pilotproject-qs8x0yfq6-someone-else.vercel.app"
+
+    response = client.post("/api/agent/start", json=a_start_body(repo_root[0]))
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthenticated"
+
+
+def test_a_token_carrying_no_origin_is_refused(
+    client: TestClient, clerk: _ClerkStub, repo_root: list[Path]
+) -> None:
+    """Parity with the SDK check this replaced, at the API surface.
+
+    `clerk_backend_api` refuses a payload with no `azp` whenever an allowlist
+    is configured. Moving the decision here must not turn that into a pass,
+    and a stub is exactly the thing that would let it: before this test the
+    stub emitted no `azp` at all and every ownership test still went green.
+    """
+    clerk.azp = None
+
+    response = client.post("/api/agent/start", json=a_start_body(repo_root[0]))
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthenticated"

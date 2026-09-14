@@ -22,6 +22,7 @@ from fastapi import Depends, Request
 
 from upgradepilot.api.deps import RuntimeDep
 from upgradepilot.api.runtime import Runtime
+from upgradepilot.config import authorizes_party
 from upgradepilot.models.errors import (
     THREAD_NOT_FOUND_MESSAGE,
     ThreadNotFoundError,
@@ -59,11 +60,16 @@ async def authenticate(request: Request, runtime: RuntimeDep) -> Caller:
     Protocol requiring only `headers: Mapping[str, str]`, which `Request`
     already satisfies, so there is no adapter here to drift.
 
-    `authorized_parties` reuses `cors_origins` rather than adding a setting.
-    Both answer the same question -- which origins this API belongs to -- and
-    Clerk uses it to reject a token minted for a different application. Two
-    settings holding one fact would eventually disagree, and the failure would
-    be an accepted token from somewhere else.
+    **`authorized_parties=None` asks the SDK to skip the `azp` check, and
+    `authorizes_party` makes that decision here instead.** The SDK's check is
+    exact membership in a list, and the set of origins a Vercel project serves
+    is not a list: every deployment gets its own immutable URL beside the
+    project alias. This used to be handed `cors_origins` on the reasoning that
+    both name the origins this API belongs to; what that produced was a
+    deployment where the alias worked and every preview URL answered
+    `TOKEN_INVALID_AUTHORIZED_PARTIES` to a correctly signed, unexpired token
+    from a signed-in user. Nothing else about verification moves: signature,
+    expiry and issuer stay in the SDK, where the JWKS is.
     """
     if runtime.clerk is None:
         return Caller(user_id=None)
@@ -74,7 +80,7 @@ async def authenticate(request: Request, runtime: RuntimeDep) -> Caller:
             secret_key=runtime.settings.clerk_secret_key.get_secret_value()
             if runtime.settings.clerk_secret_key
             else None,
-            authorized_parties=list(runtime.settings.cors_origins),
+            authorized_parties=None,
         ),
     )
     if not state.is_signed_in:
@@ -87,7 +93,20 @@ async def authenticate(request: Request, runtime: RuntimeDep) -> Caller:
             detail=f"clerk rejected the session: {state.reason}",
         )
 
-    subject = (state.payload or {}).get("sub")
+    claims = state.payload or {}
+    azp = claims.get("azp")
+    if not authorizes_party(
+        runtime.settings.authorized_parties, azp if isinstance(azp, str) else None
+    ):
+        # Checked after `is_signed_in`, so this is only ever reached by a
+        # token whose signature and expiry already verified -- the origin is
+        # the sole remaining objection, and `detail` is where it stays.
+        raise UnauthenticatedError(
+            "Sign in to use this service.",
+            detail=f"azp {azp!r} is not an authorized party",
+        )
+
+    subject = claims.get("sub")
     if not isinstance(subject, str) or not subject:
         # Signed in with no subject claim should be impossible. Treated as a
         # rejection rather than trusted, because the alternative is a `None`

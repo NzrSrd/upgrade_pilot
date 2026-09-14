@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 from pydantic_settings import SettingsConfigDict
 
-from upgradepilot.config import Settings
+from upgradepilot.config import Settings, authorizes_party
 
 
 def test_comma_separated_env_values_parse_into_collections(
@@ -596,3 +596,102 @@ def test_a_checkpointer_url_that_is_not_a_postgres_dsn_is_refused(bad: str) -> N
     """
     with pytest.raises(ValidationError):
         Settings(_env_file=None, checkpoint_url=bad)
+
+
+def test_authorized_parties_parse_from_a_comma_separated_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "UP_AUTHORIZED_PARTIES",
+        "https://pilotproject-gamma.vercel.app,https://*-upgrade-pilot.vercel.app",
+    )
+
+    assert Settings(_env_file=None).authorized_parties == (
+        "https://pilotproject-gamma.vercel.app",
+        "https://*-upgrade-pilot.vercel.app",
+    )
+
+
+def test_an_exact_authorized_party_matches_only_itself() -> None:
+    parties = ("https://pilotproject-gamma.vercel.app",)
+
+    assert authorizes_party(parties, "https://pilotproject-gamma.vercel.app") is True
+    assert authorizes_party(parties, "https://pilotproject-gamma.vercel.app.evil.com") is False
+    assert authorizes_party(parties, "http://pilotproject-gamma.vercel.app") is False
+
+
+def test_a_wildcard_party_admits_every_deployment_url_in_the_scope() -> None:
+    """The bug this exists for: a preview deployment's own origin.
+
+    `UP_CORS_ORIGINS` held only the project alias, and `api/auth.py` handed it
+    to Clerk as `authorized_parties`, so a token minted on
+    `pilotproject-qs8x0yfq6-upgrade-pilot.vercel.app` was refused with
+    `TOKEN_INVALID_AUTHORIZED_PARTIES` and every run 401'd.
+    """
+    parties = ("https://*-upgrade-pilot.vercel.app",)
+
+    assert authorizes_party(parties, "https://pilotproject-qs8x0yfq6-upgrade-pilot.vercel.app")
+    assert authorizes_party(parties, "https://pilotproject-mnai5kipc-upgrade-pilot.vercel.app")
+
+
+def test_a_wildcard_party_does_not_cross_a_label_boundary() -> None:
+    """`*` stops at a dot, so the pattern stays inside the Vercel scope.
+
+    Without this, `https://*-upgrade-pilot.vercel.app` would admit
+    `https://anything.attacker.example-upgrade-pilot.vercel.app` -- a host
+    nobody in this scope can serve, but also one the pattern was never meant
+    to name. A wildcard in a security allowlist that matches more than it
+    reads as is the failure this whole change is correcting.
+    """
+    parties = ("https://*-upgrade-pilot.vercel.app",)
+
+    assert authorizes_party(parties, "https://a.b-upgrade-pilot.vercel.app") is False
+    assert authorizes_party(parties, "https://-upgrade-pilot.vercel.app") is False
+    assert authorizes_party(parties, "http://x-upgrade-pilot.vercel.app") is False
+
+
+def test_a_missing_azp_claim_is_refused() -> None:
+    """Parity with the check this replaces.
+
+    `clerk_backend_api.security.verifytoken` refuses a token whose payload
+    carries no `azp` whenever an allowlist is configured. Moving the decision
+    into this project must not quietly turn that rejection into a pass.
+    """
+    assert authorizes_party(("https://pilotproject-gamma.vercel.app",), None) is False
+
+
+def test_an_empty_allowlist_admits_nobody() -> None:
+    assert authorizes_party((), "https://pilotproject-gamma.vercel.app") is False
+
+
+@pytest.mark.parametrize(
+    "party",
+    [
+        "https://*.vercel.app",
+        "https://*",
+        "https://*-*-upgrade-pilot.vercel.app",
+        "https://app.*.vercel.app",
+        "pilotproject-gamma.vercel.app",
+        "https://pilotproject-gamma.vercel.app/api",
+        "https://pilotproject-gamma.vercel.app/",
+    ],
+)
+def test_an_overbroad_or_malformed_authorized_party_is_refused_at_startup(party: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, authorized_parties=(party,))
+
+
+def test_a_gated_deployment_must_name_the_frontends_it_trusts() -> None:
+    """A Clerk key with no allowlist would refuse every caller.
+
+    Refused at startup rather than per request, for the same reason as
+    `_an_authenticated_deployment_needs_postgres`: the operator is watching
+    at startup, and is looking at a browser console an hour later.
+    """
+    with pytest.raises(ValidationError, match="UP_AUTHORIZED_PARTIES"):
+        Settings(
+            _env_file=None,
+            clerk_secret_key="sk_test_x",
+            checkpoint_url="postgresql://u:p@h/db",
+            authorized_parties=(),
+        )

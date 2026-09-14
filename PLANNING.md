@@ -723,9 +723,16 @@ token stays Sub-project 2 work, unblocked rather than done here.
 - [x] `vercel.json` rewrite for `/api/*` → Cloud Run. Plain rewrite, **not**
       Routing Middleware: Clerk's token comes from the browser, so nothing needs
       injecting server-side. This is a simplification Clerk buys.
-- [ ] `UP_CORS_ORIGINS` set to the Vercel production domain (13.4). The rewrite keeps the
+- [x] `UP_CORS_ORIGINS` set to the Vercel production domain (13.4). The rewrite keeps the
       browser same-origin so CORS is never exercised, but ADR-001 is explicit
       that a wildcard is not a decision anyone would make on purpose.
+- [ ] `UP_AUTHORIZED_PARTIES` set to the project alias **and** a wildcard over the
+      Vercel scope. Split out of `UP_CORS_ORIGINS`, which `api/auth.py` used to
+      hand to Clerk as `authorized_parties` on the reasoning that both name the
+      origins this API belongs to. They do not: Vercel gives every deployment
+      its own immutable URL, so the alias worked and every preview URL answered
+      401 to a valid session. Deploying this needs the variable set on Cloud
+      Run, or the revision refuses to start.
 
 **Run ownership, and why it cannot wait for Sub-project 3.** A shared secret has
 no concept of a second user: one trusted proxy, one tenant, and every run
