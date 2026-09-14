@@ -14,15 +14,55 @@ a node that dies unrecorded takes the run down with no explanation the user
 can act on.
 """
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from langgraph.config import get_config
 from langgraph.errors import GraphBubbleUp
 
 from upgradepilot.models.enums import TraceEventKind
 from upgradepilot.models.errors import AppError, ErrorCode, UpgradePilotError
 from upgradepilot.models.state import MigrationState
 from upgradepilot.models.trace import trace_event
+
+logger = logging.getLogger("upgradepilot.graph")
+"""Where a node failure's technical half goes.
+
+CLAUDE.md rule 27 -- `detail` is technical and logged, correlated by
+`thread_id` -- held only at the HTTP boundary, where `api/errors.py` logs
+errors that escape a request. A node fails long after `start` answered 202, so
+its `detail` reached graph state and stopped there, and state is not somewhere
+an operator can read. The deployed symptom was a run reporting "The repository
+could not be cloned" while git's own stderr, which names the actual cause, sat
+in a checkpoint nobody could open.
+
+No handler is configured anywhere in this project, which is why both calls
+below are WARNING or above: Python's `lastResort` handler emits exactly those
+to stderr, and Cloud Run collects stderr. An `info` line here would be
+discarded in production while passing every test.
+"""
+
+
+def _thread() -> str:
+    """The thread id this node is running under, for correlation.
+
+    `get_config()` rather than a `config` parameter on the wrapper. LangGraph
+    supplies either, but the parameter would change the type of every traced
+    node and both `add_node` call sites for a value used only when something
+    has already gone wrong.
+
+    It raises outside a runnable context, and that must never displace the
+    failure being reported -- an unknown thread id costs correlation, while an
+    exception raised inside an `except` block costs the error report itself.
+    Not a silent swallow under rule 20: the log line is still written, and it
+    says so.
+    """
+    try:
+        return str(get_config().get("configurable", {}).get("thread_id", "unknown"))
+    except RuntimeError:
+        return "unknown"
+
 
 StateUpdate = dict[str, Any]
 type NodeBody[StateT] = Callable[[StateT], Awaitable[StateUpdate]]
@@ -78,6 +118,13 @@ def traced[StateT](name: str, body: NodeBody[StateT]) -> NodeBody[StateT]:
             # the next one silently.
             raise
         except UpgradePilotError as exc:
+            logger.warning(
+                "thread=%s node=%s -> %s: %s",
+                _thread(),
+                name,
+                exc.code.value,
+                exc.detail or exc.message,
+            )
             return {
                 "errors": [exc.to_app_error(node=name)],
                 "agent_trace": [
@@ -93,6 +140,12 @@ def traced[StateT](name: str, body: NodeBody[StateT]) -> NodeBody[StateT]:
                 ],
             }
         except Exception as exc:  # noqa: BLE001 - converted, never swallowed
+            # `exception`, not `warning`: a domain failure is a condition and
+            # this is a defect, and the frame that raised it is the evidence.
+            # Same judgement `api/errors.py` makes at the HTTP boundary.
+            logger.exception(
+                "thread=%s node=%s -> unhandled %s", _thread(), name, type(exc).__name__
+            )
             return {
                 "errors": [
                     AppError(
