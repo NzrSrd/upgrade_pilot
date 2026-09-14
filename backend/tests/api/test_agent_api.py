@@ -403,3 +403,35 @@ def test_derived_values_the_report_renders_are_in_the_response(
     assert "evidence_available" in settled["rag_context"]
     assert settled["validation"]["passed"] is True
     assert settled["final_report"]["completed_with_warnings"] is False
+
+
+def test_every_run_snapshot_field_is_required() -> None:
+    """The wire contract says what it means, and a new field cannot un-say it.
+
+    `RunSnapshot` is built in exactly one place and that place populates every
+    field on every call, so a default here is never a value a client receives
+    -- it is a value the *schema* advertises as possibly absent.
+    `openapi-typescript` renders that as `?`, and the frontend then resolves an
+    `undefined` no running backend produces. Three Phase 10 defects came out of
+    that gap.
+
+    A prose rule in the docstring would hold until the next field is added with
+    a convenient `= None`, which is exactly how the fourteen accumulated. This
+    is the rule as a check instead: it fails on the field that reintroduces it,
+    and names it.
+    """
+    from pydantic_core import PydanticUndefined
+
+    from upgradepilot.api.schemas import RunSnapshot
+
+    optional = [
+        name
+        for name, field in RunSnapshot.model_fields.items()
+        if field.default is not PydanticUndefined or field.default_factory is not None
+    ]
+
+    assert optional == [], (
+        f"{optional} carry defaults, so the generated client sees them as "
+        "possibly absent. A field that is genuinely 'not yet' should be "
+        "`T | None` with no default, which is required-and-nullable."
+    )

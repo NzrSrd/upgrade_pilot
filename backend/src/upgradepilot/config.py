@@ -1,6 +1,7 @@
 """Application configuration. The only place environment variables are read."""
 
 import re
+from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -250,6 +251,104 @@ or rejected at startup -- an entry that cannot match is a policy that
 silently denies everything."""
 
 
+_AUTHORIZED_PARTY = re.compile(r"https?://[A-Za-z0-9.\-*]+(?::\d+)?\Z")
+r"""A browser origin, optionally carrying one `*` inside its leftmost label.
+
+Scheme, host, optional port, and nothing else. Clerk's `azp` claim is the
+origin the token was minted on, which never has a path, so an entry with one
+would match nothing. `\Z` and not `$` for the reason `_HTTP_BASE_URL` gives.
+"""
+
+
+def _require_authorized_party(value: str) -> str:
+    """Reject an allowlist entry that is not an origin, or that is too broad.
+
+    This is the `azp` allowlist Clerk's token verification used to be handed
+    directly, and the grammar exists because the deployed frontend does not
+    have one origin. Vercel gives every deployment an immutable URL of the
+    form `<project>-<hash>-<scope>.vercel.app` alongside the project alias,
+    so an exact list is a list that goes stale on the next `vercel deploy`.
+    One `*`, bounded to a single label, names the whole scope without naming
+    anything outside it: the scope slug is globally unique on Vercel, so
+    `https://*-upgrade-pilot.vercel.app` cannot be claimed by a stranger.
+
+    What is refused, and why each case is refused rather than narrowed:
+
+    - `https://*.vercel.app` and `https://*`, where the wildcard *is* the
+      leftmost label. Both read as "our deployments" and mean "anybody's".
+      This is the one mistake that turns the allowlist into an open door,
+      and it is the one an operator is most likely to type.
+    - a wildcard anywhere but the leftmost label, and more than one wildcard.
+      Neither is needed for any URL Vercel issues, and both make the entry
+      harder to read than to write.
+    - a bare host with no scheme, or anything carrying a path. `azp` is an
+      origin; these would match nothing and deny every caller silently.
+    """
+    if not _AUTHORIZED_PARTY.match(value):
+        raise ValueError(
+            f"must be a browser origin -- scheme, host, optional port, no path (got {value!r})"
+        )
+    host = value.split("://", 1)[1].partition(":")[0]
+    if "*" not in host:
+        return value
+    if host.count("*") > 1:
+        raise ValueError(f"must contain at most one '*' (got {value!r})")
+    label, dot, rest = host.partition(".")
+    if "*" in rest:
+        raise ValueError(
+            f"may only wildcard the leftmost label (got {value!r}): a '*' further right "
+            "matches hostnames in domains this deployment does not control"
+        )
+    if not dot or label == "*":
+        raise ValueError(
+            f"is too broad (got {value!r}): a '*' that is the whole leftmost label admits "
+            "every host under that domain, including ones belonging to strangers -- give "
+            "the label a literal part, e.g. 'https://*-your-vercel-scope.vercel.app'"
+        )
+    return value
+
+
+AuthorizedParty = Annotated[NonBlankSetting, AfterValidator(_require_authorized_party)]
+"""An entry in the Clerk `azp` allowlist. An origin, or one scoped wildcard."""
+
+
+def _matches_authorized_party(pattern: str, azp: str) -> bool:
+    """Whether one allowlist entry admits this `azp` claim.
+
+    The wildcard matches at least one character and never a `.`, so the entry
+    spans exactly one label. Matching across a dot is what would make
+    `https://*-upgrade-pilot.vercel.app` admit
+    `https://anything.attacker.example-upgrade-pilot.vercel.app`, a host the
+    pattern does not read as naming.
+    """
+    prefix, star, suffix = pattern.partition("*")
+    if not star:
+        return pattern == azp
+    if len(azp) <= len(prefix) + len(suffix):
+        return False
+    if not azp.startswith(prefix) or not azp.endswith(suffix):
+        return False
+    return "." not in azp[len(prefix) : len(azp) - len(suffix)]
+
+
+def authorizes_party(patterns: Sequence[str], azp: str | None) -> bool:
+    """Whether a token minted on `azp` may call this API.
+
+    Moved out of `clerk_backend_api` deliberately. Its own check is an exact
+    membership test against `authorized_parties`, which cannot express the
+    set of origins a Vercel project actually serves, so the SDK is asked to
+    skip the check and this function makes the decision instead. Everything
+    else about verification -- signature, expiry, issuer -- stays in the SDK.
+
+    `None` is refused, matching what the SDK does with a payload carrying no
+    `azp` while an allowlist is configured. A token minted somewhere that
+    sent no origin is not a token this deployment can place.
+    """
+    if azp is None:
+        return False
+    return any(_matches_authorized_party(pattern, azp) for pattern in patterns)
+
+
 class ModelPrice(BaseModel):
     """What one model costs, per million tokens.
 
@@ -471,8 +570,32 @@ class Settings(BaseSettings):
 
     # API
     cors_origins: Annotated[tuple[NonBlankSetting, ...], NoDecode] = ("http://localhost:5173",)
+    """Which browser origins may call this API cross-origin.
 
-    @field_validator("allowed_local_roots", "allowed_url_schemes", "cors_origins", mode="before")
+    This and nothing else. It used to be handed to Clerk as
+    `authorized_parties` as well, on the reasoning that both answer "which
+    origins does this API belong to" -- which held right up until the deployed
+    frontend had more than one origin. ADR-002 D4 notes that the Vercel
+    rewrite keeps the browser same-origin so CORS is never exercised, and
+    concluded that setting this "costs nothing". Because the value was doing
+    double duty, it cost every origin but the one listed a 401 from Clerk.
+    `authorized_parties` below is now the separate setting."""
+
+    authorized_parties: Annotated[tuple[AuthorizedParty, ...], NoDecode] = ()
+    """Which frontends' session tokens this API accepts, by `azp` claim.
+
+    Empty by default because an open deployment never consults it: with no
+    Clerk key there is no token to place, which is the local and test posture
+    (rule 22). A gated one must fill it in, and
+    `_a_gated_deployment_names_its_frontends` refuses to boot until it does."""
+
+    @field_validator(
+        "allowed_local_roots",
+        "allowed_url_schemes",
+        "cors_origins",
+        "authorized_parties",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, value: object) -> object:
         """Accept comma-separated strings from .env for collection fields."""
@@ -524,6 +647,32 @@ class Settings(BaseSettings):
                 "because run ownership is stored there and a gate without "
                 "ownership lets any signed-in user read and resume any run. "
                 "Set UP_CHECKPOINT_URL, or unset CLERK_SECRET_KEY to run open."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _a_gated_deployment_names_its_frontends(self) -> "Settings":
+        """Refuse to boot with a gate that would reject every caller.
+
+        `authorizes_party` admits nobody against an empty allowlist, so a
+        Clerk key with no `UP_AUTHORIZED_PARTIES` describes a deployment that
+        starts, reports `auth_required: true`, serves `/api/health`, and 401s
+        every single run. That is the exact failure this setting was split out
+        of `cors_origins` to end, and leaving it reachable by omission would
+        reintroduce it one deploy later.
+
+        Fail-closed is the right default for an allowlist and the wrong one to
+        arrive at silently, so the emptiness is refused where an operator is
+        watching rather than discovered in a browser console.
+        """
+        if self.auth_required and not self.authorized_parties:
+            raise ValueError(
+                "CLERK_SECRET_KEY is set but UP_AUTHORIZED_PARTIES is empty. "
+                "Clerk tokens carry the origin they were minted on, and this "
+                "API refuses every origin it was not told to trust -- so the "
+                "deployment would answer /api/health and reject every run. "
+                "Set UP_AUTHORIZED_PARTIES to the frontend origins, e.g. "
+                "https://your-app.vercel.app,https://*-your-scope.vercel.app"
             )
         return self
 

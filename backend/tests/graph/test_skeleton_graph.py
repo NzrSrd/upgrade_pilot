@@ -16,6 +16,7 @@ are now asserted over a graph that does something, so a foundation that only
 worked for nodes returning `{}` no longer passes.
 """
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -431,3 +432,123 @@ async def test_an_unexpected_exception_is_recorded_as_internal_not_swallowed(
     from_assess_risk = [e for e in result["errors"] if e.node == "assess_risk"]
     assert [e.code for e in from_assess_risk] == [ErrorCode.INTERNAL]
     assert "TypeError" in (from_assess_risk[0].detail or "")
+
+
+# -- rule 27: the technical half reaches the log ----------------------------
+
+
+async def test_a_failing_node_logs_its_detail_against_the_thread(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CLAUDE.md rule 27: `AppError.detail` is technical and logged,
+    correlated by `thread_id`.
+
+    That held only at the HTTP boundary, where `api/errors.py` logs errors
+    that escape a request. A node fails long after `POST /api/agent/start`
+    answered 202, so its `detail` reached state and nothing else -- and state
+    is not somewhere an operator can read. The deployed symptom was a run
+    reporting "The repository could not be cloned" with git's own stderr,
+    which names the actual cause, recorded where nobody could see it.
+    """
+    deps, repo_root, _ = a_graph_environment(tmp_path, responses=a_full_run_script())
+    async with open_checkpointer(tmp_path / "c.db") as saver:
+        graph = compile_graph(
+            deps=deps,
+            checkpointer=saver,
+            fail_in={
+                "analyze_repo": RepoUnavailableError(
+                    "The repository could not be cloned.",
+                    detail="url=https://example.invalid/x exit=128 stderr=repository not found",
+                )
+            },
+        )
+
+        with caplog.at_level(logging.WARNING, logger="upgradepilot.graph"):
+            await run_to_completion(graph, a_state(repo_root), a_config("t-logged"))
+
+    logged = [r for r in caplog.records if r.name == "upgradepilot.graph"]
+    assert len(logged) == 1
+    message = logged[0].getMessage()
+    assert "t-logged" in message
+    assert "analyze_repo" in message
+    assert "stderr=repository not found" in message
+
+
+async def test_the_logged_detail_does_not_reach_the_user_facing_trace(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Rule 27's other half, and the reason logging is where this goes.
+
+    `detail` routinely carries provider responses and command output. The
+    agent trace is rendered in the browser, so widening the trace event to
+    carry it would be the same mistake in the opposite direction.
+    """
+    deps, repo_root, _ = a_graph_environment(tmp_path, responses=a_full_run_script())
+    async with open_checkpointer(tmp_path / "c.db") as saver:
+        graph = compile_graph(
+            deps=deps,
+            checkpointer=saver,
+            fail_in={
+                "analyze_repo": RepoUnavailableError("nope", detail="stderr=a secret-ish thing")
+            },
+        )
+
+        with caplog.at_level(logging.WARNING, logger="upgradepilot.graph"):
+            result = await run_to_completion(graph, a_state(repo_root), a_config())
+
+    rendered = " ".join(f"{e.summary} {e.detail or ''}" for e in result["agent_trace"])
+    assert "a secret-ish thing" not in rendered
+    assert "a secret-ish thing" in caplog.text
+
+
+async def test_an_unexpected_exception_is_logged_with_its_traceback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A bug in a node body is the case where the stack is the evidence.
+
+    `api/errors.py` uses `logger.exception` for exactly this and the node
+    boundary is the same judgement: a domain failure is a condition and a
+    `TypeError` is a defect, and a defect without a frame to look at costs an
+    afternoon.
+    """
+    deps, repo_root, _ = a_graph_environment(tmp_path, responses=a_full_run_script())
+    async with open_checkpointer(tmp_path / "c.db") as saver:
+        graph = compile_graph(
+            deps=deps,
+            checkpointer=saver,
+            fail_in={"assess_risk": TypeError("a bug in the node body")},
+        )
+
+        with caplog.at_level(logging.WARNING, logger="upgradepilot.graph"):
+            await run_to_completion(graph, a_state(repo_root), a_config())
+
+    # Filtered to the node under test rather than asserting a single record.
+    # A failed `assess_risk` leaves `generate_plan` reading a risk narrative
+    # that is not there, so it raises too -- which is a real second defect,
+    # and one this logging is what surfaced: before it, both crashes were
+    # recorded as INTERNAL in a state nobody was reading.
+    logged = [
+        r
+        for r in caplog.records
+        if r.name == "upgradepilot.graph" and "node=assess_risk" in r.getMessage()
+    ]
+    assert len(logged) == 1
+    assert logged[0].exc_info is not None
+    assert "a bug in the node body" in caplog.text
+
+
+async def test_a_paused_run_logs_nothing(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """`interrupt()` raises through the wrapper, and a pause is not a failure.
+
+    The same distinction `GraphBubbleUp` already protects in state. Logging a
+    warning per pause would make an ordinary human-review run look like a
+    failing one in the one place an operator goes to find failing runs.
+    """
+    deps, repo_root, _ = a_graph_environment(tmp_path, responses=a_full_run_script())
+    async with open_checkpointer(tmp_path / "c.db") as saver:
+        graph = compile_graph(deps=deps, checkpointer=saver)
+
+        with caplog.at_level(logging.WARNING, logger="upgradepilot.graph"):
+            await run_to_completion(graph, a_state(repo_root), a_config())
+
+    assert [r for r in caplog.records if r.name == "upgradepilot.graph"] == []

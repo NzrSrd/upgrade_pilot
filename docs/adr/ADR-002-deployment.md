@@ -235,6 +235,38 @@ still keeps the browser same-origin, so CORS is never exercised and no
 production domain regardless — it costs nothing, and ADR-001 is explicit that a
 wildcard is not a decision anyone would make on purpose.
 
+**Amended after deployment: it did not cost nothing, because it was doing two
+jobs.** `api/auth.py` handed `cors_origins` to Clerk as `authorized_parties`,
+on the reasoning that both answer "which origins does this API belong to" and
+that two settings holding one fact would eventually disagree. The two halves of
+that sentence are both true and the conclusion from them is wrong. Because the
+rewrite keeps the browser same-origin, the CORS half is never exercised in this
+topology at all, so the setting's only live effect was as Clerk's `azp`
+allowlist — under a name that does not say so.
+
+What made it visible is that the deployed frontend does not have one origin.
+Vercel gives every deployment an immutable `<project>-<hash>-<scope>.vercel.app`
+URL beside the project alias, and Clerk's `azp` claim is whichever origin the
+browser minted the token on. With the alias alone in `UP_CORS_ORIGINS`, a
+signed-in user on any preview deployment got
+`TokenVerificationErrorReason.TOKEN_INVALID_AUTHORIZED_PARTIES` and a 401 on
+every run, while `/api/health` stayed green because it has no caller to place.
+
+The two settings are now separate. `UP_AUTHORIZED_PARTIES` is the `azp`
+allowlist and is required whenever `CLERK_SECRET_KEY` is set, because an empty
+one admits nobody and a gate that rejects every caller should fail at startup
+where an operator is watching. Its entries may carry one `*` inside the
+leftmost host label, which is what lets one entry name a Vercel scope —
+`https://*-upgrade-pilot.vercel.app` — without naming anything outside it: the
+scope slug is globally unique on Vercel, and the wildcard never matches across
+a dot. A `*` that *is* the whole label, `https://*.vercel.app`, reads as "our
+deployments" and means "anybody's", so it is refused at startup.
+
+The SDK's own check is skipped (`authorized_parties=None`) and the decision
+made in `config.authorizes_party`, because the SDK tests exact membership in a
+list and the set of origins a Vercel project serves is not a list. Signature,
+expiry and issuer stay in the SDK, where the JWKS is.
+
 **Amended after implementation: the sign-up posture is an allowlist, and it
 fails open.** This document said invitation-only. What is deployed is
 `sign_up_mode: public` with `allowlist_enabled: true` and one address on the

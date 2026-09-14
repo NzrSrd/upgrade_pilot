@@ -884,55 +884,62 @@ export interface components {
     /**
      * RunSnapshot
      * @description One response model for every state a run can be in. Spec 9.1.
+     *
+     * **Every field is required, and none carries a default.** That is a
+     * statement about the wire contract rather than about Python ergonomics.
+     * `runtime.snapshot_response` is the only place this model is constructed
+     * and it passes all seventeen fields on every call, so a default here was
+     * never a value any client could receive -- it was a value the *schema*
+     * advertised as possibly absent.
+     *
+     * What that cost is recorded in PLANNING.md Phase 10. `openapi-typescript`
+     * renders an optional field as `?`, so the generated `RunSnapshot` gave the
+     * frontend `T | null | undefined` for fourteen fields whose `undefined` no
+     * running backend can produce. Every component then resolved an absence it
+     * could never observe, and three separate Phase 10 defects traced to that
+     * gap -- each one a plausible branch for a state the server does not have.
+     *
+     * The nullable fields stay nullable: `current_step`, `rag_context`,
+     * `risk_analysis`, `migration_plan`, `validation`, `pending_decision` and
+     * `final_report` are genuinely `None` before the run reaches them, and that
+     * `None` is information. Required-and-nullable is the accurate shape, and it
+     * is the one the client should have to handle. Removing the default is what
+     * makes the difference visible: `null` means "not yet", where `undefined`
+     * meant "this server might not send the field at all".
+     *
+     * The collections are required for the stronger reason. An empty tuple and
+     * an absent field read identically at every call site, so the optionality
+     * bought nothing and hid the fact that "no breaking changes found" and "the
+     * analysis has not run" are the same value here and must be told apart by
+     * `status`.
      */
     RunSnapshot: {
-      /**
-       * Affected Files
-       * @default []
-       */
-      affected_files?: components["schemas"]["AffectedFile"][];
-      /**
-       * Breaking Changes
-       * @default []
-       */
-      breaking_changes?: components["schemas"]["BreakingChange"][];
-      /**
-       * Completed Steps
-       * @default []
-       */
-      completed_steps?: string[];
+      /** Affected Files */
+      affected_files: components["schemas"]["AffectedFile"][];
+      /** Breaking Changes */
+      breaking_changes: components["schemas"]["BreakingChange"][];
+      /** Completed Steps */
+      completed_steps: string[];
       /** Current Step */
-      current_step?: string | null;
-      /**
-       * Errors
-       * @default []
-       */
-      errors?: components["schemas"]["ApiError"][];
-      final_report?: components["schemas"]["FinalReport"] | null;
-      /**
-       * Human Decisions
-       * @default []
-       */
-      human_decisions?: components["schemas"]["HumanDecision"][];
-      migration_plan?: components["schemas"]["MigrationPlan"] | null;
-      pending_decision?: components["schemas"]["InterruptPayload"] | null;
-      rag_context?: components["schemas"]["RagContext"] | null;
-      /**
-       * Retrieved Sources
-       * @default []
-       */
-      retrieved_sources?: components["schemas"]["SourceRef"][];
-      risk_analysis?: components["schemas"]["RiskAnalysis"] | null;
+      current_step: string | null;
+      /** Errors */
+      errors: components["schemas"]["ApiError"][];
+      final_report: components["schemas"]["FinalReport"] | null;
+      /** Human Decisions */
+      human_decisions: components["schemas"]["HumanDecision"][];
+      migration_plan: components["schemas"]["MigrationPlan"] | null;
+      pending_decision: components["schemas"]["InterruptPayload"] | null;
+      rag_context: components["schemas"]["RagContext"] | null;
+      /** Retrieved Sources */
+      retrieved_sources: components["schemas"]["SourceRef"][];
+      risk_analysis: components["schemas"]["RiskAnalysis"] | null;
       status: components["schemas"]["RunStatus"];
       /** Thread Id */
       thread_id: string;
-      /**
-       * Trace
-       * @default []
-       */
-      trace?: components["schemas"]["TraceEvent"][];
+      /** Trace */
+      trace: components["schemas"]["TraceEvent"][];
       usage: components["schemas"]["UsageView"];
-      validation?: components["schemas"]["ValidationReport"] | null;
+      validation: components["schemas"]["ValidationReport"] | null;
     };
     /**
      * RunStatus
