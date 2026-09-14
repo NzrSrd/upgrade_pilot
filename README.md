@@ -183,8 +183,21 @@ gcloud run deploy upgradepilot-backend \
   --add-volume=name=workspaces,type=in-memory,size-limit=512Mi \
   --add-volume-mount=volume=workspaces,mount-path=/tmp/workspaces \
   --set-secrets=OPENROUTER_API_KEY=llm-api-key:latest,CLERK_SECRET_KEY=clerk-secret-key:latest,UP_CHECKPOINT_URL=checkpoint-url:latest \
-  --set-env-vars=OPENROUTER_BASE_URL=https://openrouter.ai/api/v1,UP_CORS_ORIGINS=https://your-app.vercel.app,UP_MAX_CONCURRENT_RUNS=2
+  --set-env-vars=^|^OPENROUTER_BASE_URL=https://openrouter.ai/api/v1|UP_CORS_ORIGINS=https://your-app.vercel.app|UP_AUTHORIZED_PARTIES=https://your-app.vercel.app,https://*-your-vercel-scope.vercel.app|UP_MAX_CONCURRENT_RUNS=2
 ```
+
+`^|^` changes gcloud's delimiter from `,` to `|`, which
+`UP_AUTHORIZED_PARTIES` needs: its value is itself a comma-separated list, and
+with the default delimiter gcloud would read the second origin as a variable
+name and fail.
+
+`UP_AUTHORIZED_PARTIES` is the allowlist of origins whose Clerk tokens this API
+accepts, and it is required once `CLERK_SECRET_KEY` is set -- the container
+refuses to start without it rather than starting and rejecting every caller.
+The second entry is a wildcard over the Vercel scope, because every preview
+deployment mints its tokens on its own immutable URL; without it only the
+project alias can sign in. `UP_CORS_ORIGINS` is a separate setting answering a
+separate question and is never exercised in this topology at all.
 
 `--allow-unauthenticated` is deliberate and does not mean the API is open.
 Clerk is the gate (ADR-002 D4): the container refuses every request without a
