@@ -75,7 +75,7 @@ function RecordedErrors({
   report: FinalReport;
   onRetry?: (report: FinalReport) => void;
 }) {
-  const errors = snapshot.errors ?? [];
+  const errors = snapshot.errors;
   if (errors.length === 0) {
     return null;
   }
@@ -141,13 +141,9 @@ export function ReportView({
   // keypress that caused it, not on every render (which would steal focus
   // on mount).
   const tabButtonRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  // `final_report` is optional in the generated type only because every
-  // Pydantic field carries a default -- it is genuinely `None` until the run
-  // finishes, and `snapshot_response` never sends `undefined` in its place.
-  // Collapsed to `null` once here (ruling T10b) so the check below is a
-  // plain, correct `=== null` rather than one that treats an absent field
-  // differently from an explicitly-null one (ruling N1).
-  const report = snapshot.final_report ?? null;
+  // `null` until the run finishes, which is the distinction this view is
+  // built on rather than an absence to normalise away.
+  const report = snapshot.final_report;
 
   if (report === null) {
     return (
@@ -224,10 +220,9 @@ export function ReportView({
 
       <div role="tabpanel" id={panelId(tab)} aria-labelledby={tabId(tab)} tabIndex={0}>
         {tab === "overview" && <OverviewTab report={report} />}
-        {/* `risk_analysis` is optional in the generated type for the same
-            reason `final_report` is above; normalised to `null` at this call
-            site so `RiskFactorsTab`'s own `analysis === null` check stays
-            strict and correct (ruling N1/T10b). */}
+        {/* `FinalReport.risk_analysis` still carries a Pydantic default, so
+            the generated type is optional; normalised here so
+            `RiskFactorsTab`'s own `analysis === null` check stays strict. */}
         {tab === "risk" && <RiskFactorsTab analysis={report.risk_analysis ?? null} />}
         {tab === "evidence" && <EvidenceTab report={report} snapshot={snapshot} />}
         {tab === "plan" && <PlanTab report={report} />}

@@ -26,18 +26,13 @@ export function EvidenceTab({
   report: FinalReport;
   snapshot: RunSnapshot;
 }) {
-  // `affected_files` and `rag_context` are optional in the generated type
-  // only because every Pydantic field carries a default -- `finalize`
-  // always populates the first (as `[]` when there is nothing) and sets the
-  // second to `None` rather than omitting it. `retrieved_sources` and
-  // `breaking_changes` on `RunSnapshot` carry the same shape of default.
-  // Resolved once here (ruling T10b) so every comparison below is a plain,
-  // correct strict check rather than one that treats an absent field
-  // differently from an explicit null/empty one (ruling N1).
+  // `FinalReport`'s fields still carry Pydantic defaults, so the generated
+  // type marks them optional and `finalize` never actually omits one.
+  // `RunSnapshot`'s do not -- see its docstring.
   const affectedFiles = report.affected_files ?? [];
   const ragContext = report.rag_context ?? null;
-  const retrievedSources = snapshot.retrieved_sources ?? [];
-  const breakingChanges = snapshot.breaking_changes ?? [];
+  const retrievedSources = snapshot.retrieved_sources;
+  const breakingChanges = snapshot.breaking_changes;
   const selected = selectedSourceIds(breakingChanges);
 
   return (

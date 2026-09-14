@@ -1710,10 +1710,9 @@
         "type": "string"
       },
       "RunSnapshot": {
-        "description": "One response model for every state a run can be in. Spec 9.1.",
+        "description": "One response model for every state a run can be in. Spec 9.1.\n\n**Every field is required, and none carries a default.** That is a\nstatement about the wire contract rather than about Python ergonomics.\n`runtime.snapshot_response` is the only place this model is constructed\nand it passes all seventeen fields on every call, so a default here was\nnever a value any client could receive -- it was a value the *schema*\nadvertised as possibly absent.\n\nWhat that cost is recorded in PLANNING.md Phase 10. `openapi-typescript`\nrenders an optional field as `?`, so the generated `RunSnapshot` gave the\nfrontend `T | null | undefined` for fourteen fields whose `undefined` no\nrunning backend can produce. Every component then resolved an absence it\ncould never observe, and three separate Phase 10 defects traced to that\ngap -- each one a plausible branch for a state the server does not have.\n\nThe nullable fields stay nullable: `current_step`, `rag_context`,\n`risk_analysis`, `migration_plan`, `validation`, `pending_decision` and\n`final_report` are genuinely `None` before the run reaches them, and that\n`None` is information. Required-and-nullable is the accurate shape, and it\nis the one the client should have to handle. Removing the default is what\nmakes the difference visible: `null` means \"not yet\", where `undefined`\nmeant \"this server might not send the field at all\".\n\nThe collections are required for the stronger reason. An empty tuple and\nan absent field read identically at every call site, so the optionality\nbought nothing and hid the fact that \"no breaking changes found\" and \"the\nanalysis has not run\" are the same value here and must be told apart by\n`status`.",
         "properties": {
           "affected_files": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/AffectedFile"
             },
@@ -1721,7 +1720,6 @@
             "type": "array"
           },
           "breaking_changes": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/BreakingChange"
             },
@@ -1729,7 +1727,6 @@
             "type": "array"
           },
           "completed_steps": {
-            "default": [],
             "items": {
               "type": "string"
             },
@@ -1748,7 +1745,6 @@
             "title": "Current Step"
           },
           "errors": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/ApiError"
             },
@@ -1766,7 +1762,6 @@
             ]
           },
           "human_decisions": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/HumanDecision"
             },
@@ -1804,7 +1799,6 @@
             ]
           },
           "retrieved_sources": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/SourceRef"
             },
@@ -1829,7 +1823,6 @@
             "type": "string"
           },
           "trace": {
-            "default": [],
             "items": {
               "$ref": "#/components/schemas/TraceEvent"
             },
@@ -1853,7 +1846,21 @@
         "required": [
           "thread_id",
           "status",
-          "usage"
+          "current_step",
+          "completed_steps",
+          "trace",
+          "usage",
+          "affected_files",
+          "breaking_changes",
+          "retrieved_sources",
+          "rag_context",
+          "risk_analysis",
+          "migration_plan",
+          "validation",
+          "human_decisions",
+          "pending_decision",
+          "final_report",
+          "errors"
         ],
         "title": "RunSnapshot",
         "type": "object"

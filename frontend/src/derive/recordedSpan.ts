@@ -46,7 +46,7 @@ function formatDuration(ms: number): string {
  * rather than saying, honestly, that it has recorded nothing.
  */
 export function recordedSpan(snapshot: RunSnapshot): string | null {
-  const trace = snapshot.trace ?? [];
+  const trace = snapshot.trace;
   if (trace.length === 0) return null;
 
   const start = new Date(trace[0].at).getTime();
