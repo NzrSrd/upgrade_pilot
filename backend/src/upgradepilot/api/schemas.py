@@ -168,28 +168,57 @@ class UsageView(BaseModel):
 
 
 class RunSnapshot(BaseModel):
-    """One response model for every state a run can be in. Spec 9.1."""
+    """One response model for every state a run can be in. Spec 9.1.
+
+    **Every field is required, and none carries a default.** That is a
+    statement about the wire contract rather than about Python ergonomics.
+    `runtime.snapshot_response` is the only place this model is constructed
+    and it passes all seventeen fields on every call, so a default here was
+    never a value any client could receive -- it was a value the *schema*
+    advertised as possibly absent.
+
+    What that cost is recorded in PLANNING.md Phase 10. `openapi-typescript`
+    renders an optional field as `?`, so the generated `RunSnapshot` gave the
+    frontend `T | null | undefined` for fourteen fields whose `undefined` no
+    running backend can produce. Every component then resolved an absence it
+    could never observe, and three separate Phase 10 defects traced to that
+    gap -- each one a plausible branch for a state the server does not have.
+
+    The nullable fields stay nullable: `current_step`, `rag_context`,
+    `risk_analysis`, `migration_plan`, `validation`, `pending_decision` and
+    `final_report` are genuinely `None` before the run reaches them, and that
+    `None` is information. Required-and-nullable is the accurate shape, and it
+    is the one the client should have to handle. Removing the default is what
+    makes the difference visible: `null` means "not yet", where `undefined`
+    meant "this server might not send the field at all".
+
+    The collections are required for the stronger reason. An empty tuple and
+    an absent field read identically at every call site, so the optionality
+    bought nothing and hid the fact that "no breaking changes found" and "the
+    analysis has not run" are the same value here and must be told apart by
+    `status`.
+    """
 
     thread_id: str
     status: RunStatus
-    current_step: str | None = None
-    completed_steps: tuple[str, ...] = ()
+    current_step: str | None
+    completed_steps: tuple[str, ...]
 
-    trace: tuple[TraceEvent, ...] = ()
+    trace: tuple[TraceEvent, ...]
     usage: UsageView
 
     # Evidence so far -- populated progressively, so a client polling a
     # running job can show what has been established rather than a spinner.
-    affected_files: tuple[AffectedFile, ...] = ()
-    breaking_changes: tuple[BreakingChange, ...] = ()
-    retrieved_sources: tuple[SourceRef, ...] = ()
-    rag_context: RagContext | None = None
-    risk_analysis: RiskAnalysis | None = None
-    migration_plan: MigrationPlan | None = None
-    validation: ValidationReport | None = None
-    human_decisions: tuple[HumanDecision, ...] = ()
+    affected_files: tuple[AffectedFile, ...]
+    breaking_changes: tuple[BreakingChange, ...]
+    retrieved_sources: tuple[SourceRef, ...]
+    rag_context: RagContext | None
+    risk_analysis: RiskAnalysis | None
+    migration_plan: MigrationPlan | None
+    validation: ValidationReport | None
+    human_decisions: tuple[HumanDecision, ...]
 
-    pending_decision: InterruptPayload | None = None
+    pending_decision: InterruptPayload | None
     """The question currently awaiting an answer, or `None`.
 
     Derived from the checkpoint's interrupts rather than from a stored
@@ -197,8 +226,8 @@ class RunSnapshot(BaseModel):
     `human_decisions` channel without it.
     """
 
-    final_report: FinalReport | None = None
-    errors: tuple[ApiError, ...] = ()
+    final_report: FinalReport | None
+    errors: tuple[ApiError, ...]
 
 
 class HealthChecks(BaseModel):

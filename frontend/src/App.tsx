@@ -51,10 +51,8 @@ export default function App() {
         : (snapshot?.status ?? "queued");
   const view = viewFor(status);
   const summary = runs.find((run) => run.threadId === threadId) ?? null;
-  // `RunSnapshot` declares fourteen of its seventeen fields optional in the
-  // generated types (every Pydantic field has a default) even though the API
-  // always populates them. Resolved once here rather than scattered through
-  // the JSX below.
+  // The `?? []` is for the optional chain: `snapshot` is null before the
+  // first poll settles. `human_decisions` itself is required on the wire.
   const answeredCount = (snapshot?.human_decisions ?? []).length;
 
   return (

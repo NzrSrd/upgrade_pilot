@@ -32,13 +32,8 @@ export function RunMetrics({ snapshot }: { snapshot: RunSnapshot | null }) {
   const { usage } = snapshot;
   const cost = costLabel(usage);
   const byNode = usage.by_node;
-  // `RunSnapshot`'s array and object fields carry OpenAPI defaults, which
-  // openapi-typescript marks optional (`T | undefined`) even though the
-  // fixtures and the real API always send them. `?? []` / `?? null` is the
-  // typed equivalent of that default, applied once here rather than at every
-  // call site below.
-  const completedSteps = snapshot.completed_steps ?? [];
-  const ragContext = snapshot.rag_context ?? null;
+  const completedSteps = snapshot.completed_steps;
+  const ragContext = snapshot.rag_context;
   const span = recordedSpan(snapshot);
 
   return (

@@ -63,24 +63,18 @@ export type Step = { node: string; label: string; state: StepState; reason?: Ski
  * value — which is correct today, because `traced()` is its only error path.
  */
 const PRODUCED: Record<string, (snapshot: RunSnapshot) => boolean> = {
-  // Every field is optional in the generated type only because every Pydantic
-  // field carries a default, and `snapshot_response` never sends `undefined`
-  // in place of `null`. Collapsed the same way `ReportView` collapses
-  // `final_report` (ruling T10b), so an absent field and an explicitly-null
-  // one answer identically -- a bare `!== null` on an optional field would
-  // read `undefined` as "produced".
-  analyze_repo: (snapshot) => (snapshot.affected_files ?? []).length > 0,
+  analyze_repo: (snapshot) => snapshot.affected_files.length > 0,
   inspect_dependency: () => false,
-  agentic_rag: (snapshot) => (snapshot.rag_context ?? null) !== null,
-  assess_risk: (snapshot) => (snapshot.risk_analysis ?? null) !== null,
-  human_review: (snapshot) => (snapshot.human_decisions ?? []).length > 0,
-  generate_plan: (snapshot) => (snapshot.migration_plan ?? null) !== null,
-  validate_plan: (snapshot) => (snapshot.validation ?? null) !== null,
-  finalize: (snapshot) => (snapshot.final_report ?? null) !== null,
+  agentic_rag: (snapshot) => snapshot.rag_context !== null,
+  assess_risk: (snapshot) => snapshot.risk_analysis !== null,
+  human_review: (snapshot) => snapshot.human_decisions.length > 0,
+  generate_plan: (snapshot) => snapshot.migration_plan !== null,
+  validate_plan: (snapshot) => snapshot.validation !== null,
+  finalize: (snapshot) => snapshot.final_report !== null,
 };
 
 function erroredWithNothingToShow(snapshot: RunSnapshot, node: string): boolean {
-  const errored = (snapshot.errors ?? []).some((error) => error.node === node);
+  const errored = snapshot.errors.some((error) => error.node === node);
   if (!errored) {
     return false;
   }
@@ -121,7 +115,7 @@ export function stepStates(snapshot: RunSnapshot | null): Step[] {
       // an assessment to settle. Without one the step was not skipped by a
       // decision — the run simply never got far enough to ask.
       const reason: SkipReason =
-        (snapshot.risk_analysis ?? null) !== null ? "resolved-by-constraints" : "not-reached";
+        snapshot.risk_analysis !== null ? "resolved-by-constraints" : "not-reached";
       return { ...step, state: "skipped", reason };
     }
     // Only a live run has something running. An orphaned run's process is

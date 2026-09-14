@@ -41,13 +41,8 @@ export function ErrorView({
   const [resuming, setResuming] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  // `completed_steps` and `errors` are optional in the generated type only
-  // because every Pydantic field carries a default -- `snapshot_response`
-  // always populates them (as `[]` when there is nothing). Resolved once
-  // here (ruling T10b) rather than at each use below, following Task 12's
-  // `?? null`/`?? []` boundary-normalisation pattern: `ReportView.tsx`'s
-  // `report = snapshot.final_report ?? null` (line 62) and the block of
-  // `??` defaults at the top of `OverviewTab.tsx` (lines 31-34).
+  // The `?? []` is for the optional chain, not for the field: `snapshot` is a
+  // nullable prop, and `completed_steps` itself is required on the wire.
   const completedSteps = snapshot?.completed_steps ?? [];
   const done = completedSteps.length;
   // `STEPS.length`, not a literal `8`: `derive/steps.ts` already owns the
@@ -63,8 +58,7 @@ export function ErrorView({
   // exists at all, its own recorded errors are what get shown; a poll error
   // only stands in when there is no snapshot to describe -- e.g. a 404 on an
   // unknown thread, where there is no run to report errors *from*.
-  const errors =
-    snapshot !== null ? snapshot.errors ?? [] : pollError !== null ? [pollError] : [];
+  const errors = snapshot !== null ? snapshot.errors : pollError !== null ? [pollError] : [];
 
   const orphaned = snapshot?.status === "orphaned";
   // Only two statuses route to this view (`derive/view.ts`): `failed` and

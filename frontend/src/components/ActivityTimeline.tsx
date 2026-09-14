@@ -40,15 +40,11 @@ export function ActivityTimeline({ snapshot }: { snapshot: RunSnapshot | null })
     );
   }
 
-  // `RunSnapshot`'s list fields carry OpenAPI defaults, which
-  // openapi-typescript marks optional even though the real API and the test
-  // fixtures always send them. `?? []` is the typed equivalent of that
-  // default, resolved once here rather than at every access below.
-  const trace = snapshot.trace ?? [];
-  const affectedFiles = snapshot.affected_files ?? [];
-  const breakingChanges = snapshot.breaking_changes ?? [];
-  const retrievedSources = snapshot.retrieved_sources ?? [];
-  const riskAnalysis = snapshot.risk_analysis ?? null;
+  const trace = snapshot.trace;
+  const affectedFiles = snapshot.affected_files;
+  const breakingChanges = snapshot.breaking_changes;
+  const retrievedSources = snapshot.retrieved_sources;
+  const riskAnalysis = snapshot.risk_analysis;
   const confidenceCeilings = riskAnalysis?.confidence_ceilings ?? [];
   const selected = selectedSourceIds(breakingChanges);
 
