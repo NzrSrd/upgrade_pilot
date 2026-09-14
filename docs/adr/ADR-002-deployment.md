@@ -442,6 +442,70 @@ this would be if the deployment were public. Rejected by the Context: it leaves
 the Cloud Run URL callable by anyone who learns it, with the token budget behind
 it.
 
+## What was actually deployed
+
+Recorded because an ADR describing an intended deployment and a deployment that
+differs from it is the failure this document exists to prevent. Read back off
+the running revision, not off the command that created it.
+
+| | |
+|---|---|
+| Service | `upgradepilot-backend`, revision `upgradepilot-backend-00002-m8t`, `europe-west1` |
+| Image | `backend:049a887`, ~221 MiB, corpus baked |
+| Scaling | `maxScale=1`, `minScale=0`, `cpu-throttling=false` — D1 and D5 |
+| Resources | 1 CPU, 2 GiB, in-memory volume capped at 512 MiB on `/tmp/workspaces` |
+| Secrets | `llm-api-key`, `clerk-secret-key`, `checkpoint-url`, all by reference |
+| Database | Neon, PostgreSQL **18.6**, direct (non-pooled) endpoint |
+
+`/api/health` reports `status: ok`, `checkpoint_backend: postgres`,
+`auth_required: true`, all three checks true. An unauthenticated
+`GET /api/agent/status/{id}` returns 401. The deployed application created
+`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`
+and `run_owners` in Neon, so both `setup()` calls ran against the real database.
+
+**Four things this document did not anticipate**, each of which cost time and
+none of which changes a decision:
+
+- `SHORT_SHA` is empty on a manual `gcloud builds submit`. It is populated only
+  for trigger-based builds, and the failure is an unparseable image reference
+  rather than anything naming the cause.
+- `OPENROUTER_BASE_URL` is baked into the *build* stage for the corpus ingest but
+  not into the runtime image, so it must be set at deploy. Unset, the client
+  falls back to OpenAI direct while holding an OpenRouter key.
+- The runtime service account needs `secretmanager.secretAccessor` granted
+  explicitly. Granted per secret rather than at the project level, so the
+  service can read these three and nothing else.
+- Neon runs PostgreSQL 18.6 while CI's service container and local development
+  are both on 17. Nothing has depended on the difference, but the suite that
+  guards this deployment does not run on the version the deployment uses.
+
+**The Vercel project was never building the frontend, and nothing said so.**
+Its Root Directory was `.` and its framework preset was "Other", so Vercel
+served the *repository root* as static files: no build ran, `/` returned 404,
+and every deployment reported success in three seconds. Two consequences worth
+separating, because only the first is obvious:
+
+- The site was broken in production and had been since the project was created.
+- **`frontend/vercel.json` had never been read**, because Vercel looks for it in
+  the configured root directory. So the `/api/*` rewrite this document treats as
+  the mechanism connecting the two halves was not in effect at any point, and
+  the placeholder hostname D4 relies on being replaced was never consulted
+  either. The file was correct and inert.
+
+Fixed by setting Root Directory to `frontend` and the preset to Vite. The
+evidence that it was actually wrong, rather than merely suspicious, is the build
+duration: 3 seconds before, 17 seconds after, with `vite build` and
+`dist/index.html` appearing in the log for the first time.
+
+The general lesson is the one this project keeps relearning: a green check mark
+reports that a step completed, not that it did anything. The same shape as
+`/api/health` answering `ok` over an empty corpus, which is why D3 has the build
+assert a document count.
+
+**`UP_ALLOWED_LOCAL_ROOTS` is absent rather than set empty**, which is the
+stronger of the two. It defaults to empty; `.gcloudignore` excludes `.env` and
+`.env.*`; no `COPY` in the Dockerfile references either. All three checked.
+
 ## Consequences
 
 **Accepted costs**
